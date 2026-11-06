@@ -25,20 +25,6 @@ PROBE_STAGES = {
 }
 
 
-PROBE_PROMPT = (
-    "Read the image. List the three panel colors from left to right. "
-    "Use the colors field and exactly three lowercase color names."
-)
-PROBE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "colors": {"type": "array", "minItems": 3, "maxItems": 3,
-                   "items": {"enum": ["red", "green", "blue"]}},
-    },
-    "required": ["colors"], "additionalProperties": False,
-}
-
-
 def strict_json(text):
     def pairs(items):
         result = {}
@@ -315,7 +301,25 @@ class OllamaProvider:
                 "sha256": hashlib.sha256(image).hexdigest(), "expected_colors": colors,
             })
             advance("vision_inference")
-            result = await self.chat(model, PROBE_PROMPT, image, PROBE_SCHEMA)
+            result = await self.chat(
+                model,
+                "Read the image. List the three panel colors from left to right. "
+                "Use the colors field and exactly three lowercase color names.",
+                image,
+                {
+                    "type": "object",
+                    "properties": {
+                        "colors": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": {"enum": ["red", "green", "blue"]},
+                        }
+                    },
+                    "required": ["colors"],
+                    "additionalProperties": False,
+                },
+            )
             advance("vision_validation")
             received = result.get("colors") if type(result) is dict else None
             schema_valid = (
