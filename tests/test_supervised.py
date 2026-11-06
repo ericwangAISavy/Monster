@@ -1527,3 +1527,28 @@ def test_worker_diagnostic_reports_known_stop_reason_without_arbitrary_message(q
         assert "PRIVATE_UNKNOWN_REASON" not in str(events)
     finally:
         bridge.shutdown()
+
+
+def test_window_task_failure_does_not_instruct_model_or_user_to_focus_composer(qtbot):
+    engine, _, model = controller([
+        Decision("action", "Switch app", {"op": "click", "x": x, "y": 50}, risk="routine")
+        for x in (10, 40, 70)
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+
+    async def verify(*args):
+        return Verification("failed", "Requested app did not gain foreground")
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Go to the already open Slack window")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert "composer" not in failures[0].lower()
+        assert "composer" not in " ".join(engine.history).lower()
+    finally:
+        engine.close()

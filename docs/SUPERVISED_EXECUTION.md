@@ -566,3 +566,38 @@ It checks report completeness, negative-origin coordinate mapping, immutable
 snapshots, explicit-only persistence, bounded retention, credential/raw-thinking
 exclusion, startup failures, primary-versus-cleanup failures and old-run callback
 binding. Native Windows/Chrome/Slack behavior still requires live qualification.
+
+### Explicit model coordinate units
+
+Live Ollama mouse proposals now use `x_1000` and `y_1000`: integer coordinates in
+0–1000 across the entire supplied screenshot. Top-left is (0,0), bottom-right is
+(1000,1000). The adapter converts once using `round(value * (size - 1) / 1000)`
+to native image pixels. The controller then adds the captured monitor origin;
+it does not apply Qt device-pixel-ratio scaling. Local input-tool APIs still take
+native physical coordinates. Trusted legacy parser callers can explicitly retain
+image-pixel mode; live Ollama requests always use normalized mode and reject old
+or mixed coordinate keys instead of guessing their units.
+
+`Decision.coordinate_source`, the action preview, and run-report proposal/mapping
+events retain the original normalized values, image dimensions and conversion.
+Canonical actions sent to history, scene checks and verification use native image
+pixels, as those prompts now explicitly state. Native cursor receipts remain the
+independent observation of where Windows actually placed the pointer.
+
+A supplied 1920×1080 incident report showed model proposals at y=955 labelled as
+taskbar clicks, while the taskbar was around y=1050. All native cursor receipts
+matched the requested pixels and the terminal stayed foreground. This establishes
+bad model target coordinates rather than a native DPI offset or a false-negative
+verifier in that run. The pattern is consistent with normalized-coordinate output
+under the old pixel-only prompt; it does not prove the model's hidden reasoning.
+The new self-describing field names remove that unit ambiguity without silently
+reinterpreting older outputs or hardcoding an application's icon position.
+
+Tests cover that incident's coordinate range, multiple resolutions, edge values,
+malformed/mixed units, strict live-provider schema, and negative monitor origins.
+They prove the transformation/validation contract, not that a model can locate
+every icon. After updating and fully restarting, repeat the task and inspect the
+new mapping plus before/after images and native cursor receipt. A further failure
+can still be a grounding error; verification, reviews, stop and limits remain in
+force. General window-task recovery no longer asks the model/user to focus a
+message composer.

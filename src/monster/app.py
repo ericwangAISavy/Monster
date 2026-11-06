@@ -659,6 +659,10 @@ class CompanionApp:
             f"Risk: {self.last_preview.risk or 'unclassified'}\n\n"
             + json.dumps(self.last_preview.action, ensure_ascii=False, indent=2)
         )
+        if self.last_preview.coordinate_source is not None:
+            text += "\n\nModel coordinate mapping: " + json.dumps(
+                self.last_preview.coordinate_source, ensure_ascii=False
+            )
         if self.last_preview.kind == "action":
             expected = self.last_preview.expected_result or self.last_preview.summary
             text += f"\n\nExpected visible result: {expected}"

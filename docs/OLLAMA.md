@@ -42,7 +42,9 @@ Only one secondary Monster surface is opened at a time. Model settings stay out 
 4. When inference finishes, the pill says **Preview ready · no computer actions performed**.
 5. Open tray → **Last action preview…** to inspect the decision kind, summary and complete proposed action. There is intentionally no Execute button. A model `complete` response is displayed as an unverified hypothesis, never as actual task completion.
 
-Coordinates in a preview are **image-relative physical pixels** in the selected target display's native-resolution screenshot. They are not Qt device-independent coordinates or directly executable virtual-desktop coordinates. A future engine must retain the observation's monitor origin and transforms, check freshness/focus/policy, then map coordinates before dispatch. The preview does not export or arm an InputSession.
+Ollama emits explicit `x_1000`/`y_1000` coordinates normalized to the full screenshot.
+The adapter converts them once; source values and mapping appear in action details.
+Coordinates in the canonical preview action are **image-relative physical pixels** in the selected target display's native-resolution screenshot. They are not Qt device-independent coordinates or directly executable virtual-desktop coordinates. A future engine must retain the observation's monitor origin and transforms, check freshness/focus/policy, then map coordinates before dispatch. The preview does not export or arm an InputSession.
 
 **Ctrl+Alt+P** pauses/cancels pending inference. Resuming restarts compatibility checking and obtains a fresh screenshot; it does not replay a cached proposal. **Ctrl+Alt+X** cancels the preview and invalidates pending observation/result generations. Because no real input is connected, these GUI controls only cancel capture/inference. The separate real-input worker's independent stop mechanism is unchanged.
 

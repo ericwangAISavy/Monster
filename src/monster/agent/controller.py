@@ -474,7 +474,7 @@ class SupervisedController(TaskController):
                 self.history.append(
                     "The last action did not achieve a verified result. Do not "
                     "repeat it or jitter its coordinates. Choose a materially "
-                    "different strategy or ask the user to focus the composer."
+                    "different strategy or ask the user to identify the intended target."
                 )
                 if (
                     self.pending.action["op"] == "click"
@@ -516,10 +516,12 @@ class SupervisedController(TaskController):
                     )
                     return
                 if self.recovery_attempts >= 3:
-                    self.fail(
-                        "No verified progress after three attempts. Focus the intended "
-                        "field manually and start a new task."
+                    advice = (
+                        "Focus the intended composer manually and start a new task."
+                        if draft_only(self.instruction) else
+                        "Inspect or focus the intended application manually before starting a new task."
                     )
+                    self.fail("No verified progress after three attempts. " + advice)
                     return
             else:
                 self.recovery_attempts = self.rejected_proposals = 0
