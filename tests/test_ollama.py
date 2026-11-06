@@ -452,3 +452,56 @@ def test_live_provider_schema_requires_normalized_keys_without_legacy_fallback()
     assert click["properties"]["y_1000"]["maximum"] == 1000
     assert "y" not in click["properties"]
     assert "already-converted native image pixels" in payload["messages"][1]["content"]
+
+
+def test_probe_reports_stage_and_image_evidence_without_reasoning():
+    events, requests = [], []
+    adapter = OllamaProvider(config(), transport(requests),
+                             diagnostic_callback=lambda event, details, content=None: events.append((event, details)))
+    asyncio.run(adapter.probe("vision:small"))
+    stages = [details["stage"] for event, details in events if event == "probe_stage"]
+    assert stages == ["server_version", "model_list", "model_metadata", "vision_inference", "vision_validation"]
+    image = next(details for event, details in events if event == "probe_image")
+    sent = base64.b64decode(json.loads(requests[-1].content)["messages"][1]["images"][0])
+    import hashlib
+    assert image["sha256"] == hashlib.sha256(sent).hexdigest()
+    assert image["expected_colors"] == image_colors(sent)
+    assert image["width"] == 96 and image["height"] == 32
+    assert any(event == "probe_passed" for event, _ in events)
+
+
+def test_probe_timeout_names_stage_without_claiming_model_incompatible():
+    original = transport([])
+    events = []
+
+    async def handle(request):
+        if request.url.path == "/api/chat":
+            raise httpx.ReadTimeout("secret server internals")
+        return original.handle_request(request)
+
+    adapter = OllamaProvider(config(), httpx.MockTransport(handle),
+                             diagnostic_callback=lambda event, details, content=None: events.append((event, details)))
+    with pytest.raises(ProviderError) as error:
+        asyncio.run(adapter.probe("vision:small"))
+    assert "Image inference + JSON" in str(error.value)
+    assert "timed out" in str(error.value)
+    assert "secret" not in str(error.value)
+    failure = next(details for event, details in events if event == "probe_failed")
+    assert failure["stage"] == "vision_inference"
+
+
+@pytest.mark.parametrize("colors", [
+    ["red", "green", "blue"], ["red", "blue", "green"],
+    ["green", "red", "blue"], ["green", "blue", "red"],
+    ["blue", "red", "green"], ["blue", "green", "red"],
+])
+def test_synthetic_probe_png_decodes_with_independent_image_reader(colors):
+    from PySide6.QtGui import QImage
+
+    from monster.providers.ollama import probe_image
+
+    image = QImage.fromData(probe_image(colors), "PNG")
+    assert not image.isNull()
+    assert (image.width(), image.height()) == (96, 32)
+    rgb = {"red": "#ff0000", "green": "#00ff00", "blue": "#0000ff"}
+    assert [image.pixelColor(x, 16).name() for x in (16, 48, 80)] == [rgb[c] for c in colors]

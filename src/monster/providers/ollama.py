@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import json
 import secrets
 import struct
@@ -14,6 +15,14 @@ from monster.agent.diagnostics import exception_evidence
 from monster.providers.base import Capabilities, Model, ProbeResult, ProviderError, Verification
 from monster.providers.config import OllamaConfig
 from monster.providers.decisions import DECISION_SCHEMA, parse_decision
+
+PROBE_STAGES = {
+    "server_version": "Server version",
+    "model_list": "Installed model list",
+    "model_metadata": "Model metadata",
+    "vision_inference": "Image inference + JSON",
+    "vision_validation": "Image answer validation",
+}
 
 
 def strict_json(text):
@@ -89,6 +98,9 @@ class OllamaProvider:
 
     async def request(self, method, path, payload=None):
         started = time.monotonic()
+        self.diagnostic("provider_request_started", {
+            "method": method, "route": path, "request_timeout_s": self.config.timeout,
+        })
         try:
             async with asyncio.timeout(self.config.timeout):
                 async with (
@@ -257,39 +269,84 @@ class OllamaProvider:
             raise ProviderError("Model did not return valid structured JSON.") from None
 
     async def probe(self, model):
-        version = await self.health()
-        models = await self.models()
-        match = next((entry for entry in models if entry.id == model), None)
-        if match is None:
-            raise ProviderError("Selected model is not installed on this server.")
-        capabilities = await self.capabilities(model)
-        if capabilities.vision is False:
-            raise ProviderError("Selected model is text-only; choose a vision-capable model.")
-        colors = secrets.SystemRandom().sample(["red", "green", "blue"], 3)
-        result = await self.chat(
-            model,
-            "Read the image. List the three panel colors from left to right. "
-            "Use the colors field and exactly three lowercase color names.",
-            probe_image(colors),
-            {
-                "type": "object",
-                "properties": {
-                    "colors": {
-                        "type": "array",
-                        "minItems": 3,
-                        "maxItems": 3,
-                        "items": {"enum": ["red", "green", "blue"]},
-                    }
+        started = time.monotonic()
+        stage = "server_version"
+
+        def advance(name):
+            nonlocal stage
+            stage = name
+            self.diagnostic("probe_stage", {"stage": stage, "elapsed_s": time.monotonic() - started})
+
+        try:
+            advance("server_version")
+            version = await self.health()
+            self.diagnostic("probe_server", {"version": version})
+            advance("model_list")
+            models = await self.models()
+            match = next((entry for entry in models if entry.id == model), None)
+            if match is None:
+                raise ProviderError("Selected model is not installed on this server.")
+            advance("model_metadata")
+            capabilities = await self.capabilities(model)
+            self.diagnostic("probe_model", {
+                "digest": match.digest, "vision_capability": capabilities.vision,
+                "context_limit": capabilities.context_length,
+            })
+            if capabilities.vision is False:
+                raise ProviderError("Selected model is text-only; choose a vision-capable model.")
+            colors = secrets.SystemRandom().sample(["red", "green", "blue"], 3)
+            image = probe_image(colors)
+            self.diagnostic("probe_image", {
+                "width": 96, "height": 32, "png_bytes": len(image),
+                "sha256": hashlib.sha256(image).hexdigest(), "expected_colors": colors,
+            })
+            advance("vision_inference")
+            result = await self.chat(
+                model,
+                "Read the image. List the three panel colors from left to right. "
+                "Use the colors field and exactly three lowercase color names.",
+                image,
+                {
+                    "type": "object",
+                    "properties": {
+                        "colors": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": {"enum": ["red", "green", "blue"]},
+                        }
+                    },
+                    "required": ["colors"],
+                    "additionalProperties": False,
                 },
-                "required": ["colors"],
-                "additionalProperties": False,
-            },
-        )
-        if type(result) is not dict or set(result) != {"colors"} or result["colors"] != colors:
-            raise ProviderError(
-                "Vision/schema probe failed. This model is not qualified for preview."
             )
-        return ProbeResult(model, match.digest, version, True, True)
+            advance("vision_validation")
+            received = result.get("colors") if type(result) is dict else None
+            schema_valid = (
+                type(result) is dict and set(result) == {"colors"}
+                and type(received) is list and len(received) == 3
+                and all(type(c) is str and c in {"red", "green", "blue"} for c in received)
+            )
+            self.diagnostic("probe_answer", {
+                "schema_valid": schema_valid,
+                "expected_colors": colors,
+                "received_colors": received if schema_valid else None,
+                "matches_image": schema_valid and received == colors,
+            })
+            if not schema_valid:
+                raise ProviderError("Vision/schema probe failed: JSON did not match the color-answer schema.")
+            if received != colors:
+                raise ProviderError(
+                    "Vision/schema probe failed: valid JSON, but the colors did not match the image. "
+                    f"Expected {colors}; received {received}. Check the model/server visual path."
+                )
+            self.diagnostic("probe_passed", {"elapsed_s": time.monotonic() - started})
+            return ProbeResult(model, match.digest, version, True, True)
+        except ProviderError as exc:
+            self.diagnostic("probe_failed", {
+                "stage": stage, "reason": str(exc), "elapsed_s": time.monotonic() - started,
+            })
+            raise ProviderError(f"{PROBE_STAGES[stage]}: {exc}") from None
 
     async def verify_action(self, model, instruction, action, expected, image, width, height):
         if not self.config.local_server_confirmed:

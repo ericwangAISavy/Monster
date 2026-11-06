@@ -130,3 +130,33 @@ do not blindly rerun a task that could duplicate its earlier action. Use a fresh
 disposable Notepad document for the next test. Live Gemma/Ollama behavior still
 requires testing against your server; simulated-response tests do not establish
 that every incomplete response is caused by a token cap.
+
+### Diagnosing a vision-check timeout
+
+“Connected” proves discovery worked; a loaded model still may not finish an image
+request. “Compatibility was not confirmed” after a timeout is inconclusive, not a
+failed color-recognition score or proof of model incompatibility.
+
+The settings check now shows its exact stage: server version, installed model
+list, model metadata, image inference + JSON, or image answer validation. The same
+whole-check timeout still applies; model, context, output budget and thinking
+configuration are not silently changed.
+
+Open **Advanced inference settings → Last check report** after a failure. Select
+and copy the report. It contains the application/Python/runtime versions, selected
+model and digest, endpoint/settings, elapsed stage/HTTP timings, generated PNG
+size/hash/colors, safe response metrics and any internal exception class/project
+stack. It stays in memory; no file or upload is created automatically. It includes
+no desktop image, raw response body or model reasoning. A new check replaces it;
+late events from a cancelled check are ignored.
+
+| Evidence | Interpretation |
+| --- | --- |
+| Timeout before image inference | Server connection, discovery or metadata stalled; vision has not been assessed. |
+| Timeout at image inference + JSON | No complete usable response arrived before the deadline. Loading/inference, server capacity, network/proxy, and request compatibility remain possible; it does not prove the model is incompatible. |
+| Completed response, invalid JSON/schema | Structured response/protocol failure; not a color-recognition result. |
+| Valid schema, wrong colors | Model/server visual path returned the wrong synthetic-image answer. The report shows expected versus received colors. |
+| Internal exception evidence | Unexpected client/runtime path; inspect the recorded class and project stack. |
+
+All six randomized PNG orders are independently decoded in portable tests. This
+verifies test-image generation and encoding, not a real model's vision capability.

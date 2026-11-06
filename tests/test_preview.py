@@ -362,3 +362,77 @@ def test_model_settings_advanced_form_scrolls_without_hiding_request_controls(qt
         assert button.isVisible()
         assert dialog.rect().contains(button.geometry())
     dialog.reject()
+
+
+def test_settings_timeout_report_identifies_pending_image_inference(qtbot):
+    from dataclasses import replace
+
+    import httpx
+
+    from monster.providers.ollama import OllamaProvider
+
+    async def handle(request):
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "test-1"})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "vision:small", "digest": "abc"}]})
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"capabilities": ["vision"]})
+        await asyncio.sleep(60)
+
+    dialog = ProviderSettings(replace(config(), timeout=5),
+                              provider_factory=lambda cfg: OllamaProvider(cfg, httpx.MockTransport(handle)))
+    qtbot.addWidget(dialog)
+    try:
+        dialog.probe()
+        qtbot.waitUntil(lambda: dialog.pending is None, timeout=6500)
+        assert "Image inference + JSON" in dialog.status.text()
+        report = dialog.check_details.toPlainText()
+        for fact in ("server_version", "model_list", "model_metadata", "vision_inference",
+                     "sha256", "16384", "4096", "No desktop screenshot", "/api/chat"):
+            assert fact in report
+        assert "thinking" not in report.lower() or "thinking=False" in report
+        assert dialog.probed_config is None
+    finally:
+        dialog.jobs.close()
+
+
+def test_settings_check_report_rejects_stale_progress_and_model_reasoning(qtbot):
+    class Stalled(FakeProvider):
+        async def probe(self, model):
+            await asyncio.sleep(60)
+
+    dialog = ProviderSettings(config(), provider_factory=Stalled)
+    qtbot.addWidget(dialog)
+    try:
+        dialog.probe()
+        old_serial = dialog.request_serial
+        dialog.cancel_clicked()
+        dialog.probe()
+        current = dialog.check_details.toPlainText()
+        dialog._provider_event(old_serial, "probe_stage", {"stage": "vision_inference"})
+        dialog._provider_event(dialog.request_serial, "provider_structured_response", {"reasoning": "secret"})
+        assert dialog.check_details.toPlainText() == current
+        assert dialog.check_stage == ""
+        dialog.cancel_clicked()
+    finally:
+        dialog.jobs.close()
+
+
+def test_settings_check_report_identifies_internal_runtime_exception(qtbot):
+    class Broken(FakeProvider):
+        async def probe(self, model):
+            raise RuntimeError("private payload must not appear")
+
+    dialog = ProviderSettings(config(), provider_factory=Broken)
+    qtbot.addWidget(dialog)
+    try:
+        dialog.probe()
+        qtbot.waitUntil(lambda: dialog.pending is None)
+        report = dialog.check_details.toPlainText()
+        assert "internal_exception" in report
+        assert "RuntimeError" in report
+        assert "private payload" not in report
+        assert dialog.probed_config is None
+    finally:
+        dialog.jobs.close()

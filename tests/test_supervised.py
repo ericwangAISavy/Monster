@@ -1481,7 +1481,9 @@ def test_provider_diagnostics_remain_bound_to_their_original_run():
         provider = engine._provider(first, "probing")
         engine.run_diagnostics = RunDiagnostics("SECOND", engine.config)
         asyncio.run(provider.health())
-        assert first.snapshot().data["events"][0]["event"] == "provider_http_result"
+        assert [event["event"] for event in first.snapshot().data["events"]] == [
+            "provider_request_started", "provider_http_result",
+        ]
         assert not engine.run_diagnostics.snapshot().data["events"]
     finally:
         engine.close()

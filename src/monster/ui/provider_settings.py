@@ -1,5 +1,6 @@
 """Secondary LAN model settings; never adds controls to the everyday pill."""
 
+import json
 from dataclasses import replace
 
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer, Signal
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -21,14 +23,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from monster.agent.diagnostics import RUNTIME
 from monster.providers.config import OllamaConfig
 from monster.providers.jobs import ProviderJobs
-from monster.providers.ollama import OllamaProvider
+from monster.providers.ollama import PROBE_STAGES, OllamaProvider
 
 
 class ProviderSettings(QDialog):
     saved = Signal(object)
     activity_changed = Signal(str)
+    provider_event = Signal(int, str, object)
 
     def __init__(self, config, provider_factory=OllamaProvider):
         super().__init__()
@@ -38,8 +42,13 @@ class ProviderSettings(QDialog):
         self.config = config
         self.jobs = ProviderJobs(self)
         self.jobs.completed.connect(self._result)
+        self.jobs.diagnostic.connect(self._job_diagnostic)
         self.pending = None
         self.operation = ""
+        self.request_serial = 0
+        self.check_stage = ""
+        self.stage_started_ms = 0
+        self.provider_event.connect(self._provider_event)
         self.request_clock = QElapsedTimer()
         self.request_deadline = QTimer(self)
         self.request_deadline.setSingleShot(True)
@@ -154,6 +163,14 @@ class ProviderSettings(QDialog):
         )
         hint.setWordWrap(True)
         advanced_form.addRow(hint)
+        self.check_details = QPlainTextEdit()
+        self.check_details.setReadOnly(True)
+        self.check_details.setMaximumBlockCount(200)
+        self.check_details.setMinimumHeight(130)
+        self.check_details.setMaximumHeight(180)
+        self.check_details.setAccessibleName("Last compatibility check report")
+        self.check_details.setPlaceholderText("Run a check to record stage timings. Select and copy to share.")
+        advanced_form.addRow("Last check report", self.check_details)
         layout.addWidget(self.advanced)
         self.advanced.hide()
         self.advanced_toggle.toggled.connect(self.toggle_advanced)
@@ -176,6 +193,7 @@ class ProviderSettings(QDialog):
         )
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         outer.addWidget(self.status)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -248,15 +266,35 @@ class ProviderSettings(QDialog):
         self.probe_button.setEnabled(True)
 
     def cancel_clicked(self):
+        self._check_record("cancelled", "Local wait cancelled; no automatic retry.")
         self.cancel_request()
         self.status.setText("Request cancelled · no desktop screenshot was sent.")
 
-    def _start(self, operation, coroutine):
+    def _start(self, operation, coroutine, provider=None):
         self.cancel_request()
+        self.request_serial += 1
+        serial = self.request_serial
+        self.check_stage = ""
+        self.stage_started_ms = 0
         self.operation = operation
         self.request_timeout_s = self.timeout.value()
         self.probed_config = None
         self.request_clock.start()
+        self.check_details.setPlainText(
+            "Monster compatibility check · No desktop screenshot or model reasoning included.\n"
+            f"revision={RUNTIME.get('git_revision_at_startup')}; model={self.model.currentText()}; "
+            f"server={self.url.text().strip()}; "
+            f"timeout={self.request_timeout_s}s; context={self.context_size.value()}; "
+            f"max_output={self.max_output.value()}; thinking={self.thinking.isChecked()}; "
+            f"keep_alive={self.keep_alive.currentText()}\n"
+        )
+        self._check_record("runtime", json.dumps(RUNTIME, ensure_ascii=True))
+        if isinstance(provider, OllamaProvider):
+            # Content is deliberately ignored: only provider-generated metadata
+            # and synthetic color evidence enter this check report.
+            provider.diagnostic_callback = lambda event, details, content=None: self.provider_event.emit(
+                serial, event, details
+            )
         self.pending = self.jobs.start(coroutine)
         self.cancel_button.setEnabled(True)
         self.connect_button.setEnabled(False)
@@ -266,16 +304,41 @@ class ProviderSettings(QDialog):
         self._update_request_status()
         self.activity_changed.emit("Connecting" if operation == "discover" else "Vision test")
 
+    def _check_record(self, event, details):
+        elapsed = self.request_clock.elapsed() / 1000 if self.request_clock.isValid() else 0
+        self.check_details.appendPlainText(f"{elapsed:.3f}s {event}: {details}")
+
+    def _provider_event(self, serial, event, details):
+        if serial != self.request_serial or self.pending is None:
+            return
+        if event not in {
+            "probe_stage", "probe_server", "probe_model", "probe_image", "probe_answer",
+            "probe_passed", "probe_failed",
+            "provider_request_started", "provider_http_result", "provider_model_response", "provider_json_rejected",
+            "provider_transport_error",
+        }:
+            return
+        if event == "probe_stage" and details.get("stage") in PROBE_STAGES:
+            self.check_stage = details["stage"]
+            self.stage_started_ms = self.request_clock.elapsed()
+            self._update_request_status()
+        self._check_record(event, json.dumps(details, ensure_ascii=True))
+
+    def _job_diagnostic(self, details):
+        if self.pending is not None and details.get("job") == self.pending:
+            self._check_record("internal_exception", json.dumps(details.get("evidence"), ensure_ascii=True))
+
     def _update_request_status(self):
         if self.pending is None:
             return
         elapsed = self.request_clock.elapsed() / 1000
         remaining = max(0, self.request_timeout_s - elapsed)
         operation = "Checking server" if self.operation == "discover" else "Testing synthetic vision + JSON"
+        stage = f" Stage: {PROBE_STAGES[self.check_stage]}." if self.check_stage else ""
         self.status.setText(
             f"{operation}… {elapsed:.0f}s elapsed, {remaining:.0f}s remaining "
             f"(whole check limit: {self.request_timeout_s}s). "
-            "Waiting for Ollama; a cold model may need time to load. "
+            f"{stage} Waiting for Ollama; a cold model may need time to load. "
             "No desktop screenshot is sent."
         )
 
@@ -283,11 +346,16 @@ class ProviderSettings(QDialog):
         if self.pending is None:
             return
         name = "Connection/discovery" if self.operation == "discover" else "Vision + JSON test"
+        stage = PROBE_STAGES.get(self.check_stage, "provider operation")
+        stage_wait = (self.request_clock.elapsed() - self.stage_started_ms) / 1000
+        self._check_record("whole_check_timeout", {"stage": self.check_stage, "stage_wait_s": round(stage_wait, 3)})
         self.cancel_request()
         self.status.setText(
-            f"{name} timed out after {self.request_timeout_s}s total. "
-            "Compatibility was not confirmed. Check Ollama model loading, server capacity "
-            "and connectivity. No automatic retry; no desktop screenshot was sent."
+            f"{name} timed out after {self.request_timeout_s}s total at {stage} "
+            f"({stage_wait:.1f}s in this stage). Compatibility was not confirmed; "
+            "a timeout does not establish model incompatibility. "
+            "Copy Last check report in Advanced inference settings for analysis. "
+            "No automatic retry; no desktop screenshot was sent."
         )
 
     def discover(self):
@@ -301,7 +369,7 @@ class ProviderSettings(QDialog):
         async def discover_models():
             return await provider.health(), await provider.models()
 
-        self._start("discover", discover_models)
+        self._start("discover", discover_models, provider)
 
     def value_for_checks(self):
         # Discovery must work before a model/preview confirmation has been selected.
@@ -330,13 +398,14 @@ class ProviderSettings(QDialog):
             self.status.setText(str(exc))
             return
         self._probe_value = config
-        self._start("probe", lambda: provider.probe(config.model))
+        self._start("probe", lambda: provider.probe(config.model), provider)
 
     def _result(self, job, result, error):
         if job != self.pending:
             return
         self.jobs.futures.pop(job, None)
         operation = self.operation
+        self._check_record("failed" if error else "completed", error or operation)
         self.cancel_request()
         if error:
             self.status.setText(error)
