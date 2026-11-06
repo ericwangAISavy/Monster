@@ -141,6 +141,7 @@ class SupervisedController(TaskController):
         self.active_changed.emit(True)
         self.paused_changed.emit(False)
         self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Starting")
         self.deadline.start(300000)
         self.phase = "opening"
         # GUI releases its stop registration before the child registers it. No
@@ -320,6 +321,8 @@ class SupervisedController(TaskController):
 
     def _probe(self):
         self.phase = "probing"
+        self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Model check")
         diagnostics = self.run_diagnostics
         self.job = self._start_model(
             lambda: self._provider(diagnostics, "probing").probe(self.config.model)
@@ -341,6 +344,7 @@ class SupervisedController(TaskController):
         }:
             self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
+            self.stage_changed.emit("Capturing")
             self.capture_requested.emit()
 
     def observation_ready(self, observation, generation):
@@ -368,6 +372,7 @@ class SupervisedController(TaskController):
             before, action = self.observation, dict(self.pending.action)
             self.observation = observation
             self.phase = "comparing"
+            self.stage_changed.emit("Rechecking")
             details = {}
             self.scene_details = details
             self._record("scene_recheck_requested", before=previous_frame, after=self.log_frame)
@@ -390,6 +395,7 @@ class SupervisedController(TaskController):
                          content={"action": action, "expected_result": expected,
                                   "task_context": instruction})
             self.state_changed.emit(State.THINKING)
+            self.stage_changed.emit("Verifying")
             diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
             self.job = self._start_model(
                 lambda: self._provider(diagnostics, "verifying", call, step).verify_action(
@@ -421,6 +427,7 @@ class SupervisedController(TaskController):
                      single_click_policy=self.single_click_policy,
                      content={"task_context": instruction, "history": history})
         self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Thinking")
         diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
         self.job = self._start_model(
             lambda: self._provider(diagnostics, "deciding", call, step).decide(
@@ -570,6 +577,7 @@ class SupervisedController(TaskController):
                 return
             self.phase = "executing"
             self.state_changed.emit(State.WORKING)
+            self.stage_changed.emit("Acting")
             keyboard = action["op"] in {"text", "press", "chord"}
             self._record("dispatch_requested", transaction=self.actions + 1,
                          observation=self.log_frame, planned_observation=self.planned_frame,

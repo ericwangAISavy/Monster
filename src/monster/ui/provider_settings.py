@@ -9,10 +9,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -26,6 +28,7 @@ from monster.providers.ollama import OllamaProvider
 
 class ProviderSettings(QDialog):
     saved = Signal(object)
+    activity_changed = Signal(str)
 
     def __init__(self, config, provider_factory=OllamaProvider):
         super().__init__()
@@ -58,7 +61,17 @@ class ProviderSettings(QDialog):
             "padding:6px;border:1px solid #615c91;border-radius:5px;}"
             "QPushButton {padding:6px 12px;}"
         )
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 6, 0)
+        self.form_scroll = QScrollArea()
+        self.form_scroll.setWidgetResizable(True)
+        self.form_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.form_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget {background:#12172c;}")
+        self.form_scroll.setWidget(content)
+        outer.addWidget(self.form_scroll, 1)
         note = QLabel(
             "Connect to your own local/LAN Ollama server. Preview mode sends one "
             "desktop screenshot to this server. Real control follows your step approval setting. "
@@ -155,7 +168,7 @@ class ProviderSettings(QDialog):
         actions.addWidget(self.connect_button)
         actions.addWidget(self.probe_button)
         actions.addWidget(self.cancel_button)
-        layout.addLayout(actions)
+        outer.addLayout(actions)
         self.status = QLabel(
             "Saved settings · model is rechecked before each task."
             if self.probed_config is not None
@@ -163,13 +176,15 @@ class ProviderSettings(QDialog):
         )
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
-        layout.addWidget(self.status)
+        outer.addWidget(self.status)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.apply)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        outer.addWidget(buttons)
+        area = self.screen().availableGeometry()
+        self.resize(600, min(720, area.height() - 40))
         for signal in (
             self.url.textChanged,
             self.model.currentTextChanged,
@@ -211,7 +226,6 @@ class ProviderSettings(QDialog):
         self.advanced_toggle.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )
-        self.adjustSize()
 
     def invalidate(self, *_):
         self.probed_config = None
@@ -227,6 +241,7 @@ class ProviderSettings(QDialog):
         self.request_progress.stop()
         if self.pending:
             self.jobs.cancel(self.pending)
+            self.activity_changed.emit("")
         self.pending = None
         self.cancel_button.setEnabled(False)
         self.connect_button.setEnabled(True)
@@ -249,6 +264,7 @@ class ProviderSettings(QDialog):
         self.request_deadline.start(self.request_timeout_s * 1000)
         self.request_progress.start()
         self._update_request_status()
+        self.activity_changed.emit("Connecting" if operation == "discover" else "Vision test")
 
     def _update_request_status(self):
         if self.pending is None:

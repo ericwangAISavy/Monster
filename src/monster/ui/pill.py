@@ -108,7 +108,7 @@ class Pill(QWidget):
         self.show_input()
         self.hide()
 
-    def _reset(self, mode: str):
+    def _reset(self, mode: str, *, passive=False):
         self._hide_timer.stop()
         self.mode = mode
         self.request_id = ""
@@ -117,12 +117,23 @@ class Pill(QWidget):
         self.message_area.setVisible(mode in ("status", "approval"))
         self.message.setMinimumHeight(0)
         self.buttons.setVisible(mode == "approval")
-        self.setFixedHeight(46 if mode != "approval" else 112)
-        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, mode == "status")
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, mode == "status")
+        if mode in ("input", "clarification"):
+            self.setFixedHeight(46)
+        passive = passive or mode == "status"
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, passive)
         # Passive notices must not block the desktop beneath them.
-        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, mode == "status")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, mode == "status")
+        # One final flag change avoids recreating the native window through an
+        # interactive intermediate state on every keyboard approval prompt.
+        flags = self.windowFlags() & ~(
+            Qt.WindowType.WindowDoesNotAcceptFocus | Qt.WindowType.WindowTransparentForInput
+        )
+        if passive:
+            flags |= Qt.WindowType.WindowDoesNotAcceptFocus
+        if mode == "status":
+            flags |= Qt.WindowType.WindowTransparentForInput
+        if flags != self.windowFlags():
+            self.setWindowFlags(flags)
 
     def show_input(self):
         self._reset("input")
@@ -139,11 +150,8 @@ class Pill(QWidget):
         self._hide_timer.start(duration_ms)
 
     def show_question(self, request_id: str, text: str, approval: bool, *, take_focus=True):
-        self._reset("approval" if approval else "clarification")
+        self._reset("approval" if approval else "clarification", passive=approval and not take_focus)
         self.request_id = request_id
-        if approval and not take_focus:
-            self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         if approval:
             self.approve.setEnabled(len(text) <= 3500)
             if len(text) > 3500:

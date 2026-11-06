@@ -133,6 +133,7 @@ class CompanionApp:
         self.controller = controller
         bindings = [
             (controller.state_changed, self.set_state),
+            (controller.stage_changed, self.companion.set_stage),
             (controller.active_changed, self._active_changed),
             (controller.paused_changed, self._paused_changed),
             (controller.status, self.notice),
@@ -185,6 +186,7 @@ class CompanionApp:
 
     def _paused_changed(self, paused):
         self.paused = paused
+        self.companion.set_paused(paused)
         if hasattr(self, "pause_action"):
             self.pause_action.setText(
                 "Stop / manual takeover"
@@ -813,11 +815,13 @@ class CompanionApp:
         if not self.provider_window:
             self.provider_window = ProviderSettings(self.model_config)
             self.provider_window.saved.connect(self.save_provider_settings)
+            self.provider_window.activity_changed.connect(self.companion.set_activity)
             self.provider_window.finished.connect(self._discard_provider_settings)
         self.provider_window.show()
         focus_window(self.provider_window)
 
     def _discard_provider_settings(self):
+        self.companion.set_activity("")
         if self.provider_window:
             self.provider_window.deleteLater()
             self.provider_window = None
@@ -875,7 +879,7 @@ class CompanionApp:
             )
             return
         self.hotkey_errors = errors
-        self.companion.preferences = prefs
+        self.companion.apply_preferences(prefs)
         self.settings_window.accept()
         self.settings_window.deleteLater()
         self.settings_window = None

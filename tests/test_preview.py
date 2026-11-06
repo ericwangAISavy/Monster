@@ -311,3 +311,54 @@ def test_settings_cancel_stops_deadline_and_allows_fresh_check(qtbot):
         assert not dialog.request_progress.isActive()
     finally:
         dialog.jobs.close()
+
+
+def test_model_settings_activity_is_visible_without_capturing_desktop(qtbot, qapp, tmp_path, monkeypatch):
+    from monster.app import CompanionApp
+    from monster.lifecycle import MockTaskController, State
+
+    class Slow(FakeProvider):
+        async def probe(self, model):
+            await asyncio.sleep(0.1)
+            return ProbeResult(model, "abc", "test-1", True, True)
+
+    ui = CompanionApp(qapp, MockTaskController(), tmp_path / "prefs.json", enable_tray=False)
+    captures = []
+    monkeypatch.setattr(ui.isolation, "capture", lambda *args: captures.append(True))
+    ui.model_config = config()
+    try:
+        ui.show_provider_settings()
+        dialog = ui.provider_window
+        dialog.provider_factory = Slow
+        dialog.probe()
+        assert ui.companion.status_label.text() == "Vision test"
+        assert ui.companion.visual_state == State.THINKING
+        assert ui.companion.isVisible()
+        qtbot.waitUntil(lambda: dialog.pending is None)
+        assert ui.companion.visual_state == State.IDLE
+        dialog.probe()
+        dialog.cancel_clicked()
+        assert ui.companion.visual_state == State.IDLE
+        dialog.probe()
+        dialog.reject()
+        assert ui.companion.visual_state == State.IDLE
+        assert not captures
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_model_settings_advanced_form_scrolls_without_hiding_request_controls(qtbot, qapp):
+    dialog = ProviderSettings(config(), provider_factory=FakeProvider)
+    qtbot.addWidget(dialog)
+    dialog.resize(620, 460)
+    dialog.show()
+    dialog.advanced_toggle.setChecked(True)
+    qapp.processEvents()
+    assert dialog.height() == 460
+    assert dialog.form_scroll.verticalScrollBar().maximum() > 0
+    assert dialog.form_scroll.geometry().bottom() < dialog.status.geometry().top()
+    for button in (dialog.probe_button, dialog.cancel_button):
+        assert button.isVisible()
+        assert dialog.rect().contains(button.geometry())
+    dialog.reject()

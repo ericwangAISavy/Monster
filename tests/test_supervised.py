@@ -1699,3 +1699,30 @@ def test_clarification_cannot_relax_original_one_click_budget(qtbot, clarify_aft
         assert len(bridge.executed) == 1
     finally:
         engine.close()
+
+
+def test_supervised_activity_distinguishes_capture_thinking_acting_and_verification(qtbot):
+    engine, bridge, _ = controller([
+        Decision("action", "Click target", {"op": "click", "x": 44, "y": 70}, risk="routine"),
+        Decision("complete", "Expected panel is visible"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    stages, finished = [], []
+    engine.stage_changed.connect(stages.append)
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(
+        lambda rid, text: QTimer.singleShot(0, lambda: engine.respond(rid, "approve"))
+    )
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("Open the visible panel")
+        qtbot.waitUntil(lambda: bool(finished))
+        assert len(bridge.executed) == 1
+        for label in ("Model check", "Capturing", "Thinking", "Rechecking", "Acting", "Verifying"):
+            assert label in stages
+        assert stages.index("Capturing") < stages.index("Thinking") < stages.index("Acting")
+        assert stages.index("Acting") < stages.index("Verifying")
+    finally:
+        engine.close()
