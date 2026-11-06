@@ -37,7 +37,13 @@ class ProviderSettings(QDialog):
         self.jobs.completed.connect(self._result)
         self.pending = None
         self.operation = ""
-        self.probed_config = None
+        # Existing active configurations are checked again by the task controller.
+        # Saving only local execution policy should not require another UI probe.
+        self.probed_config = (
+            replace(config, mode="demo", approve_each_step=True)
+            if config.mode in {"preview", "supervised"}
+            else None
+        )
         self.setStyleSheet(
             "QDialog {background:#12172c;} QLabel,QCheckBox {color:#eeeaff;}"
             "QLineEdit,QComboBox,QSpinBox {background:#242b46;color:#eeeaff;"
@@ -88,9 +94,9 @@ class ProviderSettings(QDialog):
         )
         form.addRow(self.approve_each_step)
         approval_hint = QLabel(
-            "Unchecked: routine typing, movement, scrolling and navigation run "
-            "automatically. Clicks, submit keys and uncertain/sensitive actions "
-            "still ask. Final completion confirmation stays on."
+            "Unchecked: routine actions, including clearly benign clicks and Enter, run "
+            "automatically after a screen recheck. Sensitive, uncertain or unclassified actions "
+            "still ask and explain why. Final completion confirmation stays on."
         )
         approval_hint.setWordWrap(True)
         form.addRow(approval_hint)
@@ -142,7 +148,11 @@ class ProviderSettings(QDialog):
         actions.addWidget(self.probe_button)
         actions.addWidget(self.cancel_button)
         layout.addLayout(actions)
-        self.status = QLabel("Not connected · connection checks send no desktop images.")
+        self.status = QLabel(
+            "Saved settings · model is rechecked before each task."
+            if self.probed_config is not None
+            else "Not connected · connection checks send no desktop images."
+        )
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.status)

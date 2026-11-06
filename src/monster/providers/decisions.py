@@ -57,8 +57,9 @@ DECISION_SCHEMA = {
                 "kind": {"const": "action"},
                 "summary": {"type": "string", "minLength": 1, "maxLength": 300},
                 "action": ACTION_SCHEMA,
+                "risk": {"enum": ["routine", "sensitive", "uncertain"]},
             },
-            "required": ["kind", "summary", "action"],
+            "required": ["kind", "summary", "action", "risk"],
             "additionalProperties": False,
         },
         {
@@ -85,8 +86,14 @@ def parse_decision(value, width: int, height: int) -> Decision:
     if type(summary) is not str or not 1 <= len(summary.strip()) <= 300:
         raise ProviderError("Model returned an invalid summary.")
     required = {"kind", "summary", "action"} if value["kind"] == "action" else {"kind", "summary"}
-    if set(value) != required:
+    allowed = required | {"risk"} if value["kind"] == "action" else required
+    if not required <= set(value) or set(value) - allowed:
         raise ProviderError("Model decision contains missing or unknown fields.")
+    risk = value.get("risk")
+    if "risk" in value and (
+        type(risk) is not str or risk not in {"routine", "sensitive", "uncertain"}
+    ):
+        raise ProviderError("Model returned an invalid action risk classification.")
     action = value.get("action")
     if action is not None:
         if type(action) is not dict:
@@ -109,4 +116,4 @@ def parse_decision(value, width: int, height: int) -> Decision:
                 ) from None
     elif value["kind"] == "action":
         raise ProviderError("Action decision requires an action.")
-    return Decision(value["kind"], summary.strip(), action)
+    return Decision(value["kind"], summary.strip(), action, risk)

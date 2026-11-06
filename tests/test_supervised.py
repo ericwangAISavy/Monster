@@ -397,3 +397,65 @@ def test_automatic_mode_cannot_dispatch_when_fresh_screen_focus_changed(qtbot):
         assert not bridge.executed and engine.stale == 1
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"op": "click", "x": 30, "y": 30, "button": "left", "count": 1},
+        {"op": "press", "key": "ENTER"},
+    ],
+)
+def test_automatic_mode_runs_classified_routine_click_and_enter(qtbot, action):
+    engine, bridge, _ = controller(
+        [
+            Decision(
+                "action",
+                "Focus the editor" if action["op"] == "click" else "Insert a newline",
+                action,
+                risk="routine",
+            ),
+            Decision("complete", "Visible result"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    questions = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(lambda rid, text: questions.append(text))
+    try:
+        engine.submit("Work in the open Notepad")
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert len(bridge.executed) == 1
+        assert len(questions) == 1 and "Confirm the visible result" in questions[0]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "risk, summary",
+    [
+        ("sensitive", "Click the control"),
+        ("uncertain", "Click the control"),
+        ("routine", "Send the email"),
+        ("routine", "Confirm payment"),
+    ],
+)
+def test_automatic_mode_explains_retained_risk_review(qtbot, risk, summary):
+    engine, bridge, _ = controller(
+        [Decision("action", summary, {"op": "click", "x": 30, "y": 30}, risk=risk)]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    questions = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(lambda rid, text: questions.append(text))
+    try:
+        engine.submit("test")
+        qtbot.waitUntil(lambda: bool(questions))
+        assert not bridge.executed
+        assert any(word in questions[0] for word in ("sensitive", "uncertain"))
+    finally:
+        engine.close()

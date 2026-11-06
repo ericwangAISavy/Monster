@@ -108,6 +108,6 @@ and outstanding native Windows qualification.
 
 In **AI model settings → Real computer control**, toggle **Ask human approval
 before every action**. It defaults on. Turning it off automates routine
-text/navigation/movement steps; clicks, submit keys, uncertain/sensitive operations
-and final completion still require review. Screen rechecks and Ctrl+Alt+X remain
+text/navigation/movement and model-classified benign clicks/Enter. Sensitive,
+uncertain or unclassified actions and final completion still require review. Screen rechecks and Ctrl+Alt+X remain
 active. See the [approval setting](docs/SUPERVISED_EXECUTION.md#choose-whether-every-step-needs-approval).

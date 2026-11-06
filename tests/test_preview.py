@@ -219,3 +219,23 @@ def test_step_approval_setting_saves_without_repeating_vision_probe(qtbot):
         assert not dialog.approve_each_step.isEnabled()
     finally:
         dialog.jobs.close()
+
+
+def test_reopened_active_settings_save_approval_only_change_without_new_probe(qtbot):
+    from dataclasses import replace
+
+    cfg = replace(config(), mode="supervised", approve_each_step=True)
+    dialog = ProviderSettings(cfg, provider_factory=FakeProvider)
+    qtbot.addWidget(dialog)
+    saved = []
+    dialog.saved.connect(saved.append)
+    try:
+        assert dialog.probed_config is not None and dialog.pending is None
+        dialog.approve_each_step.setChecked(False)
+        dialog.apply()
+        assert len(saved) == 1 and saved[0].approve_each_step is False
+        dialog.max_output.setValue(cfg.max_output_tokens + 256)
+        dialog.apply()
+        assert len(saved) == 1  # Actual inference changes still require the probe.
+    finally:
+        dialog.jobs.close()

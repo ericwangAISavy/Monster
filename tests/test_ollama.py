@@ -61,10 +61,12 @@ def test_native_discovery_vision_probe_and_decision():
         "kind": "action",
         "summary": "Click the editor",
         "action": {"op": "click", "x": 4, "y": 6, "button": "left", "count": 1},
+        "risk": "routine",
     }
     adapter = OllamaProvider(config(), transport([], decision=proposal))
     result = asyncio.run(adapter.decide("vision:small", "Write a note", b"PNG", 100, 100))
     assert result.action == proposal["action"]
+    assert result.risk == "routine"
 
 
 @pytest.mark.parametrize(
@@ -286,3 +288,18 @@ def test_step_approval_defaults_enabled_and_persists_explicit_choice(tmp_path):
     assert load(path).approve_each_step is False
     with pytest.raises(ValueError):
         replace(cfg, approve_each_step="false").validate()
+
+
+def test_action_risk_is_normalized_and_invalid_classifications_rejected():
+    action = {
+        "kind": "action",
+        "summary": "Focus editor",
+        "action": {"op": "click", "x": 10, "y": 10},
+        "risk": "routine",
+    }
+    assert parse_decision(action, 100, 100).risk == "routine"
+    for invalid in (True, None, [], "approved", "safe"):
+        with pytest.raises(ProviderError):
+            parse_decision({**action, "risk": invalid}, 100, 100)
+    legacy = {k: v for k, v in action.items() if k != "risk"}
+    assert parse_decision(legacy, 100, 100).risk is None

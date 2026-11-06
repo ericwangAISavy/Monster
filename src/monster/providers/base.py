@@ -35,6 +35,7 @@ class Decision:
     kind: str
     summary: str
     action: dict | None = None
+    risk: str | None = None
 
 
 class Provider(Protocol):

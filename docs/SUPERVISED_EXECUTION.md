@@ -1,8 +1,11 @@
 # Experimental supervised Windows execution
 
-Monster can now take a model's proposed action through the real input worker, **one action at a time and only after you approve it**. The existing GUI demo and one-screenshot preview remain available. This milestone connects the components; it does not establish general GUI reliability or qualify native Windows behavior.
+Monster can now take a model's proposed action through the real input worker, **one action at a time, with per-step approval enabled by default**. The existing GUI demo and one-screenshot preview remain available. This milestone connects the components; it does not establish general GUI reliability or qualify native Windows behavior.
 
 ## First test: a disposable Notepad document
+
+This walkthrough uses the default per-step approval setting. Automatic routine
+actions are described in the approval-setting section below.
 
 1. Update and launch from the repository:
 
@@ -12,7 +15,7 @@ Monster can now take a model's proposed action through the real input worker, **
    uv run monster
    ```
 
-2. Open tray → **AI model settings…**. Keep your existing LAN URL and model; run **Test vision + JSON** for the current settings. Select **Supervised real input · approve each action (experimental)** and Save.
+2. Open tray → **AI model settings…**. Keep your existing LAN URL and model; run **Test vision + JSON** for the current settings. Select **Real computer control (experimental)** and Save.
 3. Open Notepad manually with an empty, disposable document on display 1. Close sensitive applications and other Monster instances. Keep the target standard privilege; no administrator elevation is needed or supported.
 4. Activate with **Ctrl+Alt+M** and request a small task such as **“Type Hello from Monster into the open Notepad document.”** Start with a short sentence, not a complex cross-application workflow.
 5. Monster checks the model, captures display 1 with its own overlays hidden, and shows an approval in the existing pill. Review the operation, coordinates/key/text payload and visible target. Scroll long text to inspect it. No input is sent just because a proposal appeared.
@@ -95,11 +98,12 @@ In tray → **AI model settings…**, choose **Real computer control (experiment
 action**:
 
 - **Checked (default):** every input transaction needs an explicit approval.
-- **Unchecked:** routine text entry, pointer movement, scrolling and selected
-  editing/navigation keys may proceed automatically. Clicks, Enter/Space/function
-  keys, undo and unknown operations still need review because their effect depends
-  on the visible application. A summary mentioning sensitive intent also escalates
-  review; a model summary can never authorize an otherwise gated operation.
+- **Unchecked:** routine typing, movement and navigation may proceed automatically.
+  Ordinary clicks and Enter/Space/Start also proceed automatically when the model
+  explicitly classifies their visible target/effect as `routine`. Actions classified
+  `sensitive` or `uncertain`, unclassified clicks, and locally detected sensitive
+  intent still require review. Every retained prompt states its reason. Unsupported
+  shortcuts and existing blocked actions remain blocked.
 
 Final visible-result confirmation and clarification prompts remain enabled in
 both cases. Existing policy-blocked actions remain blocked. This setting controls
@@ -108,7 +112,8 @@ The checkbox is disabled in demo/preview modes, which do not execute real input.
 
 The choice is saved in `ollama.json`; old settings default to approval enabled.
 Changing it applies to the next run and does not require another vision probe
-when the actual inference settings are unchanged. Opening settings stops any
+when reopening already-saved preview/control settings with unchanged inference
+values. Runtime model checks still occur at task start. Opening settings stops any
 active real-input run rather than changing its policy in flight.
 
 Automatic steps take the same fresh screenshot, scene/focus/geometry checks,
@@ -118,3 +123,17 @@ approval event is generated. Ctrl+Alt+X always remains the independent worker
 stop. Routine-operation classification cannot guarantee semantic safety in every
 application; this experimental mode remains intended for a disposable test
 workspace, not unattended sensitive workflows.
+
+### Routine-action classification
+
+Native Ollama action decisions now include `risk: routine | sensitive | uncertain`.
+The prompt distinguishes benign editor/navigation clicks and harmless Enter
+operations from sending, deletion, payments, installation, credentials or other
+consequential actions. Local sensitive-intent detection can escalate a `routine`
+proposal to review. Legacy responses without risk metadata remain compatible,
+but their clicks/submit keys are treated as unclassified and ask for review.
+
+This model assessment is fallible and is not proof that a GUI action is safe. The
+experimental mode is intended for non-sensitive tests; scene validation, operation
+limits, blocked-action policy and independent stop remain active. Opening settings
+or changing policy never silently authorizes an already-pending proposal.

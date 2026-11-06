@@ -8,23 +8,32 @@ from PySide6.QtGui import QImage
 from monster.computer.contracts import Bounds, validate_action
 
 
-def needs_human_approval(decision):
-    """Only routine primitives may skip review; unknown GUI targets stay gated.
+def approval_reason(decision):
+    """User-authorized automatic mode still escalates sensitive/uncertain effects.
 
-    Summary text can escalate review, never authorize clicks or submit keys.
-    This is a conservative operation rule, not a semantic safety guarantee.
+    Model classification is fallible. Deterministic escalation and blocked-action
+    validation remain in effect; this is not a security boundary for arbitrary apps.
     """
     action = decision.action or {}
     if re.search(
-        r"(?i)\b(send|submit|delete|remove|purchase|buy|pay|transfer|install|password|"
-        r"credential|share|publish|overwrite|save|confirm|accept)\b",
+        r"(?i)\b(send(?:ing)?|submit(?:ting)?|delet(?:e|ing|ion)|remov(?:e|ing)|"
+        r"purchas(?:e|ing)|buy(?:ing)?|pay(?:ment|ments|ing)?|transfer(?:ring)?|install(?:ing|ation)?|"
+        r"password|credential(?:s)?|shar(?:e|ing)|publish(?:ing)?|overwrit(?:e|ing)|save)\b",
         decision.summary,
     ):
-        return True
+        return "Potentially sensitive action detected."
+    if decision.risk == "sensitive":
+        return "The model marked this action sensitive."
+    if decision.risk == "uncertain":
+        return "The model is uncertain about this action's target or effect."
     if action.get("op") in {"move", "scroll", "text"}:
-        return False
+        return None
+    if action.get("op") == "click":
+        return (
+            None if decision.risk == "routine" else "Click target/effect has not been classified."
+        )
     if action.get("op") == "press":
-        return action.get("key") not in {
+        if action.get("key") in {
             "LEFT",
             "RIGHT",
             "UP",
@@ -35,17 +44,25 @@ def needs_human_approval(decision):
             "PAGEDOWN",
             "TAB",
             "BACKSPACE",
-        }
-    if action.get("op") == "chord":
-        return action.get("keys") not in (
-            ["CTRL", "A"],
-            ["CTRL", "C"],
-            ["CTRL", "HOME"],
-            ["CTRL", "END"],
-            ["SHIFT", "LEFT"],
-            ["SHIFT", "RIGHT"],
-        )
-    return True  # Clicks, Enter/Space, function keys, ambiguous and future operations.
+        }:
+            return None
+        if action.get("key") in {"ENTER", "SPACE", "WIN"} and decision.risk == "routine":
+            return None
+        return "This key's effect needs review."
+    if action.get("op") == "chord" and action.get("keys") in (
+        ["CTRL", "A"],
+        ["CTRL", "C"],
+        ["CTRL", "HOME"],
+        ["CTRL", "END"],
+        ["SHIFT", "LEFT"],
+        ["SHIFT", "RIGHT"],
+    ):
+        return None
+    return "This operation needs review."
+
+
+def needs_human_approval(decision):
+    return approval_reason(decision) is not None
 
 
 def prepare_action(action, observation):

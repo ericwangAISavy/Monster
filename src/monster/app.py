@@ -494,8 +494,10 @@ class CompanionApp:
             return
         import json
 
-        text = f"{self.last_preview.kind}: {self.last_preview.summary}\n\n" + json.dumps(
-            self.last_preview.action, ensure_ascii=False, indent=2
+        text = (
+            f"{self.last_preview.kind}: {self.last_preview.summary}\n"
+            f"Risk: {self.last_preview.risk or 'unclassified'}\n\n"
+            + json.dumps(self.last_preview.action, ensure_ascii=False, indent=2)
         )
         self._show_details(
             "Monster · action proposal",

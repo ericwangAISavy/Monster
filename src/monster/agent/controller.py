@@ -7,7 +7,7 @@ import uuid
 from PySide6.QtCore import QTimer, Signal
 
 from monster.agent.input_bridge import InputBridge
-from monster.agent.validation import needs_human_approval, prepare_action, scene_matches
+from monster.agent.validation import approval_reason, prepare_action, scene_matches
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import OllamaProvider
@@ -242,15 +242,22 @@ class SupervisedController(TaskController):
                 except (ValueError, TypeError):
                     self.fail("Proposed action is outside the supervised demo policy.")
                     return
+                reason = (
+                    "Per-step approval is enabled."
+                    if self.config.approve_each_step
+                    else approval_reason(result)
+                )
                 text = (
-                    "REAL INPUT · review target desktop.\n"
+                    "REAL INPUT · "
+                    + (reason or "Review target desktop.")
+                    + "\n"
                     + result.summary
                     + "\n"
                     + json.dumps(result.action, ensure_ascii=False)
                     + "\nCtrl+Alt+X stops."
                 )
                 self.phase = "approval"
-                if not self.config.approve_each_step and not needs_human_approval(result):
+                if not self.config.approve_each_step and reason is None:
                     self._begin_recheck(restore=False)
                     return
             else:
