@@ -364,3 +364,29 @@ text proposal, and verify the draft appears exactly once and remains unsent. Onl
 then approve final completion. Record whether the focused child editor/caret is
 restored after the review pill closes. Also test Decline and Ctrl+Alt+X at focus
 review; neither should type or issue another click.
+
+### Review binding and clarification handoff
+
+Each input proposal is now deep-copied before review/recheck. The controller
+compares the current proposal with that snapshot both when beginning recheck and
+immediately before dispatch. A changed action, payload or proposal metadata stops
+incomplete; approval cannot authorize a different valid text payload or an
+in-place mutation of the original action dictionary. Automatic routine steps use
+the same binding through their scene recheck. The snapshot stays in RAM and is
+cleared when the task ends; no payload is added to shared diagnostics.
+
+A real clarification reply now restores the previously observed target window
+before a fresh capture, just as an explicit action review does. This prevents the
+clarification pill's focus from being adopted as the task target. Restoration and
+foreground checks remain required, and ordinary automatic steps still do not
+restore focus after manual takeover. Escape/dismiss cancels directly without
+submitting a fake clarification reply or requesting a new screenshot.
+
+Portable regressions reproduce changed-proposal dispatch, clarification focus
+loss, and the extra capture formerly triggered by dismissal. They cover exact
+binding in both review and automatic modes, replacement/in-place mutations before
+approval and during recheck, restored clarification focus, and direct dismissal.
+Native focus restoration still requires a Windows check: answer a clarification
+while Slack is the task target, then confirm the original composer receives the
+single reviewed text insertion. Dismissing that clarification must stop without
+another action.

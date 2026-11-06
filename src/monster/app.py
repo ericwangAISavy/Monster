@@ -348,8 +348,8 @@ class CompanionApp:
         self.activation_target = None
         self.isolation.suppress_restore(self.pill)
         if self.pending_question:
-            # Dismissal never grants approval. Explicitly reject/cancel the request.
-            self.controller.respond(self.pending_question[0], "reject")
+            # Cancel directly: "reject" is valid free text in a clarification,
+            # so sending it as a response could schedule another observation.
             self.controller.cancel()
             self.pending_question = None
         self.pill.hide()

@@ -1143,3 +1143,124 @@ def test_focus_confirmation_still_rejects_changed_foreground(qtbot):
         assert len(bridge.executed) == 1 and engine.calls == 1
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("mutation", ["replace", "in_place"])
+@pytest.mark.parametrize("when", ["before_approval", "during_recheck"])
+def test_approval_cannot_authorize_a_changed_valid_text_proposal(qtbot, mutation, when):
+    engine, bridge, _ = controller(
+        [Decision("action", "Type reviewed text", {"op": "text", "text": "Hello"})]
+    )
+    questions, failures = [], []
+
+    def alter():
+        if mutation == "replace":
+            engine.pending = Decision("action", "Type different text", {"op": "text", "text": "Other"})
+        else:
+            engine.pending.action["text"] = "Other"
+
+    def capture():
+        if engine.phase == "rechecking" and when == "during_recheck":
+            alter()
+        engine.observation_ready(observation(), engine.generation)
+
+    engine.capture_requested.connect(capture)
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit('Type "Hello" into the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "approval")
+        if when == "before_approval":
+            alter()
+        engine.respond(questions[-1], "approve")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+        assert "proposal changed" in failures[0].lower()
+    finally:
+        engine.close()
+
+
+def test_clarification_restores_reviewed_window_before_fresh_observation(qtbot):
+    engine, bridge, _ = controller(
+        [
+            Decision("clarify", "What exact text should I type?"),
+            Decision("action", "Type reply", {"op": "text", "text": "Hello"}),
+            Decision("complete", "Draft is visible"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    current = [77]
+    restores, failures = [], []
+
+    def capture():
+        if engine.restore_focus is not None:
+            restores.append(engine.restore_focus)
+            current[0] = engine.restore_focus
+            engine.restore_focus = None
+        engine.observation_ready(observation(foreground=current[0]), engine.generation)
+
+    engine.capture_requested.connect(capture)
+    engine.clarification_requested.connect(lambda rid, text: current.__setitem__(0, 999))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Type a message into the current Slack composer. Do not send.")
+        qtbot.waitUntil(lambda: engine.phase == "clarifying")
+        engine.respond(engine.question_id, "Hello")
+        qtbot.waitUntil(lambda: engine.phase == "confirming" or bool(failures))
+        assert not failures
+        assert restores == [77]
+        assert [item[0] for item in bridge.executed] == [{"op": "text", "text": "Hello"}]
+    finally:
+        engine.close()
+
+
+def test_dismissing_clarification_cancels_without_a_reply_or_new_capture(
+    qtbot, qapp, tmp_path, monkeypatch
+):
+    from monster.app import CompanionApp
+    from monster.lifecycle import MockTaskController
+
+    engine, bridge, _ = controller([Decision("clarify", "What text should I type?")])
+    ui = CompanionApp(qapp, MockTaskController(), tmp_path / "prefs.json", enable_tray=False)
+    captures = []
+
+    def capture():
+        captures.append(engine.generation)
+        engine.observation_ready(observation(), engine.generation)
+
+    monkeypatch.setattr(ui, "_capture_for_preview", capture)
+    ui.switch_controller(engine)
+    try:
+        engine.submit("Type a message in the current Slack composer. Do not send.")
+        qtbot.waitUntil(lambda: engine.phase == "clarifying")
+        count = len(captures)
+        ui.dismiss()
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        assert len(captures) == count
+        assert not bridge.executed
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_automatic_step_keeps_exact_proposal_binding_through_recheck(qtbot):
+    engine, bridge, _ = controller(
+        [Decision("action", "Type planned text", {"op": "text", "text": "Hello"})]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+
+    def capture():
+        if engine.phase == "rechecking":
+            engine.pending.action["text"] = "Other"
+        engine.observation_ready(observation(), engine.generation)
+
+    engine.capture_requested.connect(capture)
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit('Type "Hello" into the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+        assert "proposal changed" in failures[0].lower()
+    finally:
+        engine.close()

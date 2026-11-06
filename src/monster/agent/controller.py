@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+from copy import deepcopy
 
 from PySide6.QtCore import QTimer, Signal
 
@@ -49,6 +50,7 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.last_verification = None
+        self.reviewed_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
@@ -85,6 +87,7 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.last_verification = None
+        self.reviewed_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
@@ -362,6 +365,8 @@ class SupervisedController(TaskController):
             # the now-stale image that was submitted to the verifier.
             self._capture()
         elif self.phase == "comparing":
+            if not self._reviewed_proposal_matches():
+                return
             if not result or time.monotonic() - self.observation.captured_at > 2:
                 self.stale += 1
                 if self.stale > 2:
@@ -436,6 +441,7 @@ class SupervisedController(TaskController):
                     + json.dumps(result.action, ensure_ascii=False)
                     + "\nCtrl+Alt+X stops."
                 )
+                self.reviewed_proposal = deepcopy(result)
                 self.phase = "approval"
                 if not self.config.approve_each_step and reason is None:
                     self._begin_recheck(restore=False)
@@ -471,6 +477,7 @@ class SupervisedController(TaskController):
         self.question_id = None
         if self.phase == "clarifying":
             self.instruction = (self.instruction + "\nUser clarification: " + answer[:1000])[:3000]
+            self.restore_focus = self.observation.foreground
             self.phase = "observing"
             self._capture()
         elif answer != "approve":
@@ -510,7 +517,15 @@ class SupervisedController(TaskController):
                 "propose the requested draft text or ask for help."
             )
 
+    def _reviewed_proposal_matches(self):
+        if self.reviewed_proposal is None or self.pending != self.reviewed_proposal:
+            self.fail("Action proposal changed during review/recheck. No changed input was authorized.")
+            return False
+        return True
+
     def _begin_recheck(self, restore):
+        if not self._reviewed_proposal_matches():
+            return
         self.phase = "rechecking"
         # Automatic steps never steal focus back after manual takeover.
         self.restore_focus = self.observation.foreground if restore else None
@@ -587,6 +602,7 @@ class SupervisedController(TaskController):
         self.timings.begin(("input", self.input_job), "cleanup")
         self.instruction = ""
         self.observation = self.pending = None
+        self.reviewed_proposal = None
 
     def cancel(self):
         if self.phase != "closing" and self.active:
