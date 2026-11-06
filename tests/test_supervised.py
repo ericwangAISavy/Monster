@@ -314,3 +314,86 @@ def test_post_approval_exception_has_stage_and_never_dispatches(qtbot, monkeypat
         assert engine.phase == "idle"
     finally:
         engine.close()
+
+
+def test_automatic_routine_step_rechecks_then_executes_without_step_prompt(qtbot):
+    engine, bridge, _ = controller(
+        [
+            Decision("action", "Type hello", {"op": "text", "text": "Hello"}),
+            Decision("complete", "Hello is visible"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    captures, questions, finished = [], [], []
+
+    def capture():
+        captures.append(engine.phase)
+        # Automatic mode must not restore a window over human focus changes.
+        assert engine.restore_focus is None
+        engine.observation_ready(observation(), engine.generation)
+
+    engine.capture_requested.connect(capture)
+    engine.approval_requested.connect(lambda rid, text: questions.append((rid, text)))
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("Write hello")
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert len(bridge.executed) == 1
+        assert captures[:2] == ["observing", "rechecking"]
+        assert len(questions) == 1 and "Confirm the visible result" in questions[0][1]
+        assert not finished
+        engine.respond(questions[0][0], "approve")
+        qtbot.waitUntil(lambda: bool(finished))
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        Decision("action", "Click the editor", {"op": "click", "x": 30, "y": 30}),
+        Decision("action", "Submit", {"op": "press", "key": "ENTER"}),
+        Decision("action", "Send a message", {"op": "text", "text": "Hello"}),
+    ],
+)
+def test_automatic_mode_retains_ambiguous_and_sensitive_review(qtbot, decision):
+    engine, bridge, _ = controller([decision])
+    engine.config = replace(engine.config, approve_each_step=False)
+    questions = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    try:
+        engine.submit("test")
+        qtbot.waitUntil(lambda: bool(questions))
+        assert not bridge.executed
+        engine.respond(questions[0], "reject")
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+    finally:
+        engine.close()
+
+
+def test_automatic_mode_cannot_dispatch_when_fresh_screen_focus_changed(qtbot):
+    engine, bridge, _ = controller(
+        [
+            Decision("action", "Type hello", {"op": "text", "text": "Hello"}),
+            Decision("unable", "Need user intervention"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    frames = []
+
+    def capture():
+        frames.append(True)
+        engine.observation_ready(
+            observation(foreground=77 if len(frames) == 1 else 88), engine.generation
+        )
+
+    engine.capture_requested.connect(capture)
+    try:
+        engine.submit("test")
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        assert not bridge.executed and engine.stale == 1
+    finally:
+        engine.close()

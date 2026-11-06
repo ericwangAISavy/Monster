@@ -275,3 +275,14 @@ def test_incomplete_response_distinguishes_server_error_from_missing_completion(
         asyncio.run(adapter.decide("vision:small", "test", b"PNG", 100, 100))
     assert expected in str(error.value)
     assert "private" not in str(error.value)
+
+
+def test_step_approval_defaults_enabled_and_persists_explicit_choice(tmp_path):
+    path = tmp_path / "ollama.json"
+    path.write_text("{}")
+    assert load(path).approve_each_step is True
+    cfg = replace(config(), approve_each_step=False)
+    save(path, cfg)
+    assert load(path).approve_each_step is False
+    with pytest.raises(ValueError):
+        replace(cfg, approve_each_step="false").validate()

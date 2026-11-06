@@ -241,7 +241,15 @@ class CompanionApp:
                 "GUI demo only — no model or computer actions. "
                 if self.controller.is_mock
                 else (
-                    "Supervised real input — approve each action; Ctrl+Alt+X stops. "
+                    (
+                        "Real input — "
+                        + (
+                            "approve each action"
+                            if self.model_config.approve_each_step
+                            else "routine steps automatic"
+                        )
+                        + "; Ctrl+Alt+X stops. "
+                    )
                     if getattr(self.controller, "is_supervised", False)
                     else "Ollama preview only — one screenshot per task; no input actions. "
                 )
@@ -321,9 +329,14 @@ class CompanionApp:
         self.current_state = State(state)
         self.companion.set_state(state)
         if self.tray:
-            self.tray.setToolTip(
-                f"Monster · {'GUI demo · ' if self.controller.is_mock else 'Supervised real input · ' if getattr(self.controller, 'is_supervised', False) else 'Ollama preview · '}{state}"
-            )
+            mode = "GUI demo" if self.controller.is_mock else "Ollama preview"
+            if getattr(self.controller, "is_supervised", False):
+                mode = "Real input · " + (
+                    "step approval ON"
+                    if self.model_config.approve_each_step
+                    else "routine steps automatic"
+                )
+            self.tray.setToolTip(f"Monster · {mode} · {state}")
 
     def _return_idle(self):
         if not self.active and self.pill.mode not in ("input", "clarification", "approval"):

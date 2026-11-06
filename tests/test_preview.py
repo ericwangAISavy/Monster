@@ -197,3 +197,25 @@ def test_advanced_inference_fields_persist_and_invalidate_probe(qtbot):
         assert "probe" in dialog.status.text()
     finally:
         dialog.jobs.close()
+
+
+def test_step_approval_setting_saves_without_repeating_vision_probe(qtbot):
+    from dataclasses import replace
+
+    dialog = ProviderSettings(replace(config(), mode="supervised"), provider_factory=FakeProvider)
+    qtbot.addWidget(dialog)
+    saved = []
+    dialog.saved.connect(saved.append)
+    try:
+        assert dialog.approve_each_step.isChecked() and dialog.approve_each_step.isEnabled()
+        dialog.probe()
+        qtbot.waitUntil(lambda: dialog.pending is None)
+        assert dialog.probed_config is not None
+        dialog.approve_each_step.setChecked(False)
+        assert dialog.probed_config is not None
+        dialog.apply()
+        assert saved[-1].approve_each_step is False
+        dialog.mode.setCurrentIndex(dialog.mode.findData("preview"))
+        assert not dialog.approve_each_step.isEnabled()
+    finally:
+        dialog.jobs.close()

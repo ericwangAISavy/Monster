@@ -8,6 +8,46 @@ from PySide6.QtGui import QImage
 from monster.computer.contracts import Bounds, validate_action
 
 
+def needs_human_approval(decision):
+    """Only routine primitives may skip review; unknown GUI targets stay gated.
+
+    Summary text can escalate review, never authorize clicks or submit keys.
+    This is a conservative operation rule, not a semantic safety guarantee.
+    """
+    action = decision.action or {}
+    if re.search(
+        r"(?i)\b(send|submit|delete|remove|purchase|buy|pay|transfer|install|password|"
+        r"credential|share|publish|overwrite|save|confirm|accept)\b",
+        decision.summary,
+    ):
+        return True
+    if action.get("op") in {"move", "scroll", "text"}:
+        return False
+    if action.get("op") == "press":
+        return action.get("key") not in {
+            "LEFT",
+            "RIGHT",
+            "UP",
+            "DOWN",
+            "HOME",
+            "END",
+            "PAGEUP",
+            "PAGEDOWN",
+            "TAB",
+            "BACKSPACE",
+        }
+    if action.get("op") == "chord":
+        return action.get("keys") not in (
+            ["CTRL", "A"],
+            ["CTRL", "C"],
+            ["CTRL", "HOME"],
+            ["CTRL", "END"],
+            ["SHIFT", "LEFT"],
+            ["SHIFT", "RIGHT"],
+        )
+    return True  # Clicks, Enter/Space, function keys, ambiguous and future operations.
+
+
 def prepare_action(action, observation):
     action = validate_action(
         action, [Bounds(0, 0, observation.bounds.width, observation.bounds.height)]

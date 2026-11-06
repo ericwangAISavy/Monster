@@ -20,6 +20,7 @@ class OllamaConfig:
     max_output_tokens: int = 4096
     keep_alive: str = "5m"
     thinking: bool = False
+    approve_each_step: bool = True
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -69,6 +70,8 @@ class OllamaConfig:
             raise ValueError("Choose a supported keep-loaded duration.")
         if type(self.thinking) is not bool:
             raise ValueError("Thinking must be enabled or disabled explicitly.")
+        if type(self.approve_each_step) is not bool:
+            raise ValueError("Per-step approval must be enabled or disabled explicitly.")
         if (
             type(self.model) is not str
             or len(self.model) > 200

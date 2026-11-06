@@ -47,8 +47,8 @@ class ProviderSettings(QDialog):
         layout = QVBoxLayout(self)
         note = QLabel(
             "Connect to your own local/LAN Ollama server. Preview mode sends one "
-            "desktop screenshot to this server. Supervised mode executes only actions you approve "
-            "on a disposable test desktop. Ctrl+Alt+X stops. No sensitive workflows."
+            "desktop screenshot to this server. Real control follows your step approval setting. "
+            "Use a disposable test desktop. Ctrl+Alt+X stops."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -72,9 +72,7 @@ class ProviderSettings(QDialog):
         self.mode = QComboBox()
         self.mode.addItem("GUI demo · no model requests", "demo")
         self.mode.addItem("Ollama screenshot/action preview · no input", "preview")
-        self.mode.addItem(
-            "Supervised real input · approve each action (experimental)", "supervised"
-        )
+        self.mode.addItem("Real computer control (experimental)", "supervised")
         self.mode.setCurrentIndex(self.mode.findData(config.mode))
         form.addRow("Server", self.url)
         form.addRow("Installed model", self.model)
@@ -82,6 +80,20 @@ class ProviderSettings(QDialog):
         form.addRow(self.http)
         form.addRow(self.local)
         form.addRow("Task mode", self.mode)
+        self.approve_each_step = QCheckBox("Ask human approval before every action")
+        self.approve_each_step.setChecked(config.approve_each_step)
+        self.approve_each_step.setEnabled(config.mode == "supervised")
+        self.mode.currentIndexChanged.connect(
+            lambda _: self.approve_each_step.setEnabled(self.mode.currentData() == "supervised")
+        )
+        form.addRow(self.approve_each_step)
+        approval_hint = QLabel(
+            "Unchecked: routine typing, movement, scrolling and navigation run "
+            "automatically. Clicks, submit keys and uncertain/sensitive actions "
+            "still ask. Final completion confirmation stays on."
+        )
+        approval_hint.setWordWrap(True)
+        form.addRow(approval_hint)
         layout.addLayout(form)
         self.advanced_toggle = QToolButton()
         self.advanced_toggle.setText("Advanced inference settings")
@@ -162,6 +174,7 @@ class ProviderSettings(QDialog):
             self.http.isChecked(),
             self.local.isChecked(),
             self.mode.currentData(),
+            approve_each_step=self.approve_each_step.isChecked(),
             **self.inference_values(),
         )
         config.validate()
@@ -234,6 +247,7 @@ class ProviderSettings(QDialog):
             self.http.isChecked(),
             self.local.isChecked(),
             "demo",
+            approve_each_step=True,  # Execution policy does not change model compatibility.
             **self.inference_values(),
         )
         config.validate()
@@ -289,7 +303,7 @@ class ProviderSettings(QDialog):
             if self.pending:
                 raise ValueError("Wait for the current check or cancel it before saving.")
             if config.mode in {"preview", "supervised"} and self.probed_config != replace(
-                config, mode="demo"
+                config, mode="demo", approve_each_step=True
             ):
                 raise ValueError(
                     "Run and pass the vision + JSON probe for these exact settings first."

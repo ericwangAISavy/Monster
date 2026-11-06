@@ -1,4 +1,4 @@
-"""Experimental supervised loop: every input action and final result need user review."""
+"""Experimental visual loop with configurable step review and human-confirmed completion."""
 
 import json
 import time
@@ -7,7 +7,7 @@ import uuid
 from PySide6.QtCore import QTimer, Signal
 
 from monster.agent.input_bridge import InputBridge
-from monster.agent.validation import prepare_action, scene_matches
+from monster.agent.validation import needs_human_approval, prepare_action, scene_matches
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import OllamaProvider
@@ -250,6 +250,9 @@ class SupervisedController(TaskController):
                     + "\nCtrl+Alt+X stops."
                 )
                 self.phase = "approval"
+                if not self.config.approve_each_step and not needs_human_approval(result):
+                    self._begin_recheck(restore=False)
+                    return
             else:
                 text = (
                     "Confirm the visible result meets your task:\n"
@@ -283,9 +286,13 @@ class SupervisedController(TaskController):
         elif self.phase == "confirming":
             self._terminate("complete", "Completed · visible result confirmed by you")
         elif self.phase == "approval":
-            self.phase = "rechecking"
-            self.restore_focus = self.observation.foreground
-            self._capture()
+            self._begin_recheck(restore=True)
+
+    def _begin_recheck(self, restore):
+        self.phase = "rechecking"
+        # Automatic steps never steal focus back after manual takeover.
+        self.restore_focus = self.observation.foreground if restore else None
+        self._capture()
 
     def capture_failed(self, error):
         self.fail(error)

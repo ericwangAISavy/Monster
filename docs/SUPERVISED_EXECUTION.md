@@ -87,3 +87,34 @@ Copy that report with your OS and model identifier when asking for help. The old
 be emitted by local screen revalidation and was not sufficient to identify the
 cause. A stage-specific report is diagnostic evidence, not proof that an
 underlying Windows-only failure has already been fixed.
+
+## Choose whether every step needs approval
+
+In tray → **AI model settings…**, choose **Real computer control (experimental)**
+(the existing `supervised` mode), then use **Ask human approval before every
+action**:
+
+- **Checked (default):** every input transaction needs an explicit approval.
+- **Unchecked:** routine text entry, pointer movement, scrolling and selected
+  editing/navigation keys may proceed automatically. Clicks, Enter/Space/function
+  keys, undo and unknown operations still need review because their effect depends
+  on the visible application. A summary mentioning sensitive intent also escalates
+  review; a model summary can never authorize an otherwise gated operation.
+
+Final visible-result confirmation and clarification prompts remain enabled in
+both cases. Existing policy-blocked actions remain blocked. This setting controls
+per-step review, not tool permissions, data destinations or the emergency stop.
+The checkbox is disabled in demo/preview modes, which do not execute real input.
+
+The choice is saved in `ollama.json`; old settings default to approval enabled.
+Changing it applies to the next run and does not require another vision probe
+when the actual inference settings are unchanged. Opening settings stops any
+active real-input run rather than changing its policy in flight.
+
+Automatic steps take the same fresh screenshot, scene/focus/geometry checks,
+worker dispatch, post-action observation and task limits as approved steps. They
+**do not restore an old foreground window** after human focus changes. No fake
+approval event is generated. Ctrl+Alt+X always remains the independent worker
+stop. Routine-operation classification cannot guarantee semantic safety in every
+application; this experimental mode remains intended for a disposable test
+workspace, not unattended sensitive workflows.
