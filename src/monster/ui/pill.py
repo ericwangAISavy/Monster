@@ -1,10 +1,12 @@
 from PySide6.QtCore import QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -53,11 +55,20 @@ class Pill(QWidget):
         row.addWidget(self.input, 1)
         self.message = QLabel()
         self.message.setWordWrap(True)
+        self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.message.setTextFormat(Qt.TextFormat.PlainText)
         self.message.setStyleSheet(
             "color: #eeebff; background: transparent; font: 12px 'Segoe UI';"
         )
-        row.addWidget(self.message, 1)
+        self.message_area = QScrollArea()
+        self.message_area.setWidgetResizable(True)
+        self.message_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.message_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.message_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.message_area.viewport().setAutoFillBackground(False)
+        self.message_area.setWidget(self.message)
+        self.message_area.setMinimumSize(0, 0)
+        row.addWidget(self.message_area, 1)
         self.send = QPushButton("➤")
         self.send.setAccessibleName("Send instruction")
         self.send.setToolTip("Send · Enter (GUI demo)")
@@ -103,7 +114,8 @@ class Pill(QWidget):
         self.request_id = ""
         self.input.setVisible(mode in ("input", "clarification"))
         self.send.setVisible(mode in ("input", "clarification"))
-        self.message.setVisible(mode in ("status", "approval"))
+        self.message_area.setVisible(mode in ("status", "approval"))
+        self.message.setMinimumHeight(0)
         self.buttons.setVisible(mode == "approval")
         self.setFixedHeight(46 if mode != "approval" else 112)
         self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, mode == "status")
@@ -130,13 +142,14 @@ class Pill(QWidget):
         self._reset("approval" if approval else "clarification")
         self.request_id = request_id
         if approval:
-            self.approve.setEnabled(len(text) <= 400)
-            if len(text) > 400:
+            self.approve.setEnabled(len(text) <= 3500)
+            if len(text) > 3500:
                 text = "Action details exceed this compact view. Decline and review manually."
             self.message.setText(text)
             metrics = self.message.fontMetrics().boundingRect(
-                QRect(0, 0, 258, 1000), Qt.TextFlag.TextWordWrap, text
+                QRect(0, 0, 244, 10000), Qt.TextFlag.TextWordWrap, text
             )
+            self.message.setMinimumHeight(metrics.height())
             self.setFixedHeight(max(112, min(280, metrics.height() + 66)))
             # Do not bind Enter to Approve. Explicit click/tab navigation is required.
             self.reject.setFocus()

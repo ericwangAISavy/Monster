@@ -144,7 +144,7 @@ def test_oversized_approval_cannot_be_approved(qtbot):
     qtbot.addWidget(pill)
     answers = []
     pill.answered.connect(lambda rid, value: answers.append(value))
-    pill.show_question("oversized", "Detailed action " * 60, True)
+    pill.show_question("oversized", "Detailed action " * 300, True)
     assert not pill.approve.isEnabled()
     pill._answer("approve")
     assert not answers

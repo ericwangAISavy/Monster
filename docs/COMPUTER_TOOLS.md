@@ -1,6 +1,6 @@
 # Windows computer tools: manual qualification milestone
 
-Monster now has real local **Screenshot, Mouse and Keyboard** primitives. Ollama/MCP are not required for these tools. The companion defaults to its original mock task controller and also offers opt-in Ollama screenshot/action preview. No autonomous engine or model has been connected to real input; see [LAN Ollama](OLLAMA.md).
+Monster now has real local **Screenshot, Mouse and Keyboard** primitives. Ollama/MCP are not required for these tools. The companion defaults to its original mock task controller and also offers opt-in Ollama screenshot/action preview. A separate experimental supervised controller can now connect reviewed model actions to these tools; see [Supervised execution](SUPERVISED_EXECUTION.md). The standalone harness remains a deliberate one-action test.
 
 ## Install and test
 

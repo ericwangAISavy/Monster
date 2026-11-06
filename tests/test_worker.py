@@ -112,3 +112,22 @@ def test_worker_heartbeat_loss_disarms_and_releases(monkeypatch):
         connection.close()
         thread.join(timeout=2)
     assert not thread.is_alive()
+
+
+def test_explicit_disarm_has_one_ack_and_allows_rearm(monkeypatch):
+    _, _, connection, thread = worker_fixture(monkeypatch)
+    try:
+        wait_event(connection, {"ready"})
+        send(connection, {"op": "arm"})
+        first = wait_event(connection, {"armed"})["generation"]
+        send(connection, {"op": "stop"})
+        assert wait_event(connection, {"stopped"})["cleanup_ok"]
+        send(connection, {"op": "arm"})
+        # A stale duplicate 'disarmed' event must not break the next arm.
+        event = wait_event(connection, {"armed", "disarmed"})
+        assert event["event"] == "armed" and event["generation"] != first
+        send(connection, {"op": "shutdown"})
+        wait_event(connection, {"closed"})
+    finally:
+        connection.close()
+        thread.join(timeout=2)

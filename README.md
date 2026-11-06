@@ -94,3 +94,14 @@ inspect **Last action preview…** from the tray.
 **Preview sends one desktop screenshot to your configured local/LAN server; it
 proposes an action but never executes it.** The default remains the GUI demo.
 See [LAN Ollama guide](docs/OLLAMA.md) for server setup, privacy, tests and limits.
+
+## Supervised real input (experimental)
+
+AI model settings now also offers **Supervised real input · approve each action**.
+Start with an already-open disposable Notepad document. Monster asks for approval
+of each action, rechecks the screen, executes through the independent-stop worker,
+and observes the result. Completion requires your visible-result confirmation.
+**Ctrl+Alt+X** stops; no unattended or sensitive workflows are supported.
+
+See [Supervised execution](docs/SUPERVISED_EXECUTION.md) for instructions, limits
+and outstanding native Windows qualification.

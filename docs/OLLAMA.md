@@ -82,3 +82,10 @@ The sandboxed development runner restricts local socket writes, including asynci
 **Not yet verified:** connection to your LAN server, a real installed model's probe/decision quality, server-side local-only configuration, Windows captured-pixel isolation, mixed-DPI grounding, and model latency/VRAM use. To qualify: run discovery and the probe on your server, deliberately select a text-only model, disconnect/restart the server during a task, cancel during a slow inference, switch models, inspect the saved overlay diagnostic, and compare preview coordinates with the actual screenshot. Record model digest/quantization, server version, hardware, DPI and outcomes.
 
 After tool qualification and measured grounding pass, the next stage is a restricted supervised Notepad loop with policy/focus/freshness checks and independent input-stop integration. A successful JSON/color probe alone is not sufficient to enable autonomous execution.
+
+## Subsequent milestone: supervised execution
+
+The separate opt-in **Supervised real input** task mode now connects approved
+model actions to the real worker. Preview mode remains non-executing. See
+[Supervised execution](SUPERVISED_EXECUTION.md) before enabling the experimental
+mode; native Windows qualification remains outstanding.

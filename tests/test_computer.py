@@ -217,3 +217,15 @@ def test_partial_native_error_disarms_without_logging_payload():
     assert receipt["status"] == "partial_or_unknown"
     assert "private" not in str(receipt) and "secret" not in str(receipt)
     assert not executor.armed
+
+
+def test_keyboard_focus_and_geometry_expectations_are_enforced():
+    backend, executor, generation = armed()
+    backend.foreground = lambda: 77
+    receipt = executor.execute({"op": "text", "text": "Hi"}, generation, expected_focus=88)
+    assert receipt["status"] == "rejected" and not backend.events
+    generation = executor.arm()
+    receipt = executor.execute(
+        {"op": "text", "text": "Hi"}, generation, expected_geometry=[Bounds(0, 0, 10, 10)]
+    )
+    assert receipt["status"] == "rejected" and not backend.events

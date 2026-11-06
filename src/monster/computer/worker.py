@@ -11,11 +11,11 @@ import queue
 import threading
 from ctypes import wintypes
 
-from monster.computer.contracts import integer
+from monster.computer.contracts import Bounds, integer
 from monster.computer.executor import InputExecutor
 from monster.computer.windows import WindowsInput
 
-MAX_MESSAGE = 24000
+MAX_MESSAGE = 32768
 
 
 def send(connection, value):
@@ -68,7 +68,11 @@ def run_worker(connection):
                     request = jobs.get(timeout=0.05)
                 except queue.Empty:
                     continue
-                receipt = executor.execute(request["action"], request["generation"])
+                geometry = request.get("geometry")
+                geometry = [Bounds(*b) for b in geometry] if geometry is not None else None
+                receipt = executor.execute(
+                    request["action"], request["generation"], request.get("focus"), geometry
+                )
                 results.put({"event": "receipt", "id": request["id"], **receipt})
 
         thread = threading.Thread(target=execute_jobs, name="bounded-input", daemon=True)
@@ -82,6 +86,7 @@ def run_worker(connection):
             while api.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                 if msg.message == 0x0312 and msg.wParam == 0x4D20:
                     executor.stop("emergency hotkey")
+                    previous_armed = False
                     send(
                         connection,
                         {
@@ -111,6 +116,7 @@ def run_worker(connection):
                     executor.heartbeat()
                 elif op == "stop" and set(request) == {"op"}:
                     executor.stop("parent stop")
+                    previous_armed = False
                     send(connection, {"event": "stopped", "cleanup_ok": executor.cleanup_ok})
                 elif op == "shutdown" and set(request) == {"op"}:
                     break
@@ -123,7 +129,26 @@ def run_worker(connection):
                         send(connection, {"event": "arm_error", "error": str(exc)})
                     else:
                         send(connection, {"event": "armed", "generation": generation})
-                elif op == "execute" and set(request) == {"op", "id", "generation", "action"}:
+                elif (
+                    op == "execute"
+                    and {"op", "id", "generation", "action"} <= set(request)
+                    and not (
+                        set(request) - {"op", "id", "generation", "action", "focus", "geometry"}
+                    )
+                ):
+                    if "focus" in request:
+                        integer(request["focus"], 1, 2**64 - 1)
+                    if "geometry" in request:
+                        geometry = request["geometry"]
+                        if type(geometry) is not list or not 1 <= len(geometry) <= 32:
+                            raise ValueError("Invalid geometry")
+                        for bounds in geometry:
+                            if type(bounds) is not list or len(bounds) != 4:
+                                raise ValueError("Invalid bounds")
+                            for value in bounds:
+                                integer(value, -100000, 100000)
+                            integer(bounds[2], 1, 100000)
+                            integer(bounds[3], 1, 100000)
                     action_id = integer(request["id"], 1, 10000)
                     integer(request["generation"], 1, 100000)
                     if busy or action_id in seen or len(seen) >= 1000:

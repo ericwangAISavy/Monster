@@ -30,7 +30,11 @@ def fake_capture(monkeypatch):
             captured.append(bounds)
             return SimpleNamespace(rgb=b"\x01\x02\x03", size=(bounds["width"], bounds["height"]))
 
-    monkeypatch.setattr(module, "WindowsInput", lambda: SimpleNamespace(desktop_ready=lambda: True))
+    monkeypatch.setattr(
+        module,
+        "WindowsInput",
+        lambda: SimpleNamespace(desktop_ready=lambda: True, foreground=lambda: 123),
+    )
     monkeypatch.setitem(sys.modules, "mss", SimpleNamespace(mss=FakeMss))
     monkeypatch.setitem(sys.modules, "mss.tools", SimpleNamespace(to_png=lambda rgb, size: b"PNG"))
     return captured

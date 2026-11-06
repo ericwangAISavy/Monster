@@ -9,7 +9,8 @@ from monster.computer.worker import receive, run_worker, send
 
 
 class InputSession:
-    def __init__(self):
+    def __init__(self, event_callback=None):
+        self.event_callback = event_callback
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe(duplex=True)
         self.process = context.Process(target=run_worker, args=(child,), daemon=True)
@@ -57,8 +58,13 @@ class InputSession:
                 if self.connection.poll(0.01):
                     event = receive(self.connection)
                     self.events.put(event)
+                    if self.event_callback:
+                        self.event_callback(event)
         except (OSError, EOFError, ValueError):
-            self.events.put({"event": "worker_lost"})
+            event = {"event": "worker_lost"}
+            self.events.put(event)
+            if self.event_callback:
+                self.event_callback(event)
 
     def wait_for(self, names, timeout=10):
         deadline = time.monotonic() + timeout
@@ -90,13 +96,21 @@ class InputSession:
             raise RuntimeError(event["error"])
         self.generation = event["generation"]
 
-    def execute(self, action):
+    def execute(self, action, expected_focus=None, expected_geometry=None):
         if self.generation is None:
             raise RuntimeError("Explicitly arm before input.")
         self.next_id += 1
-        self.commands.put(
-            {"op": "execute", "id": self.next_id, "generation": self.generation, "action": action}
-        )
+        request = {
+            "op": "execute",
+            "id": self.next_id,
+            "generation": self.generation,
+            "action": action,
+        }
+        if expected_focus is not None:
+            request["focus"] = expected_focus
+        if expected_geometry is not None:
+            request["geometry"] = [[b.x, b.y, b.width, b.height] for b in expected_geometry]
+        self.commands.put(request)
         event = self.wait_for({"receipt"}, 15)
         if event["id"] != self.next_id:
             self.stop()
@@ -104,6 +118,13 @@ class InputSession:
         if event["status"] != "inserted":
             self.generation = None
         return event
+
+    def disarm(self):
+        self.generation = None
+        self.commands.put({"op": "stop"})
+        event = self.wait_for({"stopped"})
+        if not event.get("cleanup_ok"):
+            raise RuntimeError("Input cleanup not confirmed.")
 
     def stop(self):
         self.generation = None

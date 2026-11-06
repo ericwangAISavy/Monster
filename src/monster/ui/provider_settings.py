@@ -45,7 +45,8 @@ class ProviderSettings(QDialog):
         layout = QVBoxLayout(self)
         note = QLabel(
             "Connect to your own local/LAN Ollama server. Preview mode sends one "
-            "desktop screenshot to this server and proposes an action; it never executes it."
+            "desktop screenshot to this server. Supervised mode executes only actions you approve "
+            "on a disposable test desktop. Ctrl+Alt+X stops. No sensitive workflows."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -69,7 +70,10 @@ class ProviderSettings(QDialog):
         self.mode = QComboBox()
         self.mode.addItem("GUI demo · no model requests", "demo")
         self.mode.addItem("Ollama screenshot/action preview · no input", "preview")
-        self.mode.setCurrentIndex(1 if config.mode == "preview" else 0)
+        self.mode.addItem(
+            "Supervised real input · approve each action (experimental)", "supervised"
+        )
+        self.mode.setCurrentIndex(self.mode.findData(config.mode))
         form.addRow("Server", self.url)
         form.addRow("Installed model", self.model)
         form.addRow("Total request timeout", self.timeout)
@@ -226,7 +230,9 @@ class ProviderSettings(QDialog):
             config = self.value()
             if self.pending:
                 raise ValueError("Wait for the current check or cancel it before saving.")
-            if config.mode == "preview" and self.probed_config != replace(config, mode="demo"):
+            if config.mode in {"preview", "supervised"} and self.probed_config != replace(
+                config, mode="demo"
+            ):
                 raise ValueError(
                     "Run and pass the vision + JSON probe for these exact settings first."
                 )

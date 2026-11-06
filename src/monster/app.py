@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from monster.agent.controller import SupervisedController
 from monster.capture import CaptureIsolation
 from monster.config import Preferences, load, save
 from monster.geometry import beside_cursor
@@ -44,6 +45,8 @@ class CompanionApp:
         self, app: QApplication, controller: TaskController, config_path: Path, enable_tray=True
     ):
         self.app, self.controller, self.config_path = app, controller, config_path
+        self.input_owns_stop = False
+        self.input_cleanup_blocked = False
         self.active = False
         self.paused = False
         self.enabled = True
@@ -91,14 +94,23 @@ class CompanionApp:
         self.isolation.apply_native_hints()
         self.hotkey_errors = self.register_hotkeys()
         self.app.aboutToQuit.connect(self.shutdown)
-        if self.model_config.mode == "preview":
-            self.switch_controller(PreviewTaskController(self.model_config))
+        if self.model_config.mode in {"preview", "supervised"}:
+            factory = (
+                SupervisedController
+                if self.model_config.mode == "supervised"
+                else PreviewTaskController
+            )
+            self.switch_controller(factory(self.model_config))
         # Tray activation is essential when native shortcuts aren't available.
         if enable_tray:
             QTimer.singleShot(300, self.welcome)
 
     def _active_changed(self, active):
         self.active = active
+        if not active:
+            self.pending_question = None
+            if self.pill.mode in {"approval", "clarification"}:
+                self.pill.hide()
 
     def bind_controller(self, controller):
         self.controller = controller
@@ -112,13 +124,15 @@ class CompanionApp:
             (controller.approval_requested, lambda rid, text: self.question(rid, text, True)),
             (controller.clarification_requested, lambda rid, text: self.question(rid, text, False)),
         ]
-        if isinstance(controller, PreviewTaskController):
+        if isinstance(controller, (PreviewTaskController, SupervisedController)):
             bindings.extend(
                 [
                     (controller.capture_requested, self._capture_for_preview),
                     (controller.preview_ready, self._show_preview),
                 ]
             )
+        if isinstance(controller, SupervisedController):
+            bindings.append((controller.worker_owned, self._worker_ownership))
         for signal, callback in bindings:
             signal.connect(callback)
         self.controller_bindings = bindings
@@ -130,10 +144,14 @@ class CompanionApp:
         previous.cancel()
         if hasattr(previous, "close"):
             previous.close()
+        self.input_cleanup_blocked |= getattr(previous, "cleanup_blocked", False)
+        self.input_owns_stop = False
+        self.register_hotkeys()
         self.bind_controller(controller)
         self.pending_question = None
         self.last_preview = None
         self.active, self.paused = False, False
+        self._paused_changed(False)
         self.pill.hide()
         self.pill.input.setToolTip(
             "Preview only · sends one screenshot to your configured LAN server"
@@ -147,16 +165,30 @@ class CompanionApp:
     def _paused_changed(self, paused):
         self.paused = paused
         if hasattr(self, "pause_action"):
-            self.pause_action.setText("Resume" if paused else "Pause")
+            self.pause_action.setText(
+                "Stop / manual takeover"
+                if getattr(self.controller, "is_supervised", False)
+                else "Resume"
+                if paused
+                else "Pause"
+            )
+
+    def _worker_ownership(self, owned):
+        self.input_owns_stop = owned
+        if not owned:
+            self.input_cleanup_blocked |= getattr(self.controller, "cleanup_blocked", False)
+        self.hotkey_errors = self.register_hotkeys()
 
     def register_hotkeys(self):
-        return self.hotkeys.register(
-            {
-                "Activate": (self.preferences.activate, self.activate),
-                "Pause / resume": (self.preferences.pause, self.toggle_pause),
-                "Emergency stop": (self.preferences.stop, self.stop),
-            }
-        )
+        from monster.native import parse_hotkey
+
+        bindings = {
+            "Activate": (self.preferences.activate, self.activate),
+            "Pause / resume": (self.preferences.pause, self.toggle_pause),
+        }
+        if not self.input_owns_stop or parse_hotkey(self.preferences.stop) != (3, ord("X")):
+            bindings["Emergency stop"] = (self.preferences.stop, self.stop)
+        return self.hotkeys.register(bindings)
 
     def create_tray(self):
         self.tray = QSystemTrayIcon(monster_icon(), self.app)
@@ -206,7 +238,11 @@ class CompanionApp:
             text = (
                 "GUI demo only — no model or computer actions. "
                 if self.controller.is_mock
-                else "Ollama preview only — one screenshot per task; no input actions. "
+                else (
+                    "Supervised real input — approve each action; Ctrl+Alt+X stops. "
+                    if getattr(self.controller, "is_supervised", False)
+                    else "Ollama preview only — one screenshot per task; no input actions. "
+                )
             )
             text += self.startup_error or "Activate from the tray or " + self.preferences.activate
             if self.hotkey_errors:
@@ -235,6 +271,9 @@ class CompanionApp:
             self.question(rid, text, approval)
             return
         if self.active:
+            if getattr(self.controller, "is_supervised", False):
+                self.stop()
+                return
             # Explicit manual takeover: pause engine before accepting new interaction.
             if not self.paused:
                 self.controller.toggle_pause()
@@ -243,7 +282,15 @@ class CompanionApp:
         self.state_timer.stop()
         self.pill.show_input()
         if not self.controller.is_mock:
-            self.pill.input.setToolTip("Preview only · screenshot sent to " + self.model_config.url)
+            self.pill.input.setToolTip(
+                (
+                    "SUPERVISED REAL INPUT · "
+                    if getattr(self.controller, "is_supervised", False)
+                    else "Preview only · "
+                )
+                + "screenshot sent to "
+                + self.model_config.url
+            )
         self.place_pill()
         self.pill.show()
         focus_window(self.pill)
@@ -273,7 +320,7 @@ class CompanionApp:
         self.companion.set_state(state)
         if self.tray:
             self.tray.setToolTip(
-                f"Monster · {'GUI demo · ' if self.controller.is_mock else 'Ollama preview · '}{state}"
+                f"Monster · {'GUI demo · ' if self.controller.is_mock else 'Supervised real input · ' if getattr(self.controller, 'is_supervised', False) else 'Ollama preview · '}{state}"
             )
 
     def _return_idle(self):
@@ -392,12 +439,17 @@ class CompanionApp:
 
         self.preview_capture = (self.controller, self.controller.generation)
         try:
+            target = getattr(self.controller, "restore_focus", None)
+            if target:
+                from monster.computer.windows import WindowsInput
+
+                self.controller.restore_focus = None
+                if not WindowsInput().restore_foreground(target):
+                    raise RuntimeError("Cannot restore the approved target's focus.")
             self.capture_desktop(capture_display)
-        except RuntimeError:
+        except RuntimeError as exc:
             self.preview_capture = None
-            self.controller.capture_failed(
-                "Capture unavailable · close secondary windows and retry"
-            )
+            self.controller.capture_failed(str(exc))
 
     def _preview_observation(self, observation):
         if self.preview_capture:
@@ -487,15 +539,34 @@ class CompanionApp:
             self.provider_window = None
 
     def save_provider_settings(self, config):
+        if config.mode == "supervised":
+            if self.input_cleanup_blocked:
+                self.provider_window.status.setText(
+                    "Input cleanup unconfirmed. Inspect input and restart Monster."
+                )
+                return
+            from monster.native import parse_hotkey
+
+            if any(
+                parse_hotkey(key) == (3, ord("X"))
+                for key in (self.preferences.activate, self.preferences.pause)
+            ):
+                self.provider_window.status.setText(
+                    "Ctrl+Alt+X is reserved for the real input worker."
+                )
+                return
         try:
             provider_config.save(self.provider_path, config)
         except OSError:
             self.provider_window.status.setText("Could not save provider settings.")
             return
         self.model_config = config
-        self.switch_controller(
-            PreviewTaskController(config) if config.mode == "preview" else MockTaskController()
-        )
+        factory = {
+            "demo": lambda _: MockTaskController(),
+            "preview": PreviewTaskController,
+            "supervised": SupervisedController,
+        }[config.mode]
+        self.switch_controller(factory(config))
         self.provider_window.accept()
 
     def save_settings(self, prefs):
@@ -551,7 +622,9 @@ class CompanionApp:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Monster companion — demo or LAN Ollama preview")
+    parser = argparse.ArgumentParser(
+        description="Monster companion — demo, LAN preview or supervised Windows input"
+    )
     parser.add_argument("--smoke-test", action="store_true", help="Exit after one second")
     parser.add_argument(
         "--capture-test",

@@ -43,5 +43,11 @@ class Provider(Protocol):
     async def capabilities(self, model: str) -> Capabilities: ...
     async def probe(self, model: str) -> ProbeResult: ...
     async def decide(
-        self, model: str, instruction: str, image: bytes, width: int, height: int
+        self,
+        model: str,
+        instruction: str,
+        image: bytes,
+        width: int,
+        height: int,
+        history: tuple[str, ...] = (),
     ) -> Decision: ...

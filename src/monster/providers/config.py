@@ -63,11 +63,13 @@ class OllamaConfig:
             or any(ord(c) < 32 for c in self.model)
         ):
             raise ValueError("Invalid model identifier.")
-        if self.mode not in {"demo", "preview"}:
-            raise ValueError("Select demo or Ollama preview mode.")
+        if self.mode not in {"demo", "preview", "supervised"}:
+            raise ValueError("Select demo, preview or supervised mode.")
         if any(type(v) is not bool for v in (self.allow_lan_http, self.local_server_confirmed)):
             raise ValueError("Provider confirmation values must be Boolean.")
-        if self.mode == "preview" and (not self.model or not self.local_server_confirmed):
+        if self.mode in {"preview", "supervised"} and (
+            not self.model or not self.local_server_confirmed
+        ):
             raise ValueError("Select a model and confirm local-only server operation for preview.")
 
 

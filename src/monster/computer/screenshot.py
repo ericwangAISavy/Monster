@@ -17,13 +17,15 @@ class Observation:
     displays: tuple[Bounds, ...]
     png: bytes
     sha256: str
+    foreground: int = 0
 
 
 def capture_display(display: int = 1, crop: Bounds | None = None) -> Observation:
     from mss import mss
     from mss.tools import to_png
 
-    if not WindowsInput().desktop_ready():
+    windows = WindowsInput()
+    if not windows.desktop_ready():
         raise RuntimeError("An unlocked standard Windows desktop is required for capture.")
     with mss() as backend:
         monitors = backend.monitors
@@ -45,6 +47,7 @@ def capture_display(display: int = 1, crop: Bounds | None = None) -> Observation
         if bounds.width * bounds.height > 40_000_000:
             raise ValueError("Capture exceeds the 40 megapixel limit; select a display or crop.")
         started = time.monotonic()
+        foreground = windows.foreground()
         shot = backend.grab(
             {"left": bounds.x, "top": bounds.y, "width": bounds.width, "height": bounds.height}
         )
@@ -54,5 +57,11 @@ def capture_display(display: int = 1, crop: Bounds | None = None) -> Observation
     if len(png) > 32 * 1024 * 1024:
         raise ValueError("Encoded screenshot exceeds the 32 MiB limit.")
     return Observation(
-        uuid.uuid4().hex, started, bounds, displays, png, hashlib.sha256(png).hexdigest()
+        uuid.uuid4().hex,
+        started,
+        bounds,
+        displays,
+        png,
+        hashlib.sha256(png).hexdigest(),
+        foreground,
     )

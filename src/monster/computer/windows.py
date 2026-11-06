@@ -79,6 +79,15 @@ class WindowsInput:
         self.api.GetAsyncKeyState.argtypes = [ctypes.c_int]
         self.api.GetAsyncKeyState.restype = ctypes.c_short
 
+    def foreground(self):
+        self.api.GetForegroundWindow.restype = wintypes.HWND
+        return int(self.api.GetForegroundWindow() or 0)
+
+    def restore_foreground(self, handle):
+        self.api.SetForegroundWindow.argtypes = [wintypes.HWND]
+        self.api.SetForegroundWindow.restype = wintypes.BOOL
+        return bool(handle and self.api.SetForegroundWindow(handle) and self.foreground() == handle)
+
     def desktop_ready(self):
         handle = self.api.OpenInputDesktop(0, False, 1)  # DESKTOP_READOBJECTS
         if not handle:

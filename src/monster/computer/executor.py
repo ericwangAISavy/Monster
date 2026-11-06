@@ -22,6 +22,7 @@ class InputExecutor:
         self.owned = {}  # (kind, value) -> monotonic down time
         self.cleanup_ok = True
         self.last_reason = "not armed"
+        self.expected_focus = None
 
     def arm(self):
         with self.lock:
@@ -37,6 +38,7 @@ class InputExecutor:
                 raise RuntimeError("No displays available.")
             self.heartbeat_at = self.clock()
             self.arm_until = self.clock() + 30
+            self.expected_focus = None
             self.armed = True
             return self.generation
 
@@ -54,6 +56,8 @@ class InputExecutor:
             raise Disarmed("Input is disarmed or its lease expired.")
         if not self.backend.desktop_ready() or self.backend.displays() != self.geometry:
             raise Disarmed("Desktop or display geometry changed.")
+        if self.expected_focus and self.backend.foreground() != self.expected_focus:
+            raise Disarmed("Keyboard focus changed.")
 
     def _release(self):
         for kind, value in list(self.owned):
@@ -105,13 +109,16 @@ class InputExecutor:
                 self._check(generation)
             time.sleep(min(0.01, max(0, end - self.clock())))
 
-    def execute(self, action, generation):
+    def execute(self, action, generation, expected_focus=None, expected_geometry=None):
         # Never include text payloads in receipts/errors.
         events = 0
         attempted = False
         try:
             with self.lock:
+                self.expected_focus = expected_focus
                 self._check(generation)
+                if expected_geometry is not None and self.geometry != expected_geometry:
+                    raise Disarmed("Observation geometry changed.")
                 action = validate_action(action, self.geometry)
             op = action["op"]
             button = action.get("button", "left")
@@ -156,7 +163,12 @@ class InputExecutor:
                         emit("unicode", unit, False)
                     self.wait(generation, 0.005)
             elif op == "press":
-                emit("key", action["key"], True)
+                with self.lock:
+                    emit("key", action["key"], True)
+                    # A deliberate key press can itself change foreground (e.g.
+                    # Start/Enter). Release the owned key without treating that
+                    # expected transition as an unrelated focus theft.
+                    self.expected_focus = None
                 emit("key", action["key"], False)
             elif op == "chord":
                 for key in action["keys"]:
@@ -165,6 +177,8 @@ class InputExecutor:
                     emit("key", key, False)
             elif op in ("key_down", "key_up"):
                 emit("key", action["key"], op == "key_down")
+            with self.lock:
+                self.expected_focus = None
             return {"status": "inserted", "events": events}
         except Exception as exc:  # noqa: BLE001 - Input failures must always disarm and clean up.
             self.stop(type(exc).__name__)
