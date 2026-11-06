@@ -265,3 +265,16 @@ def test_window_close_chord_checks_focus_before_final_down_and_releases_after_it
         assert receipt["status"] == "partial_or_unknown"
         assert ("key", "F4", True) not in backend.events
     assert not executor.owned
+
+
+def test_restoring_already_foreground_window_does_not_reactivate_it():
+    from types import SimpleNamespace
+
+    from monster.computer.windows import WindowsInput
+
+    calls = []
+    backend = WindowsInput.__new__(WindowsInput)
+    backend.foreground = lambda: 77
+    backend.api = SimpleNamespace(SetForegroundWindow=lambda handle: calls.append(handle))
+    assert backend.restore_foreground(77)
+    assert not calls

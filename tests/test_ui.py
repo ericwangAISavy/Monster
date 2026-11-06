@@ -203,3 +203,160 @@ def test_incomplete_outcome_remains_visible_in_tray_after_notice_hides(qtbot, qa
     finally:
         ui.shutdown()
         qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_passive_approval_pill_can_be_read_without_taking_focus(qtbot):
+    pill = Pill()
+    qtbot.addWidget(pill)
+    pill.show_question("review", "Review this action", True, take_focus=False)
+    assert pill.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
+    assert pill.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    assert not pill.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    pill.show_question("clarify", "What text?", False)
+    assert not pill.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
+
+
+def test_keyboard_approval_waits_for_release_and_is_bound_to_request(
+    qtbot, qapp, tmp_path, monkeypatch
+):
+    import monster.app as module
+
+    engine = MockTaskController()
+    ui = CompanionApp(qapp, engine, tmp_path / "prefs.json", enable_tray=False)
+    responses = []
+    held = [True]
+    monkeypatch.setattr(module, "approval_keys_released", lambda: not held[0], raising=False)
+    monkeypatch.setattr(ui, "register_hotkeys", list)
+    monkeypatch.setattr(engine, "respond", lambda rid, answer: responses.append((rid, answer)))
+    try:
+        ui.question("first", "Review action", True)
+        ui._queue_keyboard_approval()
+        qtbot.wait(50)
+        assert not responses
+        ui.question("second", "Review different action", True)
+        held[0] = False
+        qtbot.wait(50)
+        assert not responses  # Old gesture cannot approve a newer request.
+        ui._queue_keyboard_approval()
+        qtbot.waitUntil(lambda: bool(responses))
+        assert responses == [("second", "approve")]
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_supervised_keyboard_review_does_not_request_focus_or_move_pointer(
+    qtbot, qapp, tmp_path, monkeypatch
+):
+    from PySide6.QtGui import QCursor
+
+    import monster.app as module
+
+    class ReviewedMock(MockTaskController):
+        is_supervised = True
+
+    ui = CompanionApp(qapp, ReviewedMock(), tmp_path / "prefs.json", enable_tray=False)
+    calls = []
+    monkeypatch.setattr(ui, "register_hotkeys", list)
+    monkeypatch.setattr(module, "focus_window", lambda window: calls.append(window))
+    try:
+        before = QCursor.pos()
+        ui.question("review", "Approve one action", True)
+        assert not calls
+        assert QCursor.pos() == before
+        assert ui.pill.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
+        assert "Ctrl+Alt+Y" in ui.pill.message.text()
+        ui.question("text", "What text?", False)
+        assert calls == [ui.pill]  # Text entry still intentionally takes focus.
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_keyboard_approval_cannot_approve_disabled_or_cancelled_requests(
+    qtbot, qapp, tmp_path, monkeypatch
+):
+    import monster.app as module
+
+    engine = MockTaskController()
+    ui = CompanionApp(qapp, engine, tmp_path / "prefs.json", enable_tray=False)
+    responses = []
+    monkeypatch.setattr(ui, "register_hotkeys", list)
+    monkeypatch.setattr(module, "approval_keys_released", lambda: True)
+    monkeypatch.setattr(engine, "respond", lambda rid, answer: responses.append((rid, answer)))
+    try:
+        ui.question("oversized", "x" * 3501, True)
+        ui._queue_keyboard_approval()
+        qtbot.wait(30)
+        assert not responses
+        ui.question("clarify", "Which app?", False)
+        ui._queue_keyboard_approval()
+        qtbot.wait(30)
+        assert not responses
+        ui.question("cancelled", "Review action", True)
+        ui._queue_keyboard_approval()
+        ui.stop()
+        qtbot.wait(30)
+        assert not responses
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_native_approval_waits_for_trigger_key_and_modifiers(monkeypatch):
+    from types import SimpleNamespace
+
+    from monster import native
+
+    held = {ord("Y")}
+    api = SimpleNamespace(GetAsyncKeyState=lambda key: 0x8000 if key in held else 0)
+    monkeypatch.setattr(native, "user32", lambda: api)
+    assert not native.approval_keys_released()
+    held.clear()
+    held.add(0x11)
+    assert not native.approval_keys_released()
+    held.clear()
+    assert native.approval_keys_released()
+
+
+def test_native_hotkey_ids_are_not_reused_for_new_requests(qapp, monkeypatch):
+    from types import SimpleNamespace
+
+    from monster import native
+
+    api = SimpleNamespace(RegisterHotKey=lambda *args: True, UnregisterHotKey=lambda *args: True)
+    monkeypatch.setattr(native, "user32", lambda: api)
+    hotkeys = native.GlobalHotkeys(qapp)
+    try:
+        assert not hotkeys.register({"Review": ("Ctrl+Alt+Y", lambda: None)})
+        old_ids = set(hotkeys.ids)
+        assert not hotkeys.register({"Review": ("Ctrl+Alt+Y", lambda: None)})
+        assert old_ids.isdisjoint(hotkeys.ids)
+        assert old_ids.isdisjoint(hotkeys.callbacks)
+    finally:
+        hotkeys.close()
+
+
+def test_keyboard_registration_failure_keeps_mouse_approval_available(
+    qtbot, qapp, tmp_path, monkeypatch
+):
+    import monster.app as module
+
+    class ReviewedMock(MockTaskController):
+        is_supervised = True
+
+    ui = CompanionApp(qapp, ReviewedMock(), tmp_path / "prefs.json", enable_tray=False)
+    calls = []
+    monkeypatch.setattr(ui, "register_hotkeys", lambda: ["Approve request: unavailable"])
+    monkeypatch.setattr(module, "focus_window", lambda window: calls.append(window))
+    try:
+        ui.question("review", "Review action", True)
+        assert calls == [ui.pill]
+        assert ui.pill.approve.isEnabled()
+        assert not ui.approval_hotkey_available
+        assert "Ctrl+Alt+Y" not in ui.pill.message.text()
+        ui._queue_keyboard_approval()
+        assert ui.keyboard_approval is None
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)

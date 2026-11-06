@@ -335,7 +335,8 @@ pauses immediately for a human focus review instead of trying more coordinates.
 The pill asks whether the intended editable composer gained keyboard focus.
 
 Approve only if you observed that the click focused the correct composer before
-the review pill opened. The pill itself takes focus during review. If the click
+the review pill opened. With keyboard approval available, the pill does not take focus during review.
+The mouse-only fallback may take focus. If the click
 missed, activated another field, or you cannot tell, Decline and focus the intended
 composer manually before starting a new task. The prompt expires after 60 seconds;
 Escape, Decline, Stop and expiry never authorize more input. This review remains
@@ -454,3 +455,37 @@ chords include their validated key names (for example `press WIN` or
 now direct the user to inspect the target and action preview rather than telling
 them to focus a message composer. These categories do not prove why an older run
 failed; inspect the proposed action, expected result and visual evidence as well.
+
+
+### Approve without moving the pointer
+
+While a review is pending, press **Ctrl+Alt+Y**, then release all keys, to approve
+that one request. With this global shortcut registered, supervised approval,
+focus-review and final-confirmation pills appear without requesting foreground
+focus. The pointer stays where you left it. No cursor restoration or target input
+is performed just to approve. Ordinary text clarification still intentionally
+focuses the pill for typing.
+
+The shortcut hint appears only when registration succeeds. Conflicts with another
+Monster shortcut or an OS shortcut leave the existing mouse approval available;
+no conflicting binding is silently replaced. Ctrl+Alt+X remains the independent
+worker stop during real-input tasks. Plain Enter is not an approval shortcut.
+
+Keyboard approval waits until Y, modifiers and mouse buttons are released before
+responding. It is bound to the displayed request and controller; replacement,
+expiry, Stop, dismissal, disabled/oversized review and mode changes invalidate a
+queued gesture. Native hotkey IDs are not reused for new registrations, so a stale
+hotkey event cannot be delivered as a newly registered request. When the intended
+window is already foreground, restoration avoids calling SetForegroundWindow
+again, reducing unnecessary disruption to transient UI.
+
+Moving the pointer to a mouse approval button can change application hover state,
+and taking focus can dismiss menus. Monster still hides overlays and takes a
+fresh screenshot; its scene checks are not relaxed. Pointer-free approval reduces
+those sources of interference but does not prove native menu/focus preservation.
+Qualify on Windows using a disposable editor and an open Start menu: leave the
+pointer still, read the review, press/release Ctrl+Alt+Y, and verify no approval-
+related pointer movement, no held modifiers, no lost target and exactly one
+reviewed action. Test Stop while holding the gesture, replacement/expired reviews,
+and a shortcut conflict; none should authorize stale input. Native results remain
+unverified by the portable UI and fake-Win32 tests.

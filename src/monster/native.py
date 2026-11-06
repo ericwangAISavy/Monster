@@ -59,6 +59,17 @@ def foreground_window() -> int:
     return int(api.GetForegroundWindow() or 0)
 
 
+def approval_keys_released():
+    """Read only the approval gesture/modifier/button states; never move input."""
+    api = user32()
+    if not api:
+        return False
+    api.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    api.GetAsyncKeyState.restype = ctypes.c_short
+    keys = (0x10, 0x11, 0x12, 0x5B, 0x5C, ord("Y"), 0x01, 0x02, 0x04, 0x05, 0x06)
+    return all(not (api.GetAsyncKeyState(key) & 0x8000) for key in keys)
+
+
 def focus_window(window):
     api = user32()
     if api:
@@ -73,6 +84,7 @@ class GlobalHotkeys(QAbstractNativeEventFilter):
         self.app = app
         self.callbacks = {}
         self.ids = []
+        self.next_id = 0x4D01
         app.installNativeEventFilter(self)
 
     def register(self, bindings: dict[str, tuple[str, object]]) -> list[str]:
@@ -81,7 +93,12 @@ class GlobalHotkeys(QAbstractNativeEventFilter):
         api = user32()
         if not api:
             return ["Global shortcuts require Windows. Use the system tray on this platform."]
-        for index, (name, (shortcut, callback)) in enumerate(bindings.items(), 0x4D01):
+        for name, (shortcut, callback) in bindings.items():
+            if self.next_id > 0xBFFF:
+                errors.append(f"{name}: restart Monster to renew shortcut registrations.")
+                continue
+            index = self.next_id
+            self.next_id += 1
             modifiers, vk = parse_hotkey(shortcut)
             if api.RegisterHotKey(None, index, modifiers | 0x4000, vk):  # MOD_NOREPEAT
                 self.ids.append(index)

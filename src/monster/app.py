@@ -22,7 +22,7 @@ from monster.capture import CaptureIsolation
 from monster.config import Preferences, load, save
 from monster.geometry import beside_cursor
 from monster.lifecycle import MockTaskController, State, TaskController
-from monster.native import GlobalHotkeys, focus_window, foreground_window
+from monster.native import GlobalHotkeys, approval_keys_released, focus_window, foreground_window
 from monster.preview import PreviewTaskController
 from monster.providers import config as provider_config
 from monster.ui.companion import Companion, draw_monster
@@ -52,6 +52,11 @@ class CompanionApp:
         self.enabled = True
         self.current_state = State.IDLE
         self.pending_question = None
+        self.keyboard_approval = None
+        self.approval_hotkey_available = False
+        self.approval_key_timer = QTimer()
+        self.approval_key_timer.setInterval(20)
+        self.approval_key_timer.timeout.connect(self._finish_keyboard_approval)
         self.settings_window = None
         self.provider_window = None
         self.preview_window = None
@@ -112,6 +117,9 @@ class CompanionApp:
         self.active = active
         if not active:
             self.pending_question = None
+            self._cancel_keyboard_approval()
+            if not self.closing:
+                self.hotkey_errors = self.register_hotkeys()
             if self.pill.mode in {"approval", "clarification"}:
                 self.pill.hide()
 
@@ -141,6 +149,7 @@ class CompanionApp:
         self.controller_bindings = bindings
 
     def switch_controller(self, controller):
+        self._cancel_keyboard_approval()
         previous = self.controller
         for signal, callback in self.controller_bindings:
             signal.disconnect(callback)
@@ -149,6 +158,7 @@ class CompanionApp:
             previous.close()
         self.input_cleanup_blocked |= getattr(previous, "cleanup_blocked", False)
         self.input_owns_stop = False
+        self.pending_question = None
         self.register_hotkeys()
         self.bind_controller(controller)
         self.pending_question = None
@@ -193,7 +203,17 @@ class CompanionApp:
         }
         if not self.input_owns_stop or parse_hotkey(self.preferences.stop) != (3, ord("X")):
             bindings["Emergency stop"] = (self.preferences.stop, self.stop)
-        return self.hotkeys.register(bindings)
+        conflicts = []
+        if self.pending_question and self.pending_question[2]:
+            shortcut = "Ctrl+Alt+Y"
+            if any(parse_hotkey(item[0]) == parse_hotkey(shortcut) for item in bindings.values()):
+                conflicts.append("Approve request: Ctrl+Alt+Y conflicts with another Monster shortcut.")
+            else:
+                controller, rid = self.controller, self.pending_question[0]
+                bindings["Approve request"] = (
+                    shortcut, lambda: self._queue_keyboard_approval(controller, rid)
+                )
+        return self.hotkeys.register(bindings) + conflicts
 
     def create_tray(self):
         self.tray = QSystemTrayIcon(monster_icon(), self.app)
@@ -345,6 +365,7 @@ class CompanionApp:
             self.pill.hide()
 
     def dismiss(self):
+        self._cancel_keyboard_approval()
         self.activation_target = None
         self.isolation.suppress_restore(self.pill)
         if self.pending_question:
@@ -352,6 +373,7 @@ class CompanionApp:
             # so sending it as a response could schedule another observation.
             self.controller.cancel()
             self.pending_question = None
+        self.hotkey_errors = self.register_hotkeys()
         self.pill.hide()
         if not self.active:
             self.set_state(State.IDLE)
@@ -413,20 +435,61 @@ class CompanionApp:
         self.state_timer.start(5100)
 
     def question(self, request_id, text, approval):
+        self._cancel_keyboard_approval()
         self.pending_question = (request_id, text, approval)
         if self.isolation.busy:
             return
+        self.hotkey_errors = self.register_hotkeys()
+        self.approval_hotkey_available = approval and not self.hotkey_errors
+        passive = self.approval_hotkey_available and getattr(self.controller, "is_supervised", False)
+        if self.approval_hotkey_available:
+            stop_key = "Ctrl+Alt+X" if getattr(self.controller, "is_supervised", False) else self.preferences.stop
+            text += f"\nApprove: Ctrl+Alt+Y, then release all keys. Stop: {stop_key}."
         self.set_state(State.WAITING)
-        self.pill.show_question(request_id, text, approval)
+        self.pill.show_question(request_id, text, approval, take_focus=not passive)
         self.place_pill()
-        focus_window(self.pill)
+        if not passive:
+            focus_window(self.pill)
         if not approval:
             self.pill.input.setFocus()
+
+    def _cancel_keyboard_approval(self):
+        self.approval_key_timer.stop()
+        self.keyboard_approval = None
+        self.approval_hotkey_available = False
+
+    def _queue_keyboard_approval(self, controller=None, request_id=None):
+        if not self.approval_hotkey_available or not self.pending_question:
+            return
+        rid, _, approval = self.pending_question
+        if (
+            not approval or not self.pill.isVisible() or not self.pill.approve.isEnabled()
+            or (controller is not None and controller is not self.controller)
+            or (request_id is not None and request_id != rid)
+        ):
+            return
+        self.keyboard_approval = (self.controller, rid)
+        self.approval_key_timer.start()
+
+    def _finish_keyboard_approval(self):
+        pending = self.keyboard_approval
+        if (
+            pending is None or not self.pending_question or not self.pending_question[2]
+            or pending != (self.controller, self.pending_question[0])
+            or not self.pill.isVisible() or not self.pill.approve.isEnabled()
+        ):
+            self._cancel_keyboard_approval()
+            return
+        if approval_keys_released():
+            self._cancel_keyboard_approval()
+            self.answer(pending[1], "approve")
 
     def answer(self, request_id, answer):
         if not self.pending_question or self.pending_question[0] != request_id:
             return
         self.pending_question = None
+        self._cancel_keyboard_approval()
+        self.hotkey_errors = self.register_hotkeys()
         self.pill.hide()
         self.controller.respond(request_id, answer)
 
@@ -436,6 +499,7 @@ class CompanionApp:
             self.pill.hide()
 
     def stop(self):
+        self._cancel_keyboard_approval()
         self.activation_target = None
         # A real controller must synchronously disarm its input worker here.
         self.pending_question = None
@@ -443,6 +507,7 @@ class CompanionApp:
         self.state_timer.stop()
         self.pill.hide()
         self.controller.cancel()
+        self.hotkey_errors = self.register_hotkeys()
 
     def toggle_companion(self, visible):
         self.enabled = visible
@@ -699,6 +764,7 @@ class CompanionApp:
         self.settings_window = None
 
     def shutdown(self):
+        self._cancel_keyboard_approval()
         if self.closing:
             return
         self.closing = True

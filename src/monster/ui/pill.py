@@ -138,9 +138,12 @@ class Pill(QWidget):
         self.show()
         self._hide_timer.start(duration_ms)
 
-    def show_question(self, request_id: str, text: str, approval: bool):
+    def show_question(self, request_id: str, text: str, approval: bool, *, take_focus=True):
         self._reset("approval" if approval else "clarification")
         self.request_id = request_id
+        if approval and not take_focus:
+            self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         if approval:
             self.approve.setEnabled(len(text) <= 3500)
             if len(text) > 3500:
@@ -151,8 +154,9 @@ class Pill(QWidget):
             )
             self.message.setMinimumHeight(metrics.height())
             self.setFixedHeight(max(112, min(280, metrics.height() + 66)))
-            # Do not bind Enter to Approve. Explicit click/tab navigation is required.
-            self.reject.setFocus()
+            # Plain Enter never approves; approval requires a deliberate gesture.
+            if take_focus:
+                self.reject.setFocus()
         else:
             self.input.clear()
             self.input.setPlaceholderText(text)

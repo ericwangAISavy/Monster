@@ -107,6 +107,8 @@ class WindowsInput:
         return Bounds(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
 
     def restore_foreground(self, handle):
+        if handle and self.foreground() == handle:
+            return True
         self.api.SetForegroundWindow.argtypes = [wintypes.HWND]
         self.api.SetForegroundWindow.restype = wintypes.BOOL
         return bool(handle and self.api.SetForegroundWindow(handle) and self.foreground() == handle)
