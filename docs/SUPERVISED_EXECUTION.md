@@ -71,3 +71,19 @@ Automated tests use fake model/capture/input primitives. They verify no input be
 6. Check long payload scrolling, multiple DPI layouts, negative monitor origins and focus-changing keys. Record actual results/timings; do not infer native reliability from fake-backend tests.
 
 The next stage is improving measured grounding/verification and recovery from these trials. Removing supervision or expanding to sensitive applications requires a separate design and evidence, not merely a working happy-path demo.
+
+## Reporting a failure after approval
+
+If the task fails after Approve, open tray → **Last failure…**. The report remains
+available after the transient pill disappears and can be selected/copied. It
+identifies the failed stage (model check, decision or screen recheck), unexpected
+exception class/source location, and confirmed input transaction count. Exception
+messages, traceback locals and provider payloads are not included in unexpected-
+error diagnostics. A zero transaction count does not prove no partial input
+occurred; inspect the desktop before retrying.
+
+Copy that report with your OS and model identifier when asking for help. The old
+“Provider operation failed unexpectedly; nothing was executed” message could also
+be emitted by local screen revalidation and was not sufficient to identify the
+cause. A stage-specific report is diagnostic evidence, not proof that an
+underlying Windows-only failure has already been fixed.

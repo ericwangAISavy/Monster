@@ -285,3 +285,32 @@ def test_real_bridge_discards_cancelled_startup_and_disarms_after_action(qtbot):
         gate.set()
         bridge.shutdown()
     assert not bridge.thread.is_alive()
+
+
+def test_post_approval_exception_has_stage_and_never_dispatches(qtbot, monkeypatch):
+    import monster.agent.controller as module
+
+    engine, bridge, _ = controller([Decision("action", "Type", {"op": "text", "text": "Hello"})])
+    questions, failures = [], []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    engine.failed.connect(failures.append)
+
+    def broken_compare(*args):
+        raise TypeError("PRIVATE SCREEN OR TYPED CONTENT must never be displayed")
+
+    monkeypatch.setattr(module, "scene_matches", broken_compare)
+    try:
+        engine.submit("test")
+        qtbot.waitUntil(lambda: bool(questions))
+        engine.respond(questions[0], "approve")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert "Screen recheck after approval" in failures[0]
+        assert "TypeError" in failures[0]
+        assert "PRIVATE" not in failures[0]
+        assert not bridge.executed
+        assert engine.phase == "idle"
+    finally:
+        engine.close()

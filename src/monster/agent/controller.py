@@ -1,6 +1,5 @@
 """Experimental supervised loop: every input action and final result need user review."""
 
-import asyncio
 import json
 import time
 import uuid
@@ -147,7 +146,9 @@ class SupervisedController(TaskController):
             self.phase = "comparing"
 
             async def compare():
-                return await asyncio.to_thread(scene_matches, before, observation, action)
+                # ProviderJobs already executes off the Qt thread. A second
+                # thread pool is unnecessary for this bounded comparison.
+                return scene_matches(before, observation, action)
 
             self.job = self.jobs.start(compare)
             return
@@ -178,7 +179,12 @@ class SupervisedController(TaskController):
         self.jobs.futures.pop(job, None)
         self.job = None
         if error:
-            self.fail(error)
+            stage = {
+                "probing": "Model compatibility check",
+                "comparing": "Screen recheck after approval",
+                "deciding": "Model decision",
+            }.get(self.phase, "Background operation")
+            self.fail(f"{stage} failed: {error}")
         elif self.phase == "probing":
             self.phase = "observing"
             self._capture()
@@ -213,7 +219,7 @@ class SupervisedController(TaskController):
                 QTimer.singleShot(350, self, self._capture)
                 return
             if result.kind == "unable":
-                self.fail("Model could not continue: " + result.summary)
+                self.fail("Model could not continue. Open Last action preview for its explanation.")
                 return
             if result.kind == "clarify":
                 self.phase = "clarifying"

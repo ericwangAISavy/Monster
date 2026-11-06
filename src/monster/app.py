@@ -56,6 +56,7 @@ class CompanionApp:
         self.provider_window = None
         self.preview_window = None
         self.last_preview = None
+        self.last_failure = None
         self.preview_capture = None
         self.controller_bindings = []
         self.startup_error = ""
@@ -204,6 +205,7 @@ class CompanionApp:
         self.add_action("Settings…", self.show_settings)
         self.add_action("AI model settings…", self.show_provider_settings)
         self.add_action("Last action preview…", self.show_preview_details)
+        self.add_action("Last failure…", self.show_failure_details)
         if self.controller.is_mock:
             demo = self.menu.addMenu("GUI demo")
             self.demo_menu = demo
@@ -345,6 +347,13 @@ class CompanionApp:
         self.state_timer.start(2700)
 
     def failed(self, text):
+        self.last_failure = (
+            text
+            + "\n\nConfirmed input transactions: "
+            + str(getattr(self.controller, "actions", 0))
+            + "\nInspect the desktop: failed or partial input may have occurred. "
+            "No automatic retry was performed."
+        )
         self.pending_question = None
         self.set_state(State.ERROR)
         self.notice(text, 5000)
@@ -468,33 +477,50 @@ class CompanionApp:
         self.last_preview = decision
 
     def show_preview_details(self):
-        if not self.last_preview or self.isolation.busy:
-            return
-        if self._focus_secondary_except(self.preview_window):
-            return
-        self._pause_for_secondary()
-        if self.preview_window:
-            focus_window(self.preview_window)
+        if not self.last_preview:
             return
         import json
 
+        text = f"{self.last_preview.kind}: {self.last_preview.summary}\n\n" + json.dumps(
+            self.last_preview.action, ensure_ascii=False, indent=2
+        )
+        self._show_details(
+            "Monster · action proposal",
+            text,
+            "Model proposal only. Inspect the desktop to verify the result.\n"
+            "Coordinates refer to display 1's screenshot.",
+        )
+
+    def show_failure_details(self):
+        if self.last_failure:
+            self._show_details(
+                "Monster · last failure",
+                self.last_failure,
+                "Review and copy these details when reporting the failure. "
+                "Unexpected-error diagnostics omit exception messages and payloads.",
+            )
+
+    def _show_details(self, title, text, description):
+        if self.isolation.busy or self._focus_secondary_except(self.preview_window):
+            return
+        self._pause_for_secondary()
+        if self.preview_window:
+            self.preview_window.setWindowTitle(title)
+            self.preview_window.findChild(QTextEdit).setPlainText(text)
+            self.preview_window.findChild(QLabel).setText(description)
+            focus_window(self.preview_window)
+            return
         dialog = QDialog()
         self.preview_window = dialog
-        dialog.setWindowTitle("Monster · action preview (no input sent)")
-        dialog.resize(430, 270)
+        dialog.setWindowTitle(title)
+        dialog.resize(480, 290)
         layout = QVBoxLayout(dialog)
-        label = QLabel(
-            "Model proposal only. Completion claims are unverified.\n"
-            "Coordinates refer to display 1's screenshot, not Qt window positions."
-        )
+        label = QLabel(description)
         label.setWordWrap(True)
         layout.addWidget(label)
         details = QTextEdit()
         details.setReadOnly(True)
-        details.setPlainText(
-            f"{self.last_preview.kind}: {self.last_preview.summary}\n\n"
-            + json.dumps(self.last_preview.action, ensure_ascii=False, indent=2)
-        )
+        details.setPlainText(text)
         layout.addWidget(details)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)

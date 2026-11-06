@@ -2,10 +2,23 @@
 
 import asyncio
 import threading
+import traceback
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from monster.providers.base import ProviderError
+
+
+def unexpected_error(exc: Exception) -> str:
+    """Keep exception class/source location, never exception text, locals or payloads."""
+    root = Path(__file__).resolve().parent.parent
+    location = "background job"
+    for frame, line in traceback.walk_tb(exc.__traceback__):
+        path = Path(frame.f_code.co_filename).resolve()
+        if path.is_relative_to(root):
+            location = f"{path.relative_to(root).as_posix()}:{line}"
+    return f"Unexpected {type(exc).__name__} at {location}. Open tray → Last failure for details."
 
 
 class ProviderJobs(QObject):
@@ -40,8 +53,8 @@ class ProviderJobs(QObject):
                 return
             except ProviderError as exc:
                 error = str(exc)
-            except Exception:  # noqa: BLE001 - Never leak provider payloads through UI errors.
-                error = "Provider operation failed unexpectedly; nothing was executed."
+            except Exception as exc:  # noqa: BLE001 - Expose safe metadata, never provider payloads.
+                error = unexpected_error(exc)
             if not self.closing:
                 self.completed.emit(job, result, error)
 

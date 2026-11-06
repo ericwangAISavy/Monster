@@ -168,3 +168,20 @@ def test_settings_cancel_discards_edits_and_blocks_capture(qtbot, qapp, tmp_path
     finally:
         ui.shutdown()
         qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_failure_details_survive_transient_notice_and_are_copyable(qtbot, qapp, tmp_path):
+    from PySide6.QtWidgets import QTextEdit
+
+    ui = CompanionApp(qapp, MockTaskController(), tmp_path / "prefs.json", enable_tray=False)
+    try:
+        ui.failed("Screen recheck failed: Unexpected TypeError at agent/validation.py:10")
+        ui.pill.hide()
+        ui.show_failure_details()
+        details = ui.preview_window.findChild(QTextEdit)
+        assert "TypeError" in details.toPlainText()
+        assert "Confirmed input transactions" in details.toPlainText()
+        assert details.isReadOnly()
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)
