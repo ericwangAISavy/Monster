@@ -38,3 +38,24 @@ Observe → Reason → Act → Verify
 ## Vision
 
 Monster aims to become a universal computer-use agent capable of operating applications through their graphical interfaces without requiring application-specific integrations.
+
+## Cursor companion GUI
+
+The first runnable milestone is an ultra-minimal PySide6 companion: a tiny
+click-through character and an on-demand command pill. **It currently uses a
+mock controller and performs no AI inference or computer actions.**
+
+From the repository root on Windows with Python 3.12+ and uv:
+
+```powershell
+uv sync --frozen
+uv run monster
+```
+
+Press **Ctrl+Alt+M** or use the tray icon to activate. **Ctrl+Alt+P** pauses/resumes
+and **Ctrl+Alt+X** stops the simulation. Tray Settings contains configurable
+shortcuts, cursor offsets and reduced motion. Tray Quit exits the application.
+
+See [Cursor companion guide](docs/CURSOR_COMPANION.md) for architecture,
+tests, capture isolation, engine integration and required Windows validation.
+See [Architecture plan](docs/ARCHITECTURE_PLAN.md) for the broader product design.

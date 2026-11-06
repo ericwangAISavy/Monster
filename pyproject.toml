@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "monster-companion"
+version = "0.1.0"
+description = "Minimal cursor companion for Monster (GUI demonstration)"
+requires-python = ">=3.12"
+dependencies = ["PySide6-Essentials>=6.8,<7"]
+
+[project.scripts]
+monster = "monster.app:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-qt>=4.4,<5", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 100
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/monster"]
