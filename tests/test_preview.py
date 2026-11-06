@@ -239,3 +239,75 @@ def test_reopened_active_settings_save_approval_only_change_without_new_probe(qt
         assert len(saved) == 1  # Actual inference changes still require the probe.
     finally:
         dialog.jobs.close()
+
+
+def test_settings_probe_has_one_total_deadline_and_ignores_late_success(qtbot):
+    from dataclasses import replace
+
+    class Stalled(FakeProvider):
+        async def probe(self, model):
+            await asyncio.sleep(60)
+
+    dialog = ProviderSettings(replace(config(), timeout=5), provider_factory=Stalled)
+    qtbot.addWidget(dialog)
+    try:
+        dialog.probe()
+        job = dialog.pending
+        qtbot.waitUntil(lambda: "remaining" in dialog.status.text(), timeout=2000)
+        qtbot.waitUntil(lambda: dialog.pending is None, timeout=6000)
+        assert "timed out" in dialog.status.text().lower()
+        assert "5" in dialog.status.text()
+        assert dialog.probed_config is None
+        assert dialog.probe_button.isEnabled()
+        assert not dialog.cancel_button.isEnabled()
+        status = dialog.status.text()
+        dialog._result(job, ProbeResult("vision:small", "abc", "test-1", True, True), "")
+        assert dialog.status.text() == status
+        assert dialog.probed_config is None
+    finally:
+        dialog.jobs.close()
+
+
+def test_settings_retest_invalidates_previous_qualification_until_success(qtbot):
+    class Failed(FakeProvider):
+        async def probe(self, model):
+            from monster.providers.base import ProviderError
+            raise ProviderError("Ollama request timed out")
+
+    dialog = ProviderSettings(config(), provider_factory=Failed)
+    qtbot.addWidget(dialog)
+    try:
+        assert dialog.probed_config is not None
+        dialog.probe()
+        qtbot.waitUntil(lambda: dialog.pending is None)
+        assert dialog.probed_config is None
+        assert "timed out" in dialog.status.text()
+    finally:
+        dialog.jobs.close()
+
+
+def test_settings_cancel_stops_deadline_and_allows_fresh_check(qtbot):
+    class Stalled(FakeProvider):
+        async def probe(self, model):
+            await asyncio.sleep(60)
+
+    dialog = ProviderSettings(config(), provider_factory=Stalled)
+    qtbot.addWidget(dialog)
+    try:
+        dialog.probe()
+        stale_job = dialog.pending
+        dialog.cancel_clicked()
+        assert dialog.pending is None
+        assert not dialog.request_deadline.isActive()
+        assert not dialog.request_progress.isActive()
+        dialog.provider_factory = FakeProvider
+        dialog.probe()
+        dialog._result(stale_job, ProbeResult("wrong", "abc", "test-1", True, True), "")
+        assert dialog.pending is not None
+        qtbot.waitUntil(lambda: dialog.pending is None)
+        assert "passed" in dialog.status.text()
+        assert dialog.probed_config is not None
+        assert not dialog.request_deadline.isActive()
+        assert not dialog.request_progress.isActive()
+    finally:
+        dialog.jobs.close()

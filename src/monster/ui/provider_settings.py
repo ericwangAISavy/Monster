@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QElapsedTimer, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -37,6 +37,14 @@ class ProviderSettings(QDialog):
         self.jobs.completed.connect(self._result)
         self.pending = None
         self.operation = ""
+        self.request_clock = QElapsedTimer()
+        self.request_deadline = QTimer(self)
+        self.request_deadline.setSingleShot(True)
+        self.request_deadline.setTimerType(Qt.TimerType.PreciseTimer)
+        self.request_deadline.timeout.connect(self._request_timed_out)
+        self.request_progress = QTimer(self)
+        self.request_progress.setInterval(250)
+        self.request_progress.timeout.connect(self._update_request_status)
         # Existing active configurations are checked again by the task controller.
         # Saving only local execution policy should not require another UI probe.
         self.probed_config = (
@@ -174,7 +182,7 @@ class ProviderSettings(QDialog):
             self.thinking.toggled,
         ):
             signal.connect(self.invalidate)
-        self.finished.connect(lambda _: self.jobs.close())
+        self.finished.connect(self._closed)
 
     def value(self):
         config = OllamaConfig(
@@ -210,7 +218,13 @@ class ProviderSettings(QDialog):
         self.cancel_request()
         self.status.setText("Configuration changed · test the connection and selected model again.")
 
+    def _closed(self, _):
+        self.cancel_request()
+        self.jobs.close()
+
     def cancel_request(self):
+        self.request_deadline.stop()
+        self.request_progress.stop()
         if self.pending:
             self.jobs.cancel(self.pending)
         self.pending = None
@@ -225,14 +239,39 @@ class ProviderSettings(QDialog):
     def _start(self, operation, coroutine):
         self.cancel_request()
         self.operation = operation
+        self.request_timeout_s = self.timeout.value()
+        self.probed_config = None
+        self.request_clock.start()
         self.pending = self.jobs.start(coroutine)
         self.cancel_button.setEnabled(True)
         self.connect_button.setEnabled(False)
         self.probe_button.setEnabled(False)
+        self.request_deadline.start(self.request_timeout_s * 1000)
+        self.request_progress.start()
+        self._update_request_status()
+
+    def _update_request_status(self):
+        if self.pending is None:
+            return
+        elapsed = self.request_clock.elapsed() / 1000
+        remaining = max(0, self.request_timeout_s - elapsed)
+        operation = "Checking server" if self.operation == "discover" else "Testing synthetic vision + JSON"
         self.status.setText(
-            "Checking server…"
-            if operation == "discover"
-            else "Testing synthetic vision + JSON… no desktop screenshot is sent."
+            f"{operation}… {elapsed:.0f}s elapsed, {remaining:.0f}s remaining "
+            f"(whole check limit: {self.request_timeout_s}s). "
+            "Waiting for Ollama; a cold model may need time to load. "
+            "No desktop screenshot is sent."
+        )
+
+    def _request_timed_out(self):
+        if self.pending is None:
+            return
+        name = "Connection/discovery" if self.operation == "discover" else "Vision + JSON test"
+        self.cancel_request()
+        self.status.setText(
+            f"{name} timed out after {self.request_timeout_s}s total. "
+            "Compatibility was not confirmed. Check Ollama model loading, server capacity "
+            "and connectivity. No automatic retry; no desktop screenshot was sent."
         )
 
     def discover(self):
