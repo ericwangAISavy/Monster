@@ -7,7 +7,7 @@ name = "monster-companion"
 version = "0.1.0"
 description = "Minimal cursor companion for Monster (GUI demonstration)"
 requires-python = ">=3.12"
-dependencies = ["PySide6-Essentials>=6.8,<7", "mss>=10,<11"]
+dependencies = ["PySide6-Essentials>=6.8,<7", "mss>=10,<11", "httpx>=0.28,<1"]
 
 [project.scripts]
 monster = "monster.app:main"

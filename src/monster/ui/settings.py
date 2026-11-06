@@ -28,8 +28,8 @@ class Settings(QDialog):
         )
         layout = QVBoxLayout(self)
         info = QLabel(
-            "GUI demo · no AI provider or computer control is connected.\n"
-            "The companion only observes your cursor."
+            "Companion appearance and shortcut settings.\n"
+            "Choose demo or Ollama preview in AI model settings."
         )
         info.setWordWrap(True)
         layout.addWidget(info)

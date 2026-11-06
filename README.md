@@ -83,3 +83,14 @@ uv run monster-tools type "Hello from Monster"
 For isolated overlay capture testing: `uv run monster --capture-test isolated.png`.
 See [Computer tools guide](docs/COMPUTER_TOOLS.md) for mouse commands, physical
 coordinates, stop behavior, limitations and required Windows qualification.
+
+## LAN Ollama preview
+
+Tray → **AI model settings…** now supports native Ollama connection testing,
+installed-model discovery, a synthetic vision/JSON probe and an opt-in screenshot
+preview mode. After enabling preview, submit an instruction through the pill and
+inspect **Last action preview…** from the tray.
+
+**Preview sends one desktop screenshot to your configured local/LAN server; it
+proposes an action but never executes it.** The default remains the GUI demo.
+See [LAN Ollama guide](docs/OLLAMA.md) for server setup, privacy, tests and limits.

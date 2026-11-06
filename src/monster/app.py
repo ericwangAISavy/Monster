@@ -6,15 +6,27 @@ from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
+    QMenu,
+    QSystemTrayIcon,
+    QTextEdit,
+    QVBoxLayout,
+)
 
 from monster.capture import CaptureIsolation
 from monster.config import Preferences, load, save
 from monster.geometry import beside_cursor
 from monster.lifecycle import MockTaskController, State, TaskController
 from monster.native import GlobalHotkeys, focus_window
+from monster.preview import PreviewTaskController
+from monster.providers import config as provider_config
 from monster.ui.companion import Companion, draw_monster
 from monster.ui.pill import Pill
+from monster.ui.provider_settings import ProviderSettings
 from monster.ui.settings import Settings
 
 
@@ -38,8 +50,19 @@ class CompanionApp:
         self.current_state = State.IDLE
         self.pending_question = None
         self.settings_window = None
-        self.closing = False
+        self.provider_window = None
+        self.preview_window = None
+        self.last_preview = None
+        self.preview_capture = None
+        self.controller_bindings = []
         self.startup_error = ""
+        self.provider_path = config_path.with_name("ollama.json")
+        try:
+            self.model_config = provider_config.load(self.provider_path)
+        except (OSError, ValueError, TypeError):
+            self.model_config = provider_config.OllamaConfig()
+            self.startup_error = "Could not load model settings; GUI demo is in use."
+        self.closing = False
         try:
             self.preferences = load(config_path)
         except (OSError, ValueError, TypeError):
@@ -49,6 +72,8 @@ class CompanionApp:
         self.pill = Pill()
         self.isolation = CaptureIsolation([self.companion, self.pill])
         self.isolation.ended.connect(self._capture_ended)
+        self.isolation.completed.connect(self._preview_observation)
+        self.isolation.failed.connect(self._preview_capture_failed)
         self._deferred_notice = None
         self.hotkeys = GlobalHotkeys(app)
         self.state_timer = QTimer()
@@ -57,16 +82,7 @@ class CompanionApp:
         self.pill.submitted.connect(self.submit)
         self.pill.dismissed.connect(self.dismiss)
         self.pill.answered.connect(self.answer)
-        controller.state_changed.connect(self.set_state)
-        controller.active_changed.connect(self._active_changed)
-        controller.paused_changed.connect(self._paused_changed)
-        controller.status.connect(self.notice)
-        controller.finished.connect(self.completed)
-        controller.failed.connect(self.failed)
-        controller.approval_requested.connect(lambda rid, text: self.question(rid, text, True))
-        controller.clarification_requested.connect(
-            lambda rid, text: self.question(rid, text, False)
-        )
+        self.bind_controller(controller)
         self.tray = None
         self.menu = None
         if enable_tray:
@@ -75,12 +91,58 @@ class CompanionApp:
         self.isolation.apply_native_hints()
         self.hotkey_errors = self.register_hotkeys()
         self.app.aboutToQuit.connect(self.shutdown)
+        if self.model_config.mode == "preview":
+            self.switch_controller(PreviewTaskController(self.model_config))
         # Tray activation is essential when native shortcuts aren't available.
         if enable_tray:
             QTimer.singleShot(300, self.welcome)
 
     def _active_changed(self, active):
         self.active = active
+
+    def bind_controller(self, controller):
+        self.controller = controller
+        bindings = [
+            (controller.state_changed, self.set_state),
+            (controller.active_changed, self._active_changed),
+            (controller.paused_changed, self._paused_changed),
+            (controller.status, self.notice),
+            (controller.finished, self.completed),
+            (controller.failed, self.failed),
+            (controller.approval_requested, lambda rid, text: self.question(rid, text, True)),
+            (controller.clarification_requested, lambda rid, text: self.question(rid, text, False)),
+        ]
+        if isinstance(controller, PreviewTaskController):
+            bindings.extend(
+                [
+                    (controller.capture_requested, self._capture_for_preview),
+                    (controller.preview_ready, self._show_preview),
+                ]
+            )
+        for signal, callback in bindings:
+            signal.connect(callback)
+        self.controller_bindings = bindings
+
+    def switch_controller(self, controller):
+        previous = self.controller
+        for signal, callback in self.controller_bindings:
+            signal.disconnect(callback)
+        previous.cancel()
+        if hasattr(previous, "close"):
+            previous.close()
+        self.bind_controller(controller)
+        self.pending_question = None
+        self.last_preview = None
+        self.active, self.paused = False, False
+        self.pill.hide()
+        self.pill.input.setToolTip(
+            "Preview only · sends one screenshot to your configured LAN server"
+            if not controller.is_mock
+            else "GUI demo · no input or inference"
+        )
+        self.set_state(State.IDLE)
+        if hasattr(self, "demo_menu"):
+            self.demo_menu.menuAction().setVisible(controller.is_mock)
 
     def _paused_changed(self, paused):
         self.paused = paused
@@ -108,12 +170,17 @@ class CompanionApp:
         toggle.setCheckable(True)
         toggle.setChecked(True)
         self.add_action("Settings…", self.show_settings)
+        self.add_action("AI model settings…", self.show_provider_settings)
+        self.add_action("Last action preview…", self.show_preview_details)
         if self.controller.is_mock:
             demo = self.menu.addMenu("GUI demo")
+            self.demo_menu = demo
             for kind in ("approval", "clarification"):
                 action = demo.addAction(f"Test {kind} pill")
                 action.triggered.connect(
-                    lambda checked=False, value=kind: self.controller.request_demo(value)
+                    lambda checked=False, value=kind: (
+                        self.controller.request_demo(value) if self.controller.is_mock else None
+                    )
                 )
         self.menu.addSeparator()
         self.add_action("Quit Monster", self.app.quit)
@@ -136,7 +203,11 @@ class CompanionApp:
             self.notice("No tray or global shortcuts · close with Ctrl+C in the terminal", 6000)
             return
         if self.tray:
-            text = "GUI demo only — no model or computer actions. "
+            text = (
+                "GUI demo only — no model or computer actions. "
+                if self.controller.is_mock
+                else "Ollama preview only — one screenshot per task; no input actions. "
+            )
             text += self.startup_error or "Activate from the tray or " + self.preferences.activate
             if self.hotkey_errors:
                 text += "\n" + "\n".join(self.hotkey_errors)
@@ -155,6 +226,10 @@ class CompanionApp:
     def activate(self):
         if self.isolation.busy or (self.settings_window and self.settings_window.isVisible()):
             return
+        if (self.provider_window and self.provider_window.isVisible()) or (
+            self.preview_window and self.preview_window.isVisible()
+        ):
+            return
         if self.pending_question:
             rid, text, approval = self.pending_question
             self.question(rid, text, approval)
@@ -167,6 +242,8 @@ class CompanionApp:
             return
         self.state_timer.stop()
         self.pill.show_input()
+        if not self.controller.is_mock:
+            self.pill.input.setToolTip("Preview only · screenshot sent to " + self.model_config.url)
         self.place_pill()
         self.pill.show()
         focus_window(self.pill)
@@ -196,7 +273,7 @@ class CompanionApp:
         self.companion.set_state(state)
         if self.tray:
             self.tray.setToolTip(
-                f"Monster · {'GUI demo · ' if self.controller.is_mock else ''}{state}"
+                f"Monster · {'GUI demo · ' if self.controller.is_mock else 'Ollama preview · '}{state}"
             )
 
     def _return_idle(self):
@@ -279,6 +356,8 @@ class CompanionApp:
     def show_settings(self):
         if self.isolation.busy:
             return
+        if self._focus_secondary_except(self.settings_window):
+            return
         if self.active and not self.paused:
             self.controller.toggle_pause()
         self.pill.hide()
@@ -300,9 +379,124 @@ class CompanionApp:
         """Future screenshot service entry: never include secondary Monster surfaces."""
         if self.settings_window and self.settings_window.isVisible():
             raise RuntimeError("Close Monster settings before taking an agent screenshot.")
+        if (self.provider_window and self.provider_window.isVisible()) or (
+            self.preview_window and self.preview_window.isVisible()
+        ):
+            raise RuntimeError("Close Monster model settings/preview before taking a screenshot.")
         if self.menu and self.menu.isVisible():
             raise RuntimeError("Close the tray menu before taking an agent screenshot.")
         self.isolation.capture(backend)
+
+    def _capture_for_preview(self):
+        from monster.computer.screenshot import capture_display
+
+        self.preview_capture = (self.controller, self.controller.generation)
+        try:
+            self.capture_desktop(capture_display)
+        except RuntimeError:
+            self.preview_capture = None
+            self.controller.capture_failed(
+                "Capture unavailable · close secondary windows and retry"
+            )
+
+    def _preview_observation(self, observation):
+        if self.preview_capture:
+            controller, generation = self.preview_capture
+            self.preview_capture = None
+            controller.observation_ready(observation, generation)
+
+    def _preview_capture_failed(self, error):
+        if self.preview_capture:
+            controller, generation = self.preview_capture
+            self.preview_capture = None
+            if generation == controller.generation:
+                controller.capture_failed(error)
+
+    def _show_preview(self, decision):
+        self.last_preview = decision
+
+    def show_preview_details(self):
+        if not self.last_preview or self.isolation.busy:
+            return
+        if self._focus_secondary_except(self.preview_window):
+            return
+        self._pause_for_secondary()
+        if self.preview_window:
+            focus_window(self.preview_window)
+            return
+        import json
+
+        dialog = QDialog()
+        self.preview_window = dialog
+        dialog.setWindowTitle("Monster · action preview (no input sent)")
+        dialog.resize(430, 270)
+        layout = QVBoxLayout(dialog)
+        label = QLabel(
+            "Model proposal only. Completion claims are unverified.\n"
+            "Coordinates refer to display 1's screenshot, not Qt window positions."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        details = QTextEdit()
+        details.setReadOnly(True)
+        details.setPlainText(
+            f"{self.last_preview.kind}: {self.last_preview.summary}\n\n"
+            + json.dumps(self.last_preview.action, ensure_ascii=False, indent=2)
+        )
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.finished.connect(self._close_preview_details)
+        dialog.show()
+        focus_window(dialog)
+
+    def _close_preview_details(self):
+        if self.preview_window:
+            self.preview_window.deleteLater()
+            self.preview_window = None
+
+    def _pause_for_secondary(self):
+        if self.active and not self.paused:
+            self.controller.toggle_pause()
+        self.pill.hide()
+
+    def _focus_secondary_except(self, current):
+        for window in (self.settings_window, self.provider_window, self.preview_window):
+            if window is not None and window is not current and window.isVisible():
+                focus_window(window)
+                return True
+        return False
+
+    def show_provider_settings(self):
+        if self.isolation.busy:
+            return
+        if self._focus_secondary_except(self.provider_window):
+            return
+        self._pause_for_secondary()
+        if not self.provider_window:
+            self.provider_window = ProviderSettings(self.model_config)
+            self.provider_window.saved.connect(self.save_provider_settings)
+            self.provider_window.finished.connect(self._discard_provider_settings)
+        self.provider_window.show()
+        focus_window(self.provider_window)
+
+    def _discard_provider_settings(self):
+        if self.provider_window:
+            self.provider_window.deleteLater()
+            self.provider_window = None
+
+    def save_provider_settings(self, config):
+        try:
+            provider_config.save(self.provider_path, config)
+        except OSError:
+            self.provider_window.status.setText("Could not save provider settings.")
+            return
+        self.model_config = config
+        self.switch_controller(
+            PreviewTaskController(config) if config.mode == "preview" else MockTaskController()
+        )
+        self.provider_window.accept()
 
     def save_settings(self, prefs):
         previous = self.preferences
@@ -339,6 +533,8 @@ class CompanionApp:
         self.isolation.suppress_restore(self.companion)
         self.state_timer.stop()
         self.controller.cancel()
+        if hasattr(self.controller, "close"):
+            self.controller.close()
         self.hotkeys.close()
         self.companion.timer.stop()
         self.pill._hide_timer.stop()
@@ -348,10 +544,14 @@ class CompanionApp:
         self.companion.close()
         if self.settings_window:
             self.settings_window.close()
+        if self.provider_window:
+            self.provider_window.close()
+        if self.preview_window:
+            self.preview_window.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Monster cursor companion — GUI demo only")
+    parser = argparse.ArgumentParser(description="Monster companion — demo or LAN Ollama preview")
     parser.add_argument("--smoke-test", action="store_true", help="Exit after one second")
     parser.add_argument(
         "--capture-test",
