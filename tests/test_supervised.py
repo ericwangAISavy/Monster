@@ -818,3 +818,47 @@ def test_initial_pill_focus_handoff_is_explicit_before_task_start(
     finally:
         ui.shutdown()
         qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+@pytest.mark.parametrize("approve_each_step", [True, False])
+def test_pre_pill_target_is_enforced_on_first_capture_after_probe(qtbot, approve_each_step):
+    import asyncio
+    import threading
+
+    engine, bridge, model = controller(
+        [Decision("action", "Type draft", {"op": "text", "text": "Hello from Monster"})]
+    )
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    probing = threading.Event()
+    release_probe = threading.Event()
+    failures, questions = [], []
+
+    async def probe(model_name):
+        probing.set()
+        while not release_probe.is_set():
+            await asyncio.sleep(0.001)
+        return ProbeResult(model_name, "abc", "test", True, True)
+
+    model.probe = probe
+    # The GUI pins the pre-pill target immediately after submit. While its model
+    # probe is pending, a user changes foreground to another window.
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(foreground=88), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    try:
+        assert engine.submit(
+            'Type "Hello from Monster" into the currently open Slack composer. Do not send.'
+        )
+        engine.task_foreground = 77
+        qtbot.waitUntil(probing.is_set)
+        release_probe.set()
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        assert len(failures) == 1 and "target window changed" in failures[0]
+        assert not model.history  # No planning request went to the new foreground.
+        assert not bridge.executed and not questions
+        assert engine.calls == 0 and engine.actions == 0
+    finally:
+        release_probe.set()
+        engine.close()
