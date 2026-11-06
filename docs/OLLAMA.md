@@ -160,3 +160,48 @@ late events from a cancelled check are ignored.
 
 All six randomized PNG orders are independently decoded in portable tests. This
 verifies test-image generation and encoding, not a real model's vision capability.
+
+### Independent check when image inference never finishes
+
+A supplied Gemma4 26B / Ollama 0.22.1 report completed version/list/metadata in
+0.179s, then reached the 60s deadline at `/api/chat`, before response headers. This
+rules out color-answer/JSON validation as the failing stage. It does not prove
+that Ollama never started computing: with `stream: false`, Ollama buffers the
+response until generation ends ([0.22.1 handler source](https://github.com/ollama/ollama/blob/v0.22.1/server/routes.go#L2622)).
+Gemma4's processor also scales tiny images toward its configured maximum patch
+budget; a 140-byte PNG is not necessarily cheap to infer
+([0.22.1 preprocessor](https://github.com/ollama/ollama/blob/v0.22.1/model/models/gemma4/process_image.go#L60)).
+These facts narrow the failure; they do not establish memory exhaustion or a
+specific model defect. Increasing the PNG size or timeout is not a demonstrated fix.
+
+Fully quit Monster first, then run from the repository on the same Windows PC:
+
+```powershell
+uv run python -m monster.providers.diagnose --case image_schema
+uv run python -m monster.providers.diagnose --case text
+```
+
+The first command reproduces the image/structured request outside Qt jobs, using
+saved `ollama.json`, the same model/options and the reported blue/green/red image
+content. The second removes the image and schema. The selected configuration is
+printed before sending. `--config PATH` selects an explicit saved file if needed;
+settings are never written. PNG compression bytes may vary between Python/zlib
+builds; decoded pixel content is checked independently.
+
+For a sequential comparison, omit `--case`. Cases are text, text/schema,
+image without schema, and image/schema; each has the unchanged saved request
+timeout and execution stops on the first failure. There are no retries, desktop
+screenshots or input actions. Reports contain status, header/total latency and
+safe server metrics (native durations are nanoseconds), never answers/reasoning.
+“Completed” measures the response envelope finishing, not answer/schema accuracy.
+The tool never qualifies a model for control. Server routing relies on the saved
+local-only confirmation plus rejection of known cloud model names; remotely
+routed aliases are not independently attested by this comparison tool.
+
+If the standalone image case also times out, Qt/pill handling is not required to
+produce the stall. If text also times out, investigate general inference,
+queueing/resources or transport. If only image input stalls, investigate the
+visual path; if image works without schema but stalls with schema, investigate
+that combination. These are candidate paths, not proof of a particular defect.
+Earlier cases may warm the server, so all completing does not by itself prove a
+GUI bug. Copy console output for analysis; no report file is created automatically.
