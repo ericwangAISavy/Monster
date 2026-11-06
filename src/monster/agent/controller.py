@@ -53,6 +53,10 @@ class SupervisedController(TaskController):
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.restore_focus = None
+        self.scheduled_capture = None
+        self.capture_timer = QTimer(self)
+        self.capture_timer.setSingleShot(True)
+        self.capture_timer.timeout.connect(self._delayed_capture)
         self.deadline = QTimer(self)
         self.deadline.setSingleShot(True)
         self.deadline.timeout.connect(lambda: self.fail("Five-minute task limit reached."))
@@ -167,7 +171,7 @@ class SupervisedController(TaskController):
             )
             self.trace.append(f"Step {self.actions}: {action_description(action)}; input inserted.")
             self.phase = "verifying_capture"
-            QTimer.singleShot(350, self, self._capture)
+            self._schedule_capture()
 
     def _probe(self):
         self.phase = "probing"
@@ -175,14 +179,28 @@ class SupervisedController(TaskController):
             lambda: self.provider_factory(self.config).probe(self.config.model)
         )
 
+    def _schedule_capture(self):
+        self.scheduled_capture = (self.generation, self.phase)
+        self.capture_timer.start(350)
+
+    def _delayed_capture(self):
+        expected = self.scheduled_capture
+        self.scheduled_capture = None
+        if expected == (self.generation, self.phase):
+            self._capture()
+
     def _capture(self):
-        if self.active and not self.paused:
+        if self.active and not self.paused and self.phase in {
+            "observing", "rechecking", "verifying_capture"
+        }:
+            self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
             self.capture_requested.emit()
 
     def observation_ready(self, observation, generation):
         if not self.active or self.paused or generation != self.generation:
             return
+        self.timings.finish(("capture", generation), "completed")
         if draft_only(self.instruction):
             if self.task_foreground is None:
                 self.task_foreground = observation.foreground
@@ -350,7 +368,7 @@ class SupervisedController(TaskController):
             self.preview_ready.emit(result)
             if result.kind == "action" and result.action == {"op": "screenshot"}:
                 self.phase = "observing"
-                QTimer.singleShot(350, self, self._capture)
+                self._schedule_capture()
                 return
             if result.kind == "unable":
                 self.fail("Model could not continue. Open Last action preview for its explanation.")
@@ -491,6 +509,7 @@ class SupervisedController(TaskController):
         )
 
     def capture_failed(self, error):
+        self.timings.finish(("capture", self.generation), "failed")
         self.fail(error)
 
     def fail(self, message):
@@ -498,6 +517,8 @@ class SupervisedController(TaskController):
             self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
+        self.capture_timer.stop()
+        self.scheduled_capture = None
         self.timings.cancel_pending()
         self.input.stop()
         self.generation += 1

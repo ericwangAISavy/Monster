@@ -307,3 +307,21 @@ planning and verification from input-worker waits. Existing action-preview detai
 can contain the proposed text and visual evidence, so share only the timing block
 unless you intentionally choose to share those contents. Opening details during
 an active task retains the existing manual-takeover behavior.
+
+### Capture cancellation and timing
+
+Delayed screenshots after input or a model screenshot request are now scheduled
+on one owned, cancellable timer. Each scheduled capture is bound to its task
+generation and expected phase. Termination cancels it; a callback from an old task
+cannot request a screenshot while a new task is probing or planning. Captures are
+requested only in observation, pre-dispatch recheck and post-input verification
+phases. Portable regressions reproduced the old cross-task callback in both
+scheduling paths and now check that neither a capture nor additional input occurs.
+
+The existing timing summaries also include **Screenshot capture**. This measures
+the wait from the controller's request through the observation/error callback,
+including overlay removal and compositor settling, but excluding the separate
+350ms post-input delay. Completed, failed and cancelled captures are counted
+separately. A completed capture is not evidence of overlay-free pixels or correct
+focus; inspect those on Windows. Late frames from cancelled tasks do not update
+the ended task's timings.

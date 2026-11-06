@@ -7,6 +7,7 @@ from typing import ClassVar
 class OperationTimings:
     LABELS: ClassVar[dict[str, str]] = {
         "probe": "Model compatibility check",
+        "capture": "Screenshot capture",
         "planning": "Planning",
         "recheck": "Scene recheck",
         "verification": "Visual verification",

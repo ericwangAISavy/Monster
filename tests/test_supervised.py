@@ -888,6 +888,7 @@ def test_task_timings_survive_completion_without_private_payloads(qtbot):
         assert "Visual verification: completed 1" in report
         assert "Input dispatch: completed 1" in report
         assert "Input startup: completed 1" in report
+        assert "Screenshot capture: completed 4" in report
         assert "Input cleanup: completed 1" in report
         assert content not in report and "Simulated expected" not in report
         assert len(bridge.executed) == 1
@@ -917,5 +918,76 @@ def test_cancelled_model_wait_is_reported_and_does_not_finish_late(qtbot):
         assert "Model compatibility check: completed 0, failed 0, cancelled 1" in report
         assert "Input cleanup: completed 1" in report
         assert not bridge.executed
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("scheduled_from", ["screenshot", "inserted"])
+def test_cancelled_capture_timer_cannot_capture_during_next_probe(qtbot, scheduled_from):
+    import asyncio
+    import threading
+
+    decisions = (
+        [Decision("action", "Observe again", {"op": "screenshot"})]
+        if scheduled_from == "screenshot"
+        else [Decision("action", "Type", {"op": "text", "text": "Hello"})]
+    )
+    engine, bridge, model = controller(decisions)
+    engine.config = replace(engine.config, approve_each_step=False)
+    captures = []
+    pending = threading.Event()
+
+    def capture():
+        captures.append((engine.generation, engine.phase))
+        engine.observation_ready(observation(), engine.generation)
+
+    async def slow_probe(model_name):
+        pending.set()
+        await asyncio.sleep(30)
+        return ProbeResult(model_name, "abc", "test", True, True)
+
+    engine.capture_requested.connect(capture)
+    try:
+        engine.submit("Write Hello in the open Notepad")
+        if scheduled_from == "screenshot":
+            qtbot.waitUntil(lambda: bool(engine.pending))
+        else:
+            qtbot.waitUntil(lambda: engine.phase == "verifying_capture")
+        engine.cancel()
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        model.probe = slow_probe
+        engine.submit("Write Hello in the open Notepad")
+        qtbot.waitUntil(pending.is_set)
+        count = len(captures)
+        input_count = len(bridge.executed)
+        qtbot.wait(450)  # Pass the old task's 350ms capture deadline.
+        assert len(captures) == count
+        assert len(bridge.executed) == input_count
+        assert engine.phase == "probing"
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("cancel", [True, False])
+def test_capture_wait_distinguishes_cancel_from_backend_failure(qtbot, cancel):
+    engine, bridge, _ = controller([])
+    captures = []
+    engine.capture_requested.connect(lambda: captures.append(engine.generation))
+    try:
+        engine.submit("Write a harmless note")
+        qtbot.waitUntil(lambda: bool(captures))
+        if cancel:
+            engine.cancel()
+        else:
+            engine.capture_failed("Capture backend unavailable")
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        expected = "completed 0, failed 0, cancelled 1" if cancel else (
+            "completed 0, failed 1, cancelled 0"
+        )
+        assert f"Screenshot capture: {expected}" in engine.failure_diagnostics()
+        assert not bridge.executed
+        report = engine.failure_diagnostics()
+        engine.observation_ready(observation(), captures[0])
+        assert engine.failure_diagnostics() == report
     finally:
         engine.close()
