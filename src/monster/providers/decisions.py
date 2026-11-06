@@ -1,7 +1,5 @@
 """Strict next-action schema. A decision is data; this module has no executor dependency."""
 
-from copy import deepcopy
-
 from monster.computer.contracts import KEYS, Bounds, validate_action
 from monster.providers.base import Decision, ProviderError
 
@@ -15,13 +13,12 @@ ACTION_SCHEMA = {
             "additionalProperties": False,
         }
         for op, properties in [
-            ("move", {"x_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
-                      "y_1000": {"type": "integer", "minimum": 0, "maximum": 1000}}),
+            ("move", {"x": {"type": "integer"}, "y": {"type": "integer"}}),
             (
                 "click",
                 {
-                    "x_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
-                    "y_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
                     "button": {"enum": ["left", "right", "middle"]},
                     "count": {"type": "integer", "minimum": 1, "maximum": 2},
                 },
@@ -29,8 +26,8 @@ ACTION_SCHEMA = {
             (
                 "scroll",
                 {
-                    "x_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
-                    "y_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
                     "delta": {"type": "integer", "minimum": -1200, "maximum": 1200},
                     "horizontal": {"type": "boolean"},
                 },
@@ -86,12 +83,7 @@ DECISION_SCHEMA = {
 }
 
 
-def parse_decision(value, width: int, height: int, *, coordinate_space="image_pixels") -> Decision:
-    if coordinate_space not in {"image_pixels", "normalized_1000"}:
-        raise ProviderError("Model action failed validation: unknown coordinate space.")
-    if type(width) is not int or type(height) is not int or width < 1 or height < 1:
-        raise ProviderError("Model action failed validation: invalid image dimensions.")
-    coordinate_source = None
+def parse_decision(value, width: int, height: int) -> Decision:
     if (
         type(value) is not dict
         or type(value.get("kind")) is not str
@@ -129,22 +121,6 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
                 "chord",
             }:
                 raise ProviderError("Unsupported model action.")
-            if coordinate_space == "normalized_1000" and action.get("op") in {"move", "click", "scroll"}:
-                if any(key in action for key in ("x", "y", "end_x", "end_y")) or any(
-                    type(action.get(key)) is not int or not 0 <= action[key] <= 1000
-                    for key in ("x_1000", "y_1000")
-                ):
-                    raise ProviderError(
-                        "Model action failed validation: use integer x_1000/y_1000 in [0,1000], not pixel coordinates."
-                    )
-                coordinate_source = {
-                    "space": "normalized_1000", "model_action": deepcopy(action),
-                    "image_size": {"width": width, "height": height},
-                    "mapping": "round(value * (image_size - 1) / 1000)",
-                }
-                action = dict(action)
-                action["x"] = round(action.pop("x_1000") * (width - 1) / 1000)
-                action["y"] = round(action.pop("y_1000") * (height - 1) / 1000)
             try:
                 validate_action(action, [Bounds(0, 0, width, height)])
             except (ValueError, TypeError):
@@ -153,4 +129,4 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
                 ) from None
     elif value["kind"] == "action":
         raise ProviderError("Action decision requires an action.")
-    return Decision(value["kind"], summary.strip(), action, risk, expected, coordinate_source)
+    return Decision(value["kind"], summary.strip(), action, risk, expected)

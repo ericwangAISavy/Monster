@@ -35,7 +35,6 @@ class PreviewTaskController(TaskController):
         self.active_changed.emit(True)
         self.paused_changed.emit(False)
         self.state_changed.emit(State.THINKING)
-        self.stage_changed.emit("Model check")
         # A fresh compatibility check avoids stale persisted model qualifications.
         self.job = self.jobs.start(
             lambda: self.provider_factory(self.config).probe(self.config.model)
@@ -52,7 +51,6 @@ class PreviewTaskController(TaskController):
         elif not self.verified:
             self.verified = True
             self.state_changed.emit(State.WORKING)
-            self.stage_changed.emit("Capturing")
             self.capture_requested.emit()
         else:
             self.active = False
@@ -69,7 +67,6 @@ class PreviewTaskController(TaskController):
             return
         self.has_observation = True
         self.state_changed.emit(State.THINKING)
-        self.stage_changed.emit("Thinking")
         instruction = self.instruction
         self.job = self.jobs.start(
             lambda: self.provider_factory(self.config).decide(

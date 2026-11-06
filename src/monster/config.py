@@ -13,8 +13,6 @@ class Preferences:
     offset_x: int = 26
     offset_y: int = 20
     reduced_motion: bool = False
-    companion_scale: int = 100
-    companion_position: str = "cursor"
 
     def validate(self):
         from monster.native import parse_hotkey
@@ -24,10 +22,6 @@ class Preferences:
             raise ValueError("Each shortcut must be different.")
         if not 16 <= self.offset_x <= 80 or not 12 <= self.offset_y <= 80:
             raise ValueError("Cursor offsets must stay between 16–80 and 12–80 pixels.")
-        if type(self.companion_scale) is not int or not 75 <= self.companion_scale <= 150:
-            raise ValueError("Companion size must be between 75% and 150%.")
-        if self.companion_position not in {"cursor", "top_right", "bottom_right"}:
-            raise ValueError("Choose cursor following or a primary-display corner.")
 
 
 def load(path: Path) -> Preferences:

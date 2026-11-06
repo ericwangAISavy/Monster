@@ -60,12 +60,12 @@ def test_native_discovery_vision_probe_and_decision():
     proposal = {
         "kind": "action",
         "summary": "Click the editor",
-        "action": {"op": "click", "x_1000": 40, "y_1000": 60, "button": "left", "count": 1},
+        "action": {"op": "click", "x": 4, "y": 6, "button": "left", "count": 1},
         "risk": "routine",
     }
     adapter = OllamaProvider(config(), transport([], decision=proposal))
     result = asyncio.run(adapter.decide("vision:small", "Write a note", b"PNG", 100, 100))
-    assert result.action == {"op": "click", "x": 4, "y": 6, "button": "left", "count": 1}
+    assert result.action == proposal["action"]
     assert result.risk == "routine"
 
 
@@ -374,7 +374,7 @@ def test_provider_diagnostics_include_finish_metrics_but_never_raw_thinking():
             "done": True, "done_reason": "stop", "eval_count": 14, "load_duration": 123,
             "message": {"thinking": "PRIVATE_RAW_REASONING_CANARY", "content": json.dumps({
                 "kind": "action", "summary": "Focus editor", "risk": "routine",
-                "action": {"op": "click", "x_1000": 40, "y_1000": 60},
+                "action": {"op": "click", "x": 4, "y": 6},
                 "expected_result": "Editor focused",
             })},
         })
@@ -388,120 +388,4 @@ def test_provider_diagnostics_include_finish_metrics_but_never_raw_thinking():
     response = next(item for item in events if item["event"] == "provider_model_response")
     assert response["details"]["server_metrics"]["eval_count"] == 14
     parsed = next(item for item in events if item["event"] == "provider_structured_response")
-    assert parsed["content"]["action"] == {"op": "click", "x_1000": 40, "y_1000": 60}
-
-
-@pytest.mark.parametrize("width,height,point,expected", [
-    (1920, 1080, (585, 955), (1123, 1030)),
-    (1920, 1080, (570, 972), (1094, 1049)),
-    (1920, 1080, (1000, 1000), (1919, 1079)),
-    (2560, 1440, (500, 500), (1280, 720)),
-    (1, 1, (1000, 1000), (0, 0)),
-])
-def test_normalized_coordinate_contract_maps_once_to_native_image_pixels(width, height, point, expected):
-    decision = parse_decision({
-        "kind": "action", "summary": "Focus target", "risk": "routine",
-        "expected_result": "Target foreground",
-        "action": {"op": "click", "x_1000": point[0], "y_1000": point[1]},
-    }, width, height, coordinate_space="normalized_1000")
-    assert (decision.action["x"], decision.action["y"]) == expected
-    assert "x_1000" not in decision.action
-    assert decision.coordinate_source["model_action"]["x_1000"] == point[0]
-    assert decision.coordinate_source["image_size"] == {"width": width, "height": height}
-
-
-@pytest.mark.parametrize("action", [
-    {"op": "click", "x": 585, "y": 955},
-    {"op": "click", "x_1000": 585, "y_1000": 955, "x": 585},
-    {"op": "click", "x_1000": 1001, "y_1000": 500},
-    {"op": "click", "x_1000": True, "y_1000": 500},
-    {"op": "click", "x_1000": -1, "y_1000": 500},
-])
-def test_normalized_coordinate_protocol_rejects_ambiguous_or_invalid_points(action):
-    with pytest.raises(ProviderError):
-        parse_decision({"kind": "action", "summary": "Target", "action": action},
-                       1920, 1080, coordinate_space="normalized_1000")
-
-
-def test_normalized_model_coordinates_add_negative_monitor_origin_only_at_dispatch():
-    from types import SimpleNamespace
-
-    from monster.agent.validation import prepare_action
-    from monster.computer.contracts import Bounds
-
-    decision = parse_decision({"kind": "action", "summary": "Focus target", "action": {
-        "op": "click", "x_1000": 570, "y_1000": 972,
-    }}, 1920, 1080, coordinate_space="normalized_1000")
-    bounds = Bounds(-1920, 0, 1920, 1080)
-    observation = SimpleNamespace(bounds=bounds, displays=(bounds,), foreground=77)
-    actual = prepare_action(decision.action, observation)
-    assert actual["x"] == -826 and actual["y"] == 1049
-
-
-def test_live_provider_schema_requires_normalized_keys_without_legacy_fallback():
-    requests = []
-    provider = OllamaProvider(config(), transport(requests, decision={
-        "kind": "action", "summary": "Slack taskbar icon", "risk": "routine",
-        "expected_result": "Slack foreground", "action": {"op": "click", "x": 585, "y": 955},
-    }))
-    with pytest.raises(ProviderError, match="x_1000/y_1000"):
-        asyncio.run(provider.decide("vision:small", "Go to Slack", b"PNG", 1920, 1080))
-    payload = json.loads(requests[-1].content)
-    action_schema = payload["format"]["oneOf"][0]["properties"]["action"]
-    click = next(item for item in action_schema["oneOf"] if item["properties"]["op"]["const"] == "click")
-    assert click["properties"]["y_1000"]["maximum"] == 1000
-    assert "y" not in click["properties"]
-    assert "already-converted native image pixels" in payload["messages"][1]["content"]
-
-
-def test_probe_reports_stage_and_image_evidence_without_reasoning():
-    events, requests = [], []
-    adapter = OllamaProvider(config(), transport(requests),
-                             diagnostic_callback=lambda event, details, content=None: events.append((event, details)))
-    asyncio.run(adapter.probe("vision:small"))
-    stages = [details["stage"] for event, details in events if event == "probe_stage"]
-    assert stages == ["server_version", "model_list", "model_metadata", "vision_inference", "vision_validation"]
-    image = next(details for event, details in events if event == "probe_image")
-    sent = base64.b64decode(json.loads(requests[-1].content)["messages"][1]["images"][0])
-    import hashlib
-    assert image["sha256"] == hashlib.sha256(sent).hexdigest()
-    assert image["expected_colors"] == image_colors(sent)
-    assert image["width"] == 96 and image["height"] == 32
-    assert any(event == "probe_passed" for event, _ in events)
-
-
-def test_probe_timeout_names_stage_without_claiming_model_incompatible():
-    original = transport([])
-    events = []
-
-    async def handle(request):
-        if request.url.path == "/api/chat":
-            raise httpx.ReadTimeout("secret server internals")
-        return original.handle_request(request)
-
-    adapter = OllamaProvider(config(), httpx.MockTransport(handle),
-                             diagnostic_callback=lambda event, details, content=None: events.append((event, details)))
-    with pytest.raises(ProviderError) as error:
-        asyncio.run(adapter.probe("vision:small"))
-    assert "Image inference + JSON" in str(error.value)
-    assert "timed out" in str(error.value)
-    assert "secret" not in str(error.value)
-    failure = next(details for event, details in events if event == "probe_failed")
-    assert failure["stage"] == "vision_inference"
-
-
-@pytest.mark.parametrize("colors", [
-    ["red", "green", "blue"], ["red", "blue", "green"],
-    ["green", "red", "blue"], ["green", "blue", "red"],
-    ["blue", "red", "green"], ["blue", "green", "red"],
-])
-def test_synthetic_probe_png_decodes_with_independent_image_reader(colors):
-    from PySide6.QtGui import QImage
-
-    from monster.providers.ollama import probe_image
-
-    image = QImage.fromData(probe_image(colors), "PNG")
-    assert not image.isNull()
-    assert (image.width(), image.height()) == (96, 32)
-    rgb = {"red": "#ff0000", "green": "#00ff00", "blue": "#0000ff"}
-    assert [image.pixelColor(x, 16).name() for x in (16, 48, 80)] == [rgb[c] for c in colors]
+    assert parsed["content"]["action"] == {"op": "click", "x": 4, "y": 6}

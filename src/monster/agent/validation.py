@@ -8,18 +8,6 @@ from PySide6.QtGui import QImage
 from monster.computer.contracts import Bounds, validate_action
 
 
-def single_click_requested(instruction):
-    """Conservative input budget for explicit English one-click requests.
-
-    This limits input, not target grounding. Recognize terminal "click ... once"
-    requests only; compound instructions after "once" use the ordinary workflow.
-    """
-    return bool(re.search(
-        r"\bclick\b[^.!?;\n]{0,120}\bonce\s*[.!]?\s*$",
-        instruction, flags=re.IGNORECASE,
-    ))
-
-
 def window_close_requested(instruction):
     """Narrow explicit English intent, never inferred from model output."""
     return bool(re.fullmatch(

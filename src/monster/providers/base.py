@@ -37,7 +37,6 @@ class Decision:
     action: dict | None = None
     risk: str | None = None
     expected_result: str | None = None
-    coordinate_source: dict | None = None
 
 
 @dataclass(frozen=True)

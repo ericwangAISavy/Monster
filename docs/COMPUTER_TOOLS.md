@@ -122,22 +122,3 @@ These tests do **not** call real SendInput or establish native screenshot fideli
 9. Measure active capture/input CPU and latency on Windows; native enumeration and capture calls are synchronous, so qualify their worst observed behavior. Do not claim hard real-time interruption.
 
 Native Windows checks are outstanding because this development environment is Linux. The next milestone after those checks pass is LAN Ollama integration and a supervised, observation-bound Notepad loop—not unrestricted autonomous control.
-
-### Screenshot/request UI review
-
-The UI entry point blocks capture while settings, reports or the tray menu are
-visible. CaptureIsolation hides the companion and communication pill, waits for
-the compositor, checks neither resurfaced, and then invokes the native capture
-backend. The backend binds the foreground display, preserves physical dimensions
-and monitor origin, and rejects a foreground change. The same PNG is base64 encoded
-in the native Ollama `/api/chat` request; no GUI-size scaling is applied to input
-coordinates. The overlays are restored before the asynchronous HTTP wait, so they
-need not blink throughout inference. A brief disappearance during each actual
-capture remains intentional. Windows capture exclusion still needs native
-qualification; accepted display-affinity hints do not bypass hiding.
-
-Synthetic settings checks use a generated three-color image and never invoke the
-desktop capture gate. Their companion badge reads “Vision test”; task stages use
-“Model check”, “Capturing”, “Thinking”, “Rechecking”, “Acting” and “Verifying”.
-These are execution stages, not model reasoning. Passive approval updates apply
-final focus/input flags once, avoiding an intermediate native window recreation.

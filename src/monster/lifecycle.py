@@ -21,7 +21,6 @@ class State(StrEnum):
 
 class TaskController(QObject):
     state_changed = Signal(str)
-    stage_changed = Signal(str)  # Short content-free label; never model reasoning.
     status = Signal(str)
     finished = Signal(str)
     failed = Signal(str)

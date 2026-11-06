@@ -386,30 +386,3 @@ def test_report_export_uses_displayed_snapshot_and_requires_explicit_save(
     finally:
         ui.shutdown()
         qapp.aboutToQuit.disconnect(ui.shutdown)
-
-
-def test_repeated_passive_approval_does_not_hide_or_reconfigure_window(qtbot):
-    from PySide6.QtCore import QEvent, QObject
-
-    class Events(QObject):
-        def __init__(self):
-            super().__init__()
-            self.hidden = 0
-
-        def eventFilter(self, obj, event):
-            if event.type() == QEvent.Type.Hide:
-                self.hidden += 1
-            return False
-
-    pill = Pill()
-    qtbot.addWidget(pill)
-    pill.show_question("first", "Review this action", True, take_focus=False)
-    pill.winId()
-    events = Events()
-    pill.installEventFilter(events)
-    pill.show_question("second", "Review the next action", True, take_focus=False)
-    assert events.hidden == 0
-    assert pill.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
-    assert not pill.windowFlags() & Qt.WindowType.WindowTransparentForInput
-    assert pill.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-    assert pill.request_id == "second"
