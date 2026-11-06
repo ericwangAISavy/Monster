@@ -38,9 +38,9 @@ def validate_draft_action(decision, instruction, text_inserted=False):
     if not draft_only(instruction):
         return
     action = decision.action or {}
-    if action.get("op") == "click" and text_inserted:
+    if text_inserted:
         raise ValueError(
-            "Draft text was already inserted. Do not click controls; verify the unsent composer."
+            "Draft text was already inserted. No further input is allowed; verify the unsent composer."
         )
     if action.get("op") in {"text", "move", "scroll"} or action.get("keys") == ["SHIFT", "ENTER"]:
         return

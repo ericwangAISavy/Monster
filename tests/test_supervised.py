@@ -719,3 +719,42 @@ def test_repeat_identity_normalizes_defaults_unicode_and_nearby_coordinates():
     assert action_signature({"op": "text", "text": "café "}) == action_signature(
         {"op": "text", "text": "cafe\u0301"}
     )
+
+
+@pytest.mark.parametrize("approve_each_step", [True, False])
+@pytest.mark.parametrize(
+    "followup",
+    [
+        {"op": "text", "text": "Hello from Monster!"},
+        {"op": "text", "text": " from Monster"},
+        {"op": "press", "key": "BACKSPACE"},
+        {"op": "chord", "keys": ["SHIFT", "ENTER"]},
+    ],
+)
+def test_draft_insertion_cannot_be_followed_by_more_input(qtbot, approve_each_step, followup):
+    engine, bridge, model = controller(
+        [
+            Decision("action", "Type draft", {"op": "text", "text": "Hello from Monster"}),
+            Decision("action", "Adjust draft", followup, risk="routine"),
+            Decision("complete", "Requested draft is visible and unsent"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    # Approve input reviews as a user would. Final confirmation stays unanswered.
+    engine.approval_requested.connect(
+        lambda rid, text: QTimer.singleShot(0, lambda: engine.respond(rid, "approve"))
+        if engine.phase == "approval" else None
+    )
+    try:
+        engine.submit('Type "Hello from Monster" into the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert [entry[0] for entry in bridge.executed] == [
+            {"op": "text", "text": "Hello from Monster"}
+        ]
+        assert engine.actions == 1 and engine.verification_calls == 1
+        assert "rejected" in " ".join(model.history[-1]).lower()
+    finally:
+        engine.close()

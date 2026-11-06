@@ -183,3 +183,75 @@ and stops if it changes instead of redirecting text to another window. Monitor
 selection uses only native focus/display geometry, not application text or APIs.
 This change still needs a real mixed-monitor Windows check. The explicit CLI
 `monster-tools screenshot --display N` keeps its requested display selection.
+
+### Single-transaction draft typing
+
+A recognized message-drafting task now permits one text transaction. After Windows
+reports that transaction inserted, all further input proposals are rejected,
+including different text, partial suffixes, Backspace and Shift+Enter. The model
+must provide the complete requested draft in that first transaction, then verify
+and request final confirmation. A task requiring correction must stop for manual
+inspection; the agent does not edit or replay ambiguous input. This intentionally
+does not support building a draft across multiple text transactions.
+
+The prior duplicate guard compared text signatures, so a changed payload could
+append to an already-inserted draft. Scripted controller regressions reproduced
+that defect in both approval modes. These tests do not establish the cause of any
+particular live Slack failure.
+
+### Native qualification procedure for this workflow
+
+Linux validation cannot qualify Windows input or Slack. No live Slack attempts or
+model/verification latency measurements were possible in the cloud workspace:
+the supplied private Ollama origin was denied by the configured proxy. Keep the
+server private and test from the existing Windows LAN machine; do not change the
+model to compensate for cloud connectivity.
+
+1. Use a clean checkout of `main`, run `uv sync --frozen`, and quit Monster before
+   standalone input-tool trials. Follow [Computer tools](COMPUTER_TOOLS.md) to
+   qualify Unicode in disposable Notepad, physical coordinates on each monitor,
+   negative origins/mixed DPI, emergency stop during typing and owned-input
+   release. Inspect `uv run monster --capture-test isolated.png` locally for
+   overlay exclusion; delete that opt-in artifact afterward. Do not infer native
+   results from the portable suite.
+2. Launch `uv run monster`. Retain `http://192.168.2.230:11440`, `gemma4:e4b`,
+   context 16384, maximum output 4096, thinking off and keep loaded 5m. Use the
+   existing connection/model probe controls. A failed connection is an environment
+   blocker; a successful probe is not proof of grounding accuracy.
+3. In a non-sensitive Slack test conversation, manually empty the composer and
+   focus it. Activate Monster and request exactly: **Type 'Hello from Monster'
+   into the currently open Slack message composer. Do not send.** Check that the
+   pill closes and the intended Slack window/composer regains focus. Decline any
+   proposal whose target or text is wrong. Inspect image-relative coordinates in
+   **Last action preview** against the target display; do not use a Slack API,
+   DOM, accessibility tree or clipboard to inspect the target.
+4. Confirm success only if the editable composer contains exactly
+   `Hello from Monster` once, no other field received text, no message appeared
+   in chat history, and no Send/submit operation occurred. An accepted input
+   receipt or successful model check is insufficient. Decline final confirmation
+   for any mismatch, inspect manually and clear the disposable draft before a new
+   trial. Never automatically retry uncertain typing.
+5. Repeat five trials in each cell: focused composer/approval on, focused
+   composer/approval off, visible but unfocused composer/approval on, visible but
+   unfocused composer/approval off (20 attempts total). For the unfocused case,
+   leave Slack foreground with focus in another harmless Slack field. Repeat on
+   a secondary display after primary-display qualification. Restore an empty
+   composer manually between attempts; do not send any draft.
+6. In separate interruption trials press Ctrl+Alt+X during inference, review,
+   typing and immediately after approval. Check that no queued input resumes,
+   held keys/buttons are released, and a new task needs explicit authorization.
+   Deliberately change foreground while a proposal is pending; verify it stops or
+   rejects stale input rather than redirecting it. Test Decline for an uncertain
+   result and confirm no replay.
+
+Record only non-content metadata unless explicitly opting into a local screenshot
+capture. For each trial record approval mode, initial focus, monitor/DPI, outcome,
+wrong-target action count, duplicate insertion count, intervention and stop/cleanup
+result. Time planning and verification separately with a local stopwatch; report
+cold-load behavior separately. Classify failures at capture, grounding, proposal
+validation, focus, dispatch, visible-result verification or completion. Distinguish
+model proposals/verifier errors from tool/executor errors. Report successful drafts
+as successes/attempts for each cell; do not count blocked or unrun trials as passes.
+Screenshots and proposed coordinates must be inspected locally on that machine;
+no personal screen captures, message contents or raw reasoning should be collected
+by default.

@@ -439,7 +439,9 @@ class SupervisedController(TaskController):
             text += (
                 "\nTrusted task boundary: draft/typing only in the currently open composer. "
                 "Do not send, submit, switch applications or press Enter. Stop when the "
-                "requested text is visibly present in that editable composer, not in chat history."
+                "requested text is visibly present in that editable composer, not in chat history. "
+                "Type the complete requested draft in one text transaction. After text insertion, "
+                "only observe and report completion or ask for help; do not append, edit or send."
             )
         return text
 
