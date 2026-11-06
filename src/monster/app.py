@@ -540,8 +540,19 @@ class CompanionApp:
             f"Risk: {self.last_preview.risk or 'unclassified'}\n\n"
             + json.dumps(self.last_preview.action, ensure_ascii=False, indent=2)
         )
+        if self.last_preview.kind == "action":
+            expected = self.last_preview.expected_result or self.last_preview.summary
+            text += f"\n\nExpected visible result: {expected}"
         verification = getattr(self.controller, "last_verification", None)
         if verification:
+            verified = getattr(self.controller, "last_verified_proposal", None)
+            if verified is not None:
+                text += (
+                    "\n\nLast verified action: "
+                    + json.dumps(verified.action, ensure_ascii=False)
+                    + "\nExpected visible result for that action: "
+                    + (verified.expected_result or verified.summary)
+                )
             text += (
                 f"\n\nLast executed action visual check: {verification.status}\n"
                 f"Evidence: {verification.evidence}"

@@ -390,3 +390,24 @@ Native focus restoration still requires a Windows check: answer a clarification
 while Slack is the task target, then confirm the original composer receives the
 single reviewed text insertion. Dismissing that clarification must stop without
 another action.
+
+### Diagnosing app-opening failures
+
+The human composer-focus review applies to recognized message-drafting tasks, not
+commands such as **open sticky note**. App-opening tasks still use the general
+bounded recovery policy. Three failed click checks in that workflow do not by
+themselves indicate that the draft focus-review code was bypassed.
+
+**Last action preview** now shows the proposed expected visible result. It also
+pairs the last visual verification with the specific action and expected result
+that were checked, even if a newer proposal has since arrived. Compare that
+condition with the verification evidence and what you actually saw. For example,
+opening Start should be checked against the visible Start menu, not against the
+final application already being open. This diagnostic display does not establish
+which condition caused an earlier failure; native screenshots/observations are
+still needed to distinguish wrong grounding from a false-negative verifier.
+
+These details remain local/in memory and may contain proposed text or screen
+information, as the existing preview already does. Share only non-sensitive
+parts. The content-free failure trace continues to omit those payloads. No limits
+or input policies were relaxed for app-opening tasks.

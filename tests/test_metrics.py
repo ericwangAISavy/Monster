@@ -56,3 +56,52 @@ def test_existing_action_details_include_content_free_timings():
     assert len(shown) == 1
     assert "Planning: completed 1" in shown[0]
     assert "not proof of action success" in shown[0]
+
+
+def test_action_details_show_exact_condition_sent_to_verifier():
+    from types import SimpleNamespace
+
+    from monster.app import CompanionApp
+    from monster.providers.base import Decision, Verification
+
+    shown = []
+    view = SimpleNamespace(
+        last_preview=Decision(
+            "action", "Open Start", {"op": "press", "key": "WIN"},
+            expected_result="The Start menu is visible, not yet Sticky Notes",
+        ),
+        controller=SimpleNamespace(last_verification=Verification("failed", "Start menu is visible")),
+        _show_details=lambda title, text, description: shown.append(text),
+    )
+    CompanionApp.show_preview_details(view)
+    assert "Expected visible result: The Start menu is visible, not yet Sticky Notes" in shown[0]
+    assert "Evidence: Start menu is visible" in shown[0]
+
+
+def test_action_details_pair_verification_with_its_own_action_not_next_proposal():
+    from types import SimpleNamespace
+
+    from monster.app import CompanionApp
+    from monster.providers.base import Decision, Verification
+
+    shown = []
+    verified = Decision(
+        "action", "Open Start", {"op": "press", "key": "WIN"},
+        expected_result="Start is visible",
+    )
+    view = SimpleNamespace(
+        last_preview=Decision(
+            "action", "Search apps", {"op": "text", "text": "Sticky Notes"},
+            expected_result="Search results are visible",
+        ),
+        controller=SimpleNamespace(
+            last_verification=Verification("failed", "Cannot recognize Start"),
+            last_verified_proposal=verified,
+        ),
+        _show_details=lambda title, text, description: shown.append(text),
+    )
+    CompanionApp.show_preview_details(view)
+    assert "Expected visible result: Search results are visible" in shown[0]
+    assert 'Last verified action: {"op": "press", "key": "WIN"}' in shown[0]
+    assert "Expected visible result for that action: Start is visible" in shown[0]
+    assert "Evidence: Cannot recognize Start" in shown[0]

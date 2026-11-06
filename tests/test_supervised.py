@@ -884,6 +884,7 @@ def test_task_timings_survive_completion_without_private_payloads(qtbot):
         engine.respond(engine.question_id, "approve")
         qtbot.waitUntil(lambda: bool(finished))
         report = engine.failure_diagnostics()
+        assert engine.last_verified_proposal.action == {"op": "text", "text": content}
         assert "Planning: completed 2, failed 0, cancelled 0" in report
         assert "Visual verification: completed 1" in report
         assert "Input dispatch: completed 1" in report

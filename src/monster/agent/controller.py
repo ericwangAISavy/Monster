@@ -50,6 +50,7 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.last_verification = None
+        self.last_verified_proposal = None
         self.reviewed_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
@@ -87,6 +88,7 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.last_verification = None
+        self.last_verified_proposal = None
         self.reviewed_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
@@ -300,6 +302,7 @@ class SupervisedController(TaskController):
             self._capture()
         elif self.phase == "verifying":
             self.last_verification = result
+            self.last_verified_proposal = deepcopy(self.pending)
             self.trace.append(f"Step {self.actions}: visual verification {result.status}.")
             self.history.append(
                 f"Step {self.actions} visual verification: {result.status}. "
