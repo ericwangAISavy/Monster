@@ -59,3 +59,27 @@ shortcuts, cursor offsets and reduced motion. Tray Quit exits the application.
 See [Cursor companion guide](docs/CURSOR_COMPANION.md) for architecture,
 tests, capture isolation, engine integration and required Windows validation.
 See [Architecture plan](docs/ARCHITECTURE_PLAN.md) for the broader product design.
+
+## Real Windows computer tools
+
+A separate, explicit manual harness now provides screenshot capture and real mouse
+and keyboard operations. The companion remains a mock; it does not invoke these
+input tools automatically.
+
+```powershell
+uv sync --frozen
+uv run monster-tools displays
+uv run monster-tools screenshot capture.png --display 1
+```
+
+Quit the companion before input tests so the worker can exclusively register
+**Ctrl+Alt+X**. Open a disposable Notepad document, then run the following and
+focus the editor during the three-second countdown:
+
+```powershell
+uv run monster-tools type "Hello from Monster"
+```
+
+For isolated overlay capture testing: `uv run monster --capture-test isolated.png`.
+See [Computer tools guide](docs/COMPUTER_TOOLS.md) for mouse commands, physical
+coordinates, stop behavior, limitations and required Windows qualification.

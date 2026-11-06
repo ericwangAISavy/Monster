@@ -1,0 +1,219 @@
+import threading
+
+import pytest
+
+from monster.computer.contracts import Bounds, absolute_point, validate_action
+from monster.computer.executor import InputExecutor
+from monster.computer.windows import Input
+
+
+class FakeWindows:
+    def __init__(self):
+        self.events = []
+        self.monitors = [Bounds(-100, 0, 100, 100), Bounds(0, 0, 200, 100)]
+        self.ready = True
+        self.held = False
+        self.fail_release = False
+        self.on_event = lambda: None
+
+    def desktop_ready(self):
+        return self.ready
+
+    def physically_held(self):
+        return self.held
+
+    def displays(self):
+        return list(self.monitors)
+
+    def record(self, *event):
+        self.events.append(event)
+        self.on_event()
+
+    def move(self, x, y):
+        self.record("move", x, y)
+
+    def mouse(self, button, down):
+        if not down and self.fail_release:
+            raise RuntimeError("Release failed")
+        self.record("mouse", button, down)
+
+    def key(self, key, down):
+        self.record("key", key, down)
+
+    def unicode(self, unit, down):
+        self.record("unicode", unit, down)
+
+    def scroll(self, delta, horizontal):
+        self.record("scroll", delta, horizontal)
+
+
+def armed():
+    backend = FakeWindows()
+    executor = InputExecutor(backend)
+    generation = executor.arm()
+    return backend, executor, generation
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"op": "exec", "code": "anything"},
+        {"op": "move", "x": True, "y": 0},
+        {"op": "move", "x": float("nan"), "y": 0},
+        {"op": "click", "x": 999, "y": 0},
+        {"op": "click", "x": 10, "y": 10, "extra": 1},
+        {"op": "text", "text": ""},
+        {"op": "text", "text": "x" * 2001},
+        {"op": "text", "text": "line\ncommand"},
+        {"op": "text", "text": "\ud800"},
+        {"op": "press", "key": 13},
+        {"op": "key_down", "key": "A"},
+        {"op": "chord", "keys": ["CTRL", "CTRL", "A"]},
+        {"op": "chord", "keys": ["A", "CTRL"]},
+        {"op": "drag", "x": 1, "y": 1, "end_x": 5, "end_y": 5, "duration": 50},
+    ],
+)
+def test_invalid_actions_never_insert(action):
+    backend, executor, generation = armed()
+    result = executor.execute(action, generation)
+    assert result["status"] == "rejected"
+    assert not backend.events
+    assert not executor.armed
+
+
+def test_coordinate_endpoints_and_gap_rejection():
+    bounds = Bounds(-1920, -200, 3840, 1280)
+    assert absolute_point(-1920, -200, bounds) == (0, 0)
+    assert absolute_point(1919, 1079, bounds) == (65535, 65535)
+    with pytest.raises(ValueError):
+        absolute_point(1920, 1080, bounds)
+    with pytest.raises(ValueError):
+        validate_action(
+            {"op": "move", "x": 5, "y": 5}, [Bounds(-20, 0, 20, 20), Bounds(20, 0, 20, 20)]
+        )
+
+
+def test_input_layout_has_expected_windows_size():
+    import ctypes
+
+    assert ctypes.sizeof(Input) == (40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28)
+
+
+def test_unicode_surrogate_pairs_and_ordered_chord():
+    backend, executor, generation = armed()
+    assert executor.execute({"op": "text", "text": "A😀文"}, generation)["status"] == "inserted"
+    units = [event[1] for event in backend.events if event[2]]
+    assert units == [0x41, 0xD83D, 0xDE00, 0x6587]
+    assert not executor.owned
+    backend.events.clear()
+    executor.execute({"op": "chord", "keys": ["CTRL", "SHIFT", "A"]}, generation)
+    assert backend.events == [
+        ("key", "CTRL", True),
+        ("key", "SHIFT", True),
+        ("key", "A", True),
+        ("key", "A", False),
+        ("key", "SHIFT", False),
+        ("key", "CTRL", False),
+    ]
+
+
+def test_stop_releases_owned_input_and_invalidates_stale_generation():
+    backend, executor, generation = armed()
+    executor.execute({"op": "down", "x": 0, "y": 0}, generation)
+    assert executor.owned
+    executor.stop()
+    assert backend.events[-1] == ("mouse", "left", False)
+    count = len(backend.events)
+    assert executor.execute({"op": "press", "key": "A"}, generation)["status"] == "rejected"
+    assert len(backend.events) == count
+    new_generation = executor.arm()
+    assert new_generation != generation
+
+
+def test_watchdog_lease_hold_and_geometry_change():
+    now = [0.0]
+    backend = FakeWindows()
+    executor = InputExecutor(backend, clock=lambda: now[0])
+    generation = executor.arm()
+    executor.execute({"op": "key_down", "key": "CTRL"}, generation)
+    now[0] = 1.01
+    executor.watchdog()
+    assert not executor.armed and not executor.owned
+    executor.arm()
+    backend.monitors = [Bounds(0, 0, 50, 50)]
+    executor.watchdog()
+    assert not executor.armed
+    generation = executor.arm()
+    executor.execute({"op": "down", "x": 5, "y": 5}, generation)
+    now[0] += 2.1
+    executor.heartbeat()
+    executor.watchdog()
+    assert not executor.armed and not executor.owned
+
+
+def test_release_failure_blocks_rearming():
+    backend, executor, generation = armed()
+    executor.execute({"op": "down", "x": 0, "y": 0}, generation)
+    backend.fail_release = True
+    assert not executor.stop()
+    assert not executor.cleanup_ok
+    with pytest.raises(RuntimeError, match="cleanup"):
+        executor.arm()
+
+
+def test_stop_interrupts_text_without_subsequent_down_events():
+    backend, executor, generation = armed()
+    started = threading.Event()
+    backend.on_event = started.set
+    receipts = []
+    thread = threading.Thread(
+        target=lambda: receipts.append(
+            executor.execute({"op": "text", "text": "A" * 1000}, generation)
+        )
+    )
+    thread.start()
+    assert started.wait(1)
+    executor.stop("test emergency")
+    count = len(backend.events)
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert receipts[0]["status"] == "partial_or_unknown"
+    assert len(backend.events) == count
+    assert not executor.owned
+
+
+def test_desktop_lock_and_human_modifiers_block_arming():
+    backend = FakeWindows()
+    executor = InputExecutor(backend)
+    backend.held = True
+    with pytest.raises(RuntimeError):
+        executor.arm()
+    backend.held, backend.ready = False, False
+    with pytest.raises(RuntimeError):
+        executor.arm()
+
+
+def test_click_scroll_and_drag():
+    backend, executor, generation = armed()
+    for action in (
+        {"op": "click", "x": 1, "y": 1, "count": 2, "button": "right"},
+        {"op": "scroll", "x": 2, "y": 2, "delta": -120, "horizontal": True},
+        {"op": "drag", "x": 10, "y": 10, "end_x": 30, "end_y": 30, "duration": 0.05},
+    ):
+        assert executor.execute(action, generation)["status"] == "inserted"
+    assert ("scroll", -120, True) in backend.events
+    assert ("move", 30, 30) in backend.events
+    assert not executor.owned
+
+
+def test_partial_native_error_disarms_without_logging_payload():
+    backend, executor, generation = armed()
+
+    def fail(unit, down):
+        raise OSError("secret payload should not escape")
+
+    backend.unicode = fail
+    receipt = executor.execute({"op": "text", "text": "private text"}, generation)
+    assert receipt["status"] == "partial_or_unknown"
+    assert "private" not in str(receipt) and "secret" not in str(receipt)
+    assert not executor.armed

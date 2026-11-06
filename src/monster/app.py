@@ -353,6 +353,11 @@ class CompanionApp:
 def main():
     parser = argparse.ArgumentParser(description="Monster cursor companion — GUI demo only")
     parser.add_argument("--smoke-test", action="store_true", help="Exit after one second")
+    parser.add_argument(
+        "--capture-test",
+        type=Path,
+        help="Windows diagnostic: save an isolated PNG, then keep the GUI open",
+    )
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Monster")
@@ -361,6 +366,26 @@ def main():
     app.setWindowIcon(monster_icon())
     path = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation))
     ui = CompanionApp(app, MockTaskController(), path / "companion.json")
+    if args.capture_test:
+        from monster.computer.screenshot import capture_display
+
+        def save_observation(observation):
+            try:
+                with args.capture_test.open("xb") as output:
+                    output.write(observation.png)
+            except OSError:
+                ui.notice("Capture not saved · choose a new writable output path", 5000)
+            else:
+                ui.notice("Screenshot saved · inspect it for overlay contamination", 5000)
+
+        ui.isolation.completed.connect(save_observation)
+        ui.isolation.failed.connect(lambda text: ui.notice(text, 5000))
+
+        def diagnostic_capture():
+            ui.activate()
+            QTimer.singleShot(500, lambda: ui.capture_desktop(capture_display))
+
+        QTimer.singleShot(1000, diagnostic_capture)
     if args.smoke_test:
         QTimer.singleShot(1000, app.quit)
     # Native console interrupt is supported without relying on an invisible main window.
