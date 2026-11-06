@@ -6,11 +6,13 @@ native-only exclusion after Windows qualification. This module performs no captu
 unless an explicit backend callable is supplied.
 """
 
+import time
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
+from monster.agent.diagnostics import exception_evidence
 from monster.native import exclude_capture
 
 
@@ -19,6 +21,7 @@ class CaptureIsolation(QObject):
     ended = Signal()
     completed = Signal(object)
     failed = Signal(str)
+    diagnostic = Signal(object)
 
     def __init__(self, windows, parent=None):
         super().__init__(parent)
@@ -40,6 +43,10 @@ class CaptureIsolation(QObject):
             raise RuntimeError("An isolated capture is already pending.")
         self.busy = True
         self._restore = {window: window.isVisible() for window in self.windows}
+        self.diagnostic.emit({"event": "overlay_isolation_started", "settle_ms": max(50, settle_ms),
+                              "visible_before": list(self._restore.values()),
+                              "native_affinity_hints": list(self.affinity_accepted)})
+        started_at = time.monotonic()
         self.started.emit()
         for window in self.windows:
             window.hide()
@@ -51,8 +58,11 @@ class CaptureIsolation(QObject):
             try:
                 if any(window.isVisible() for window in self.windows):
                     raise RuntimeError("Overlay became visible during capture; discard this frame.")
+                self.diagnostic.emit({"event": "overlay_isolation_capture", "overlays_hidden": True,
+                                      "elapsed_since_hide_s": time.monotonic() - started_at})
                 result = backend()
             except Exception as exc:  # noqa: BLE001 - Restore UI for any backend failure.
+                self.diagnostic.emit(exception_evidence(exc))
                 error = f"Capture failed: {type(exc).__name__}"
             finally:
                 for window, was_visible in self._restore.items():

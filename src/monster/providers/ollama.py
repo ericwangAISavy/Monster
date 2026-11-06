@@ -5,10 +5,12 @@ import base64
 import json
 import secrets
 import struct
+import time
 import zlib
 
 import httpx
 
+from monster.agent.diagnostics import exception_evidence
 from monster.providers.base import Capabilities, Model, ProbeResult, ProviderError, Verification
 from monster.providers.config import OllamaConfig
 from monster.providers.decisions import DECISION_SCHEMA, parse_decision
@@ -27,6 +29,34 @@ def strict_json(text):
         raise ValueError("Non-finite JSON")
 
     return json.loads(text, object_pairs_hook=pairs, parse_constant=nonfinite)
+
+
+def structured_diagnostic(value):
+    """Only parsed decision fields; never native thinking or arbitrary response fields."""
+    if type(value) is not dict:
+        return {"value_type": type(value).__name__}
+    selected = {}
+    for key in ("kind", "summary", "risk", "expected_result", "status", "evidence"):
+        if key in value:
+            item = value[key]
+            selected[key] = item if type(item) is str and len(item) <= 1000 else {
+                "omitted_type": type(item).__name__, "length": len(item) if type(item) is str else None,
+            }
+    action = value.get("action")
+    if type(action) is dict:
+        selected["action"] = {}
+        for key in ("op", "text", "key", "keys", "x", "y", "button", "count", "delta", "horizontal"):
+            if key not in action:
+                continue
+            item = action[key]
+            if type(item) in (int, bool) or (type(item) is str and len(item) <= 2000) or type(item) is list and len(item) <= 4 and all(type(k) is str and len(k) <= 40 for k in item):
+                selected["action"][key] = item
+            else:
+                selected["action"][key] = {"omitted_type": type(item).__name__}
+    selected["unknown_field_names"] = [str(key)[:80] for key in value if key not in {
+        "kind", "summary", "risk", "expected_result", "status", "evidence", "action"
+    }][:40]
+    return selected
 
 
 def probe_image(colors):
@@ -48,11 +78,17 @@ def probe_image(colors):
 
 
 class OllamaProvider:
-    def __init__(self, config: OllamaConfig, transport=None):
+    def __init__(self, config: OllamaConfig, transport=None, diagnostic_callback=None):
         config.validate()
         self.config, self.transport = config, transport
+        self.diagnostic_callback = diagnostic_callback
+
+    def diagnostic(self, event, details, content=None):
+        if self.diagnostic_callback is not None:
+            self.diagnostic_callback(event, details, content)
 
     async def request(self, method, path, payload=None):
+        started = time.monotonic()
         try:
             async with asyncio.timeout(self.config.timeout):
                 async with (
@@ -64,6 +100,10 @@ class OllamaProvider:
                     ) as client,
                     client.stream(method, path, json=payload) as response,
                 ):
+                    self.diagnostic("provider_http_result", {
+                        "method": method, "route": path, "status_code": response.status_code,
+                        "elapsed_s": time.monotonic() - started,
+                    })
                     if response.status_code != 200:
                         categories = {
                             401: "Authentication required by the server/proxy.",
@@ -86,11 +126,13 @@ class OllamaProvider:
                     if type(value) is not dict:
                         raise ProviderError("Ollama returned an unexpected response.")
                     return value
-        except (httpx.TimeoutException, TimeoutError):
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            self.diagnostic("provider_transport_error", {"route": path, "evidence": exception_evidence(exc)})
             raise ProviderError(
                 "Ollama request timed out; check model load and server capacity."
             ) from None
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            self.diagnostic("provider_transport_error", {"route": path, "evidence": exception_evidence(exc)})
             raise ProviderError(
                 "Cannot reach Ollama. Check URL, firewall, proxy and TLS trust."
             ) from None
@@ -176,6 +218,16 @@ class OllamaProvider:
             },
         )
         message = result.get("message")
+        metrics = {name: result[name] for name in (
+            "eval_count", "prompt_eval_count", "total_duration", "load_duration",
+            "prompt_eval_duration", "eval_duration",
+        ) if type(result.get(name)) is int and 0 <= result[name] < 2**63}
+        self.diagnostic("provider_model_response", {
+            "done": result.get("done") is True,
+            "done_reason": result.get("done_reason") if type(result.get("done_reason")) is str and result["done_reason"] in {"stop", "length", "error"} else "unknown",
+            "message_characters": len(message.get("content", "")) if type(message) is dict and type(message.get("content")) is str else None,
+            "server_metrics": metrics,
+        })
         if result.get("done_reason") == "length":
             raise ProviderError(
                 f"Ollama reached the output-token limit ({self.config.max_output_tokens}); "
@@ -197,8 +249,11 @@ class OllamaProvider:
         if message.get("tool_calls"):
             raise ProviderError("Unexpected native tool calls; nothing was executed.")
         try:
-            return strict_json(message["content"])
+            value = strict_json(message["content"])
+            self.diagnostic("provider_structured_response", {}, structured_diagnostic(value))
+            return value
         except (ValueError, TypeError):
+            self.diagnostic("provider_json_rejected", {"message_characters": len(message["content"])})
             raise ProviderError("Model did not return valid structured JSON.") from None
 
     async def probe(self, model):

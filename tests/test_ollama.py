@@ -364,3 +364,28 @@ def test_action_expectations_and_allowed_keys_are_constrained():
     assert "CTRL+A" not in press["properties"]["key"]["enum"]
     chord = next(s for s in ACTION_SCHEMA["oneOf"] if s["properties"]["op"]["const"] == "chord")
     assert ["SHIFT", "ENTER"] in chord["properties"]["keys"]["enum"]
+
+
+def test_provider_diagnostics_include_finish_metrics_but_never_raw_thinking():
+    events = []
+
+    def respond(request):
+        return httpx.Response(200, json={
+            "done": True, "done_reason": "stop", "eval_count": 14, "load_duration": 123,
+            "message": {"thinking": "PRIVATE_RAW_REASONING_CANARY", "content": json.dumps({
+                "kind": "action", "summary": "Focus editor", "risk": "routine",
+                "action": {"op": "click", "x": 4, "y": 6},
+                "expected_result": "Editor focused",
+            })},
+        })
+
+    provider = OllamaProvider(config(), httpx.MockTransport(respond),
+                              diagnostic_callback=lambda event, details, content: events.append(
+                                  {"event": event, "details": details, "content": content}
+                              ))
+    asyncio.run(provider.decide("vision:small", "Open Sticky Notes", b"PNG", 100, 100))
+    assert "PRIVATE_RAW_REASONING_CANARY" not in json.dumps(events)
+    response = next(item for item in events if item["event"] == "provider_model_response")
+    assert response["details"]["server_metrics"]["eval_count"] == 14
+    parsed = next(item for item in events if item["event"] == "provider_structured_response")
+    assert parsed["content"]["action"] == {"op": "click", "x": 4, "y": 6}

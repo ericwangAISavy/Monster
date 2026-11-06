@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QLabel,
     QMenu,
     QSystemTrayIcon,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from monster.agent.controller import SupervisedController
+from monster.agent.diagnostics import exception_evidence
 from monster.capture import CaptureIsolation
 from monster.config import Preferences, load, save
 from monster.geometry import beside_cursor
@@ -62,6 +64,9 @@ class CompanionApp:
         self.preview_window = None
         self.last_preview = None
         self.last_failure = None
+        self.last_failure_snapshot = None
+        self.details_snapshot = None
+        self.report_export_buttons = []
         self.last_task_outcome = None
         self.preview_capture = None
         self.activation_target = None
@@ -85,6 +90,7 @@ class CompanionApp:
         self.isolation.ended.connect(self._capture_ended)
         self.isolation.completed.connect(self._preview_observation)
         self.isolation.failed.connect(self._preview_capture_failed)
+        self.isolation.diagnostic.connect(self._capture_diagnostic)
         self._deferred_notice = None
         self.hotkeys = GlobalHotkeys(app)
         self.state_timer = QTimer()
@@ -230,6 +236,7 @@ class CompanionApp:
         self.add_action("AI model settings…", self.show_provider_settings)
         self.add_action("Last action preview…", self.show_preview_details)
         self.add_action("Last failure…", self.show_failure_details)
+        self.add_action("Last run report…", self.show_run_report)
         if self.controller.is_mock:
             demo = self.menu.addMenu("GUI demo")
             self.demo_menu = demo
@@ -338,7 +345,13 @@ class CompanionApp:
         self.set_state(State.LISTENING)
 
     def submit(self, instruction):
-        if self.isolation.busy or self.active or not instruction.strip():
+        if (self.isolation.busy or self.active or not instruction.strip()
+                or getattr(self.controller, "phase", None) == "closing"):
+            return
+        if getattr(self.controller, "cleanup_blocked", False):
+            reason = "Input cleanup unconfirmed. Restart Monster before another task."
+            self.controller.record_start_failure(instruction, reason, stage="startup_policy")
+            self.failed(reason)
             return
         target = self.activation_target
         if getattr(self.controller, "is_supervised", False):
@@ -348,17 +361,22 @@ class CompanionApp:
             try:
                 if not target or not WindowsInput().restore_foreground(target):
                     raise RuntimeError("Cannot restore the initial target window.")
-            except RuntimeError:
+            except RuntimeError as exc:
                 self.activation_target = None
-                self.failed(
+                reason = (
                     "Stopped incomplete: Cannot restore the initial target window. "
-                    "Focus the intended composer and activate Monster again. No task was started."
+                    "Focus the intended application and activate Monster again. No task was started."
                 )
+                self.controller.record_start_failure(instruction, reason)
+                self._log_ui("initial_focus_exception", evidence=exception_evidence(exc))
+                self.failed(reason)
                 return
         if self.controller.submit(instruction):
             if getattr(self.controller, "is_supervised", False):
                 # Pin the current-composer task before any asynchronous capture.
                 self.controller.task_foreground = target
+                self._log_ui("initial_focus_restore", restored=True,
+                             target=self.controller.run_diagnostics.focus_alias(target))
             self.activation_target = None
             self.last_task_outcome = "running"
             self.pill.input.clear()
@@ -429,6 +447,10 @@ class CompanionApp:
         )
         if hasattr(self.controller, "failure_diagnostics"):
             self.last_failure += "\n\n" + self.controller.failure_diagnostics()
+        snapshot = self.controller.diagnostic_snapshot() if hasattr(self.controller, "diagnostic_snapshot") else None
+        self.last_failure_snapshot = snapshot
+        if snapshot is not None:
+            self.last_failure += "\n\n" + snapshot.text()
         self.pending_question = None
         self.set_state(State.ERROR)
         self.notice("Stopped incomplete · open tray → Last failure for details", 5000)
@@ -447,13 +469,33 @@ class CompanionApp:
             text += f"\nApprove: Ctrl+Alt+Y, then release all keys. Stop: {stop_key}."
         self.set_state(State.WAITING)
         self.pill.show_question(request_id, text, approval, take_focus=not passive)
+        self._log_ui("review_surface", request_id=request_id, passive=passive,
+                     keyboard_available=self.approval_hotkey_available,
+                     hotkey_errors=list(self.hotkey_errors))
         self.place_pill()
         if not passive:
             focus_window(self.pill)
         if not approval:
             self.pill.input.setFocus()
 
-    def _cancel_keyboard_approval(self):
+    def _log_ui(self, event, **details):
+        diagnostics = getattr(self.controller, "run_diagnostics", None)
+        if diagnostics is None:
+            return
+        point = QCursor.pos()
+        screen = self.app.screenAt(point) or self.app.primaryScreen()
+        geometry = screen.geometry() if screen else None
+        diagnostics.add(event, getattr(self.controller, "phase", "ui"),
+                        pointer_qt_logical={"x": point.x(), "y": point.y()},
+                        screen_qt_logical=({"x": geometry.x(), "y": geometry.y(),
+                                            "width": geometry.width(), "height": geometry.height()}
+                                           if geometry else None),
+                        device_pixel_ratio=screen.devicePixelRatio() if screen else None, **details)
+
+    def _cancel_keyboard_approval(self, *, released=False):
+        if self.keyboard_approval is not None:
+            self._log_ui("approval_keys_released" if released else "approval_gesture_cancelled",
+                         request_id=self.keyboard_approval[1])
         self.approval_key_timer.stop()
         self.keyboard_approval = None
         self.approval_hotkey_available = False
@@ -469,6 +511,7 @@ class CompanionApp:
         ):
             return
         self.keyboard_approval = (self.controller, rid)
+        self._log_ui("approval_gesture", request_id=rid, source="keyboard", awaiting_release=True)
         self.approval_key_timer.start()
 
     def _finish_keyboard_approval(self):
@@ -481,12 +524,13 @@ class CompanionApp:
             self._cancel_keyboard_approval()
             return
         if approval_keys_released():
-            self._cancel_keyboard_approval()
-            self.answer(pending[1], "approve")
+            self._cancel_keyboard_approval(released=True)
+            self.answer(pending[1], "approve", source="keyboard")
 
-    def answer(self, request_id, answer):
+    def answer(self, request_id, answer, *, source="mouse_or_text"):
         if not self.pending_question or self.pending_question[0] != request_id:
             return
+        self._log_ui("review_gesture_response", request_id=request_id, source=source)
         self.pending_question = None
         self._cancel_keyboard_approval()
         self.hotkey_errors = self.register_hotkeys()
@@ -572,10 +616,14 @@ class CompanionApp:
                 from monster.computer.windows import WindowsInput
 
                 self.controller.restore_focus = None
-                if not WindowsInput().restore_foreground(target):
+                restored = WindowsInput().restore_foreground(target)
+                self._log_ui("focus_restore", restored=restored,
+                             target=self.controller.run_diagnostics.focus_alias(target))
+                if not restored:
                     raise RuntimeError("Cannot restore the approved target's focus.")
             self.capture_desktop(lambda: capture_display(None))
         except RuntimeError as exc:
+            self._log_ui("capture_request_exception", evidence=exception_evidence(exc))
             self.preview_capture = None
             self.controller.capture_failed(str(exc))
 
@@ -584,6 +632,12 @@ class CompanionApp:
             controller, generation = self.preview_capture
             self.preview_capture = None
             controller.observation_ready(observation, generation)
+
+    def _capture_diagnostic(self, evidence):
+        if self.preview_capture:
+            controller, generation = self.preview_capture
+            if controller is self.controller and generation == controller.generation:
+                self._log_ui(evidence.get("event", "capture_backend_exception"), evidence=evidence)
 
     def _preview_capture_failed(self, error):
         if self.preview_capture:
@@ -638,13 +692,63 @@ class CompanionApp:
                 "Monster · last failure",
                 self.last_failure,
                 "Review and copy these details when reporting the failure. "
-                "Unexpected-error diagnostics omit exception messages and payloads.",
+                "Full run reports include task/action text; review before sharing.",
+                snapshot=self.last_failure_snapshot,
             )
 
-    def _show_details(self, title, text, description):
+    def show_run_report(self):
+        controller = self.controller
+        diagnostics = getattr(controller, "run_diagnostics", None)
+        if diagnostics is None:
+            self.notice("No supervised run report is available yet.")
+            return
+        if self.active:
+            self.stop()
+        self._show_run_report_ready(controller, diagnostics.run_id)
+
+    def _show_run_report_ready(self, controller, run_id, attempt=0):
+        diagnostics = getattr(controller, "run_diagnostics", None)
+        if controller is not self.controller or diagnostics is None or diagnostics.run_id != run_id:
+            return
+        if (getattr(controller, "phase", None) == "closing" or self.isolation.busy) and attempt < 100:
+            QTimer.singleShot(50, lambda: self._show_run_report_ready(controller, run_id, attempt + 1))
+            return
+        snapshot = controller.diagnostic_snapshot()
+        self._show_details("Monster · last run report", snapshot.text(),
+                           "Includes task/action text. Review before sharing. Screenshots remain in RAM "
+                           "unless you choose Save with screenshots. Images may contain personal desktop content. "
+                           "Retention limits are in the report.",
+                           snapshot=snapshot)
+
+    def save_diagnostic_report(self, *, include_screenshots=False):
+        snapshot = self.details_snapshot
+        if snapshot is None:
+            return
+        extension = "zip" if include_screenshots else "json"
+        label = "bundle with screenshots" if include_screenshots else "report (task/action text)"
+        path, _ = QFileDialog.getSaveFileName(
+            self.preview_window, f"Save diagnostic {label}",
+            f"monster-run-{snapshot.data['run_id']}.{extension}",
+            "ZIP (*.zip)" if include_screenshots else "JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            snapshot.export(path, include_screenshots=include_screenshots)
+        except (OSError, ValueError):
+            self.preview_window.findChild(QLabel).setText(
+                "Could not save. Choose a new filename in a writable directory; existing files are preserved."
+            )
+        else:
+            self.preview_window.findChild(QLabel).setText("Diagnostic export saved. Review its contents before sharing.")
+
+    def _show_details(self, title, text, description, *, snapshot=None):
         if self.isolation.busy or self._focus_secondary_except(self.preview_window):
             return
         self._pause_for_secondary()
+        self.details_snapshot = snapshot
+        for button in self.report_export_buttons:
+            button.setEnabled(snapshot is not None)
         if self.preview_window:
             self.preview_window.setWindowTitle(title)
             self.preview_window.findChild(QTextEdit).setPlainText(text)
@@ -664,6 +768,13 @@ class CompanionApp:
         details.setPlainText(text)
         layout.addWidget(details)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        plain = buttons.addButton("Save report…", QDialogButtonBox.ButtonRole.ActionRole)
+        images = buttons.addButton("Save with screenshots…", QDialogButtonBox.ButtonRole.ActionRole)
+        self.report_export_buttons = [plain, images]
+        for button in self.report_export_buttons:
+            button.setEnabled(snapshot is not None)
+        plain.clicked.connect(lambda: self.save_diagnostic_report())
+        images.clicked.connect(lambda: self.save_diagnostic_report(include_screenshots=True))
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         dialog.finished.connect(self._close_preview_details)
@@ -674,6 +785,8 @@ class CompanionApp:
         if self.preview_window:
             self.preview_window.deleteLater()
             self.preview_window = None
+            self.details_snapshot = None
+            self.report_export_buttons = []
 
     def _pause_for_secondary(self):
         if self.active and not self.paused:

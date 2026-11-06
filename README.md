@@ -117,3 +117,19 @@ For typing into an already-open chat composer, include the exact text and
 actual recent actions, and blocks repeated failed clicks or duplicate text. Limit
 stops are reported as **Stopped incomplete**, with details in **Last failure**.
 See the [Slack draft workflow](docs/SUPERVISED_EXECUTION.md#typing-an-unsent-message-in-an-existing-slack-composer).
+
+## Diagnose a failed run
+
+Tray → **Last run report…** contains the original instruction, model/settings,
+runtime/source identity, ordered proposals and exact rejection reasons, review
+responses, observations, mapped input coordinates, receipts, verification evidence
+and timings. **Last failure…** also includes the content-bearing report automatically.
+You do not need to reconstruct or separately quote the instruction.
+
+Use **Save report…** for JSON, or **Save with screenshots…** for a ZIP containing
+the report and recent retained PNG observations. The ZIP is the useful artifact
+for diagnosing wrong-target clicks and visual-verification failures. Reports can
+contain task/action text; screenshots can contain personal desktop content.
+Review locally before sharing. Nothing is saved or uploaded automatically, and
+raw model reasoning and credential/environment dumps are not collected. Evidence
+retention limits and any omitted frames/events are stated in the report.

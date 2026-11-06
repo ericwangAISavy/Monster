@@ -489,3 +489,80 @@ related pointer movement, no held modifiers, no lost target and exactly one
 reviewed action. Test Stop while holding the gesture, replacement/expired reviews,
 and a shortcut conflict; none should authorize stale input. Native results remain
 unverified by the portable UI and fake-Win32 tests.
+
+## Self-contained run diagnostics
+
+The local **Last failure** details now include a content-bearing run report. Tray
+→ **Last run report…** also works for successful/cancelled runs and failures before
+the first model proposal. Original task text is retained after controller cleanup,
+so the report itself answers which instruction, model, policy and runtime were
+used. It records the original input and flags any truncation to the effective
+instruction used by execution. No inference about the root cause is fabricated:
+observations, accepted input, model claims and human confirmations remain distinct.
+
+The versioned `monster.run.v1` JSON contains:
+
+- Run ID, UTC start/snapshot timestamps, ordered event sequence and elapsed times.
+- Parent/worker Git revision where available, Python-source fingerprints captured
+  at import/startup, platform/dependency versions and source-mismatch evidence.
+  A revision alone does not establish a clean checkout; the fingerprint identifies
+  the source tree. Missing/incomplete fingerprints are marked rather than assumed.
+  Background/worker diagnostics are bound to originating jobs and runs; stale payloads
+  are excluded and marked as ignored rather than contaminating a later report.
+- An allowlisted configuration: server origin without userinfo/path/query, model,
+  context/output budgets, thinking, keep-loaded, timeout and approval settings.
+- Original/effective task, clarification replies, actual planner context/history,
+  each parsed proposal, expected visible result and exact policy-rejection reason.
+- Stable observation IDs, SHA-256, physical bounds/display geometry, age and
+  per-run foreground aliases. Dispatch links its planning and recheck frames,
+  image-space action, mapped physical action and actual worker focus/geometry binding.
+- Mouse receipts with observed physical cursor position when available, accepted/
+  rejected/partial outcomes, native exception class/project stack and cleanup status.
+  Cursor observation failure is recorded without changing/replaying the input outcome.
+- Review prompt/response, mouse-versus-keyboard approval, release/cancellation events,
+  passive focus state, shortcut-registration errors, Qt logical pointer/screen coordinates and device-pixel ratio.
+  Logical Qt positions are labelled separately from native physical coordinates.
+- Capture overlay visibility/settle facts; scene-recheck reason and sampled change
+  counts/thresholds; paired post-action verification status/evidence; terminal stage,
+  pending operations, primary failure and any separate cleanup failure.
+- Provider HTTP status/route, transport exception class, finish reason, available
+  token counts, exception-cause classes and server timing fields. Known worker-stop
+  reasons distinguish focus/geometry/lease changes, held-input expiry and emergency
+  stop without recording arbitrary exception messages. Ollama duration fields retain their native
+  nanosecond units. Parsed decision fields are allowlisted and bounded. Native
+  `message.thinking`, arbitrary response bodies, exception values/locals, environment
+  dumps and credential files are not collected.
+
+### Review and export
+
+The details view offers **Save report…** (JSON) and **Save with screenshots…**
+(ZIP with `report.json` and `screenshots/frame-NNNN.png`). Exports use the displayed
+frozen run snapshot, so a later run cannot silently replace the report being saved.
+Existing files are not overwritten. There is no automatic save, upload or message
+sending. Opening a live run report stops that run and waits briefly for cleanup;
+if cleanup remains pending, the snapshot says so rather than claiming it succeeded.
+
+Task/proposal/evidence text and recent native screenshots remain in RAM. Image
+retention is bounded to 16 recent frames and 24 MiB per run, events to 512, and
+observation metadata to 128. Counts of evicted/omitted evidence are explicit. The
+most recent failure snapshot remains available until replaced or process exit;
+the current run recorder is replaced by the next run. Screenshots are written
+only by the explicit screenshot-export action. A screenshot-free JSON export does
+not include PNG bytes. The existing `failure_diagnostics()` API remains redacted;
+the new full local report deliberately includes the task/action text requested
+for diagnosis. Review it before sharing, especially screenshots of other applications.
+
+After a failure, export one screenshot ZIP before starting another task and share
+that artifact for analysis. Its instruction, proposals, reasons, coordinates and
+paired images are intended to remove follow-up context questions such as “what
+instruction did you give?”. The evidence can identify a policy block, unsupported
+shortcut, target change, coordinate discrepancy, false-negative verifier, transport
+failure, token truncation or cleanup problem. It does not guarantee that every
+failure can be proven from bounded captures; unknown/omitted evidence stays marked.
+A process crash/restart loses unexported RAM evidence.
+
+Automated validation uses synthetic observations, fake input and HTTP transports.
+It checks report completeness, negative-origin coordinate mapping, immutable
+snapshots, explicit-only persistence, bounded retention, credential/raw-thinking
+exclusion, startup failures, primary-versus-cleanup failures and old-run callback
+binding. Native Windows/Chrome/Slack behavior still requires live qualification.

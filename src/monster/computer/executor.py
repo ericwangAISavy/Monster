@@ -3,6 +3,7 @@
 import threading
 import time
 
+from monster.agent.diagnostics import exception_evidence
 from monster.computer.contracts import validate_action
 
 
@@ -184,12 +185,20 @@ class InputExecutor:
                 emit("key", action["key"], op == "key_down")
             with self.lock:
                 self.expected_focus = None
-            return {"status": "inserted", "events": events}
+            receipt = {"status": "inserted", "events": events}
+            if "x" in action and hasattr(self.backend, "cursor_position"):
+                try:
+                    x, y = self.backend.cursor_position()
+                    receipt["cursor_physical_after"] = {"x": x, "y": y}
+                except Exception as exc:  # noqa: BLE001 - Observation failure must not replay input.
+                    receipt["cursor_observation_error"] = exception_evidence(exc)
+            return receipt
         except Exception as exc:  # noqa: BLE001 - Input failures must always disarm and clean up.
             self.stop(type(exc).__name__)
             return {
                 "status": "partial_or_unknown" if attempted else "rejected",
                 "events": events,
                 "error": type(exc).__name__,
+                "error_source": exception_evidence(exc),
                 "cleanup_ok": self.cleanup_ok,
             }

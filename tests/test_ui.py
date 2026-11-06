@@ -360,3 +360,29 @@ def test_keyboard_registration_failure_keeps_mouse_approval_available(
     finally:
         ui.shutdown()
         qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_report_export_uses_displayed_snapshot_and_requires_explicit_save(
+    qtbot, qapp, tmp_path, monkeypatch
+):
+    import json
+
+    from monster.agent.diagnostics import RunDiagnostics
+    from monster.providers.config import OllamaConfig
+
+    ui = CompanionApp(qapp, MockTaskController(), tmp_path / "prefs.json", enable_tray=False)
+    first = RunDiagnostics("FIRST TASK", OllamaConfig()).snapshot()
+    second = RunDiagnostics("SECOND TASK", OllamaConfig()).snapshot()
+    output = tmp_path / "report.json"
+    try:
+        ui._show_details("Run report", first.text(), "Review before sharing", snapshot=first)
+        assert not output.exists()
+        ui.last_failure_snapshot = second  # A later failure must not change the displayed export.
+        monkeypatch.setattr("monster.app.QFileDialog.getSaveFileName", lambda *args: (str(output), "JSON"))
+        ui.save_diagnostic_report()
+        assert json.loads(output.read_text())["task"] == "FIRST TASK"
+        ui.save_diagnostic_report()  # Existing files are preserved.
+        assert json.loads(output.read_text())["task"] == "FIRST TASK"
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)

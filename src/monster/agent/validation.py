@@ -113,22 +113,26 @@ def prepare_action(action, observation, *, allow_window_close=False):
     return validate_action(action, list(observation.displays))
 
 
-def scene_matches(before, after, action):
-    if (
-        before.bounds != after.bounds
-        or before.displays != after.displays
-        or not before.foreground
-        or before.foreground != after.foreground
-    ):
-        return False
+def scene_matches(before, after, action, *, diagnostics=None):
+    def finish(matched, reason, **details):
+        if diagnostics is not None:
+            diagnostics.update(matched=matched, reason=reason, **details)
+        return matched
+
+    if before.bounds != after.bounds:
+        return finish(False, "capture_bounds_changed")
+    if before.displays != after.displays:
+        return finish(False, "display_geometry_changed")
+    if not before.foreground or before.foreground != after.foreground:
+        return finish(False, "foreground_changed_or_missing")
     old, new = QImage.fromData(before.png), QImage.fromData(after.png)
     if old.isNull() or new.isNull() or old.size() != new.size():
-        return False
+        return finish(False, "invalid_image_or_dimensions_changed")
     x, y = action.get("x"), action.get("y")
     if x is not None:
         region = QRect(x - 20, y - 20, 41, 41).intersected(old.rect())
         if old.copy(region) != new.copy(region):
-            return False
+            return finish(False, "target_patch_changed", patch=[region.x(), region.y(), region.width(), region.height()])
     old = old.scaled(320, 180, Qt.AspectRatioMode.KeepAspectRatio).convertToFormat(
         QImage.Format.Format_RGBA8888
     )
@@ -136,10 +140,14 @@ def scene_matches(before, after, action):
     a, b = bytes(old.constBits()), bytes(new.constBits())
     changed = 0
     pixels = old.width() * old.height()
+    threshold = max(1, pixels * 0.002)
     for index in range(pixels):
         offset = index * 4
         if max(abs(a[offset + c] - b[offset + c]) for c in range(3)) > 20:
             changed += 1
-            if changed > max(1, pixels * 0.002):
-                return False
-    return True
+            if changed > threshold:
+                return finish(False, "whole_scene_changed", changed_pixels=changed,
+                              sampled_pixels=pixels, allowed_changed_pixels=threshold,
+                              count_is_lower_bound=True)
+    return finish(True, "scene_matches", changed_pixels=changed, sampled_pixels=pixels,
+                  allowed_changed_pixels=threshold, count_is_lower_bound=False)

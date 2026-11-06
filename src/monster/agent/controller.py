@@ -3,10 +3,13 @@
 import json
 import time
 import uuid
+from collections import OrderedDict
 from copy import deepcopy
+from dataclasses import asdict, is_dataclass
 
 from PySide6.QtCore import QTimer, Signal
 
+from monster.agent.diagnostics import RunDiagnostics
 from monster.agent.input_bridge import InputBridge
 from monster.agent.metrics import OperationTimings
 from monster.agent.progress import (
@@ -38,11 +41,27 @@ class SupervisedController(TaskController):
         super().__init__(parent)
         self.config, self.provider_factory = config, provider_factory
         self.timings = OperationTimings()
+        self.run_diagnostics = None
+        self.log_frame = self.planned_frame = None
+        self.scene_details = {}
+        self.model_diagnostic_origins = OrderedDict()
+        self.input_diagnostic_origins = OrderedDict()
         self.jobs = ProviderJobs(self)
         self.jobs.completed.connect(self._model_result)
+        self.jobs.diagnostic.connect(self._background_diagnostic)
         self.input = input_bridge or InputBridge(parent=self)
         self.input.completed.connect(self._input_result)
         self.input.interrupted.connect(self.cancel)
+        if hasattr(self.input, "diagnostic"):
+            self.input.diagnostic.connect(self._worker_diagnostic)
+        self.approval_requested.connect(
+            lambda rid, text: self._record("review_requested", request_id=rid,
+                                          content={"question": text})
+        )
+        self.clarification_requested.connect(
+            lambda rid, text: self._record("clarification_requested", request_id=rid,
+                                          content={"question": text})
+        )
         self.active = self.paused = False
         self.generation = 0
         self.phase = "idle"
@@ -88,6 +107,16 @@ class SupervisedController(TaskController):
             return False
         self.timings.reset()
         self.instruction = instruction.strip()[:2000]
+        self.run_diagnostics = RunDiagnostics(instruction.strip(), self.config)
+        self.log_frame = self.planned_frame = None
+        self.run_diagnostics.add(
+            "task_started", "opening", draft_policy=draft_only(self.instruction),
+            content={"effective_instruction": self.instruction},
+            instruction_truncated_for_execution=instruction.strip() != self.instruction,
+            close_policy=window_close_requested(self.instruction),
+            limits={"input_transactions": 10, "planning_calls": 20, "task_seconds": 300,
+                    "review_seconds": 60, "invalid_proposals": 3},
+        )
         self.active, self.paused = True, False
         self.generation += 1
         self.history = []
@@ -114,23 +143,96 @@ class SupervisedController(TaskController):
         self.input_job = self._start_input("open")
         return True
 
+    def _record(self, event, *, content=None, **details):
+        if self.run_diagnostics is not None:
+            self.run_diagnostics.add(event, self.phase, content=content,
+                                     planning_call=self.calls, step=self.actions,
+                                     generation=self.generation, **details)
+
+    def _remember_diagnostic_origin(self, origins, job):
+        if self.run_diagnostics is None:
+            return
+        origins[job] = (self.run_diagnostics.run_id, self.phase, self.calls,
+                        self.actions, self.generation)
+        while len(origins) > 128:
+            origins.popitem(last=False)
+
+    def _bound_diagnostic(self, event, origins, source_job, channel):
+        if self.run_diagnostics is None:
+            return
+        origin = origins.get(source_job)
+        if origin is None or origin[0] != self.run_diagnostics.run_id:
+            self._record("diagnostic_ignored", channel=channel, source_job=source_job,
+                         source_run_id=origin[0] if origin else None,
+                         reason="stale_run" if origin else "unknown_source_job")
+            return
+        run_id, stage, call, step, generation = origin
+        field = "evidence" if channel == "model" else "worker"
+        name = "background_exception" if channel == "model" else "worker_event"
+        self.run_diagnostics.add(
+            name, stage if channel == "model" else self.phase,
+            source_run_id=run_id, source_job=source_job, source_stage=stage,
+            planning_call=call, step=step, generation=generation,
+            delivery_phase=self.phase, **{field: event},
+        )
+
+    def _background_diagnostic(self, event):
+        self._bound_diagnostic(event, self.model_diagnostic_origins, event.get("job"), "model")
+
+    def _worker_diagnostic(self, event):
+        self._bound_diagnostic(event, self.input_diagnostic_origins,
+                               event.get("job", event.get("source_open_job")), "input")
+
+    def diagnostic_snapshot(self, *, include_content=True):
+        if self.run_diagnostics is None:
+            return None
+        return self.run_diagnostics.snapshot(include_content=include_content, summary={
+            "accepted_transactions": self.actions, "planning_calls": self.calls,
+            "visual_checks": self.verification_calls, "scene_rejections": self.stale,
+            "phase_at_snapshot": self.phase, "active": self.active,
+            "cleanup_blocked": self.cleanup_blocked, "timings": deepcopy(self.timings.totals),
+            "pending_model_job": self.job, "pending_input_job": self.input_job,
+            "pending_review_id": self.question_id,
+        })
+
+    def record_start_failure(self, instruction, reason, *, stage="initial_focus"):
+        if self.active or self.phase == "closing":
+            return
+        self.timings.reset()
+        self.actions = self.calls = self.verification_calls = self.stale = 0
+        self.trace = []
+        self.run_diagnostics = RunDiagnostics(instruction.strip(), self.config)
+        self.run_diagnostics.add("startup_failed", stage, content={"reason": reason}, worker_started=False)
+        self.run_diagnostics.end("error", stage, reason, cleanup_confirmed=None)
+
     def _start_model(self, operation):
         stage = {
             "probing": "probe", "deciding": "planning",
             "comparing": "recheck", "verifying": "verification",
         }[self.phase]
         job = self.jobs.start(operation)
+        self._remember_diagnostic_origin(self.model_diagnostic_origins, job)
         self.timings.begin(("model", job), stage)
+        self._record("model_requested", job=job, operation=stage)
         return job
 
     def _start_input(self, operation, *args):
         job = self.input.submit(operation, *args)
+        self._remember_diagnostic_origin(self.input_diagnostic_origins, job)
         self.timings.begin(("input", job), "startup" if operation == "open" else "dispatch")
+        self._record("input_requested", job=job, operation=operation)
         return job
 
     def _input_result(self, job, result, error):
         if job != self.input_job:
+            self._record("input_result_ignored", source_job=job)
             return
+        receipt = (
+            {key: result[key] for key in ("status", "events", "error", "error_source", "cleanup_ok", "cursor_physical_after", "cursor_observation_error") if key in result}
+            if isinstance(result, dict) else {"confirmed": bool(result)}
+        )
+        self._record("input_result", job=job, receipt=receipt,
+                     content={"error": error} if error else None)
         successful = not error and bool(result)
         if self.phase == "executing":
             successful = successful and result.get("status") == "inserted"
@@ -139,6 +241,17 @@ class SupervisedController(TaskController):
         if self.phase == "closing":
             self.phase = "idle"
             self.cleanup_blocked = bool(error or not result)
+            if self.run_diagnostics is not None:
+                self.run_diagnostics.outcome["cleanup_confirmed"] = not self.cleanup_blocked
+                self.run_diagnostics.outcome["cleanup_failed"] = self.cleanup_blocked
+                if self.cleanup_blocked:
+                    self.run_diagnostics.outcome["primary"] = {
+                        key: self.run_diagnostics.outcome[key] for key in ("status", "stage", "reason")
+                    }
+                    self.run_diagnostics.outcome.update(
+                        status="error", stage="closing", reason="Input cleanup unconfirmed. Inspect held input and restart Monster."
+                    )
+            self._record("cleanup_result", confirmed=not self.cleanup_blocked)
             self.worker_owned.emit(False)
             if self.cleanup_blocked:
                 self.state_changed.emit(State.ERROR)
@@ -189,10 +302,19 @@ class SupervisedController(TaskController):
             self.phase = "verifying_capture"
             self._schedule_capture()
 
+    def _provider(self, diagnostics, stage, call=0, step=0):
+        provider = self.provider_factory(self.config)
+        if isinstance(provider, OllamaProvider):
+            provider.diagnostic_callback = lambda event, details, content=None: diagnostics.add(
+                event, stage, content=content, planning_call=call, step=step, **details
+            )
+        return provider
+
     def _probe(self):
         self.phase = "probing"
+        diagnostics = self.run_diagnostics
         self.job = self._start_model(
-            lambda: self.provider_factory(self.config).probe(self.config.model)
+            lambda: self._provider(diagnostics, "probing").probe(self.config.model)
         )
 
     def _schedule_capture(self):
@@ -215,7 +337,10 @@ class SupervisedController(TaskController):
 
     def observation_ready(self, observation, generation):
         if not self.active or self.paused or generation != self.generation:
+            self._record("observation_ignored", source_generation=generation)
             return
+        previous_frame = self.log_frame
+        self.log_frame = self.run_diagnostics.observe(observation, self.phase)
         self.timings.finish(("capture", generation), "completed")
         if draft_only(self.instruction) or (
             window_close_requested(self.instruction) and not self.close_dispatched
@@ -235,11 +360,14 @@ class SupervisedController(TaskController):
             before, action = self.observation, dict(self.pending.action)
             self.observation = observation
             self.phase = "comparing"
+            details = {}
+            self.scene_details = details
+            self._record("scene_recheck_requested", before=previous_frame, after=self.log_frame)
 
             async def compare():
                 # ProviderJobs already executes off the Qt thread. A second
                 # thread pool is unnecessary for this bounded comparison.
-                return scene_matches(before, observation, action)
+                return scene_matches(before, observation, action, diagnostics=details)
 
             self.job = self._start_model(compare)
             return
@@ -250,9 +378,13 @@ class SupervisedController(TaskController):
             expected = self.pending.expected_result or self.pending.summary
             instruction = self._task_context()
             self.verification_calls += 1
+            self._record("verification_requested", observation=self.log_frame,
+                         content={"action": action, "expected_result": expected,
+                                  "task_context": instruction})
             self.state_changed.emit(State.THINKING)
+            diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
             self.job = self._start_model(
-                lambda: self.provider_factory(self.config).verify_action(
+                lambda: self._provider(diagnostics, "verifying", call, step).verify_action(
                     self.config.model,
                     instruction,
                     action,
@@ -272,11 +404,17 @@ class SupervisedController(TaskController):
             return
         self.observation = observation
         self.calls += 1
+        self.planned_frame = self.log_frame
         self.phase = "deciding"
         instruction, history = self._task_context(), history_window(self.history)
+        self._record("planning_requested", observation=self.log_frame,
+                     draft_policy=draft_only(self.instruction),
+                     close_policy=window_close_requested(self.instruction),
+                     content={"task_context": instruction, "history": history})
         self.state_changed.emit(State.THINKING)
+        diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
         self.job = self._start_model(
-            lambda: self.provider_factory(self.config).decide(
+            lambda: self._provider(diagnostics, "deciding", call, step).decide(
                 self.config.model,
                 instruction,
                 observation.png,
@@ -288,9 +426,12 @@ class SupervisedController(TaskController):
 
     def _model_result(self, job, result, error):
         if job != self.job or not self.active or self.paused:
+            self._record("model_result_ignored", source_job=job)
             return
         self.jobs.futures.pop(job, None)
         self.timings.finish(("model", job), "failed" if error else "completed")
+        self._record("model_result", job=job, completed=not bool(error),
+                     content={"error": error} if error else None)
         self.job = None
         if error:
             if self.phase == "deciding" and error.startswith(
@@ -312,11 +453,16 @@ class SupervisedController(TaskController):
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
         elif self.phase == "probing":
+            self._record("model_compatibility", metadata=asdict(result) if is_dataclass(result) else {})
             self.phase = "observing"
             self._capture()
         elif self.phase == "verifying":
             self.last_verification = result
             self.last_verified_proposal = deepcopy(self.pending)
+            self._record("verification_result", observation=self.log_frame, content={
+                "action": self.pending.action, "expected_result": self.pending.expected_result or self.pending.summary,
+                "status": result.status, "evidence": result.evidence,
+            })
             self.trace.append(f"Step {self.actions}: visual verification {result.status}.")
             self.history.append(
                 f"Step {self.actions} visual verification: {result.status}. "
@@ -382,9 +528,12 @@ class SupervisedController(TaskController):
             # the now-stale image that was submitted to the verifier.
             self._capture()
         elif self.phase == "comparing":
+            age = time.monotonic() - self.observation.captured_at
+            self._record("scene_recheck_result", matched=bool(result), age_s=age,
+                         comparison=self.scene_details, observation=self.log_frame)
             if not self._reviewed_proposal_matches():
                 return
-            if not result or time.monotonic() - self.observation.captured_at > 2:
+            if not result or age > 2:
                 self.stale += 1
                 if self.stale > 2:
                     self.fail("Screen changed repeatedly. Stop and stabilize the test desktop.")
@@ -401,6 +550,13 @@ class SupervisedController(TaskController):
             self.phase = "executing"
             self.state_changed.emit(State.WORKING)
             keyboard = action["op"] in {"text", "press", "chord"}
+            self._record("dispatch_requested", transaction=self.actions + 1,
+                         observation=self.log_frame, planned_observation=self.planned_frame,
+                         expected_foreground=self.run_diagnostics.focus_alias(self.observation.foreground) if keyboard else None,
+                         observed_foreground=self.run_diagnostics.focus_alias(self.observation.foreground),
+                         expected_geometry=[asdict(bounds) for bounds in self.observation.displays],
+                         observation_age_s=time.monotonic() - self.observation.captured_at,
+                         content={"image_action": self.pending.action, "physical_action": action})
             self.input_job = self._start_input(
                 "execute",
                 action,
@@ -409,6 +565,8 @@ class SupervisedController(TaskController):
             )
         elif self.phase == "deciding":
             self.pending = result
+            self._record("proposal", observation=self.planned_frame,
+                         content={"proposal": asdict(result)})
             self.preview_ready.emit(result)
             if result.kind == "action" and result.action == {"op": "screenshot"}:
                 self.phase = "observing"
@@ -492,7 +650,12 @@ class SupervisedController(TaskController):
             or request_id != self.question_id
             or not self.approval_timer.isActive()
         ):
+            self._record("review_response_ignored", source_request_id=request_id,
+                         active=self.active, paused=self.paused,
+                         matching_request=request_id == self.question_id,
+                         timer_active=self.approval_timer.isActive())
             return
+        self._record("review_response", request_id=request_id, content={"answer": answer})
         self.approval_timer.stop()
         self.question_id = None
         if self.phase == "clarifying":
@@ -595,6 +758,10 @@ class SupervisedController(TaskController):
             "completion": "unsupported completion",
         }.get(category, "unspecified validation")
         self.trace.append(f"Proposal rejected: {label}.")
+        self._record("proposal_rejected", category=label, content={
+            "reason": reason,
+            "proposal": asdict(self.pending) if category != "model_response" and is_dataclass(self.pending) else None,
+        })
         self.history.append(
             f"Controller rejected the proposed step: {reason} "
             "No input was executed. Choose a different valid approach or ask for help."
@@ -618,6 +785,7 @@ class SupervisedController(TaskController):
         )
 
     def capture_failed(self, error):
+        self._record("capture_failed", content={"error": error})
         self.timings.finish(("capture", self.generation), "failed")
         self.fail(error)
 
@@ -626,6 +794,11 @@ class SupervisedController(TaskController):
             self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
+        self._record("task_terminated", status=kind, model_job=self.job, input_job=self.input_job,
+                     review_id=self.question_id, scheduled_capture=self.scheduled_capture,
+                     content={"reason": message})
+        if self.run_diagnostics is not None:
+            self.run_diagnostics.end(kind, self.phase, message)
         self.capture_timer.stop()
         self.scheduled_capture = None
         self.timings.cancel_pending()
@@ -643,6 +816,7 @@ class SupervisedController(TaskController):
         self.phase = "closing"
         self.terminal = (kind, message)
         self.input_job = self.input.close()
+        self._remember_diagnostic_origin(self.input_diagnostic_origins, self.input_job)
         self.timings.begin(("input", self.input_job), "cleanup")
         self.instruction = ""
         self.observation = self.pending = None

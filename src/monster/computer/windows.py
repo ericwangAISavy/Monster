@@ -48,6 +48,10 @@ class PhysicalRect(ctypes.Structure):
     _fields_ = [("left", I32), ("top", I32), ("right", I32), ("bottom", I32)]
 
 
+class PhysicalPoint(ctypes.Structure):
+    _fields_ = [("x", I32), ("y", I32)]
+
+
 class MonitorInfo(ctypes.Structure):
     _fields_ = [("size", U32), ("monitor", PhysicalRect), ("work", PhysicalRect), ("flags", U32)]
 
@@ -86,6 +90,14 @@ class WindowsInput:
         ]
         self.api.GetAsyncKeyState.argtypes = [ctypes.c_int]
         self.api.GetAsyncKeyState.restype = ctypes.c_short
+
+    def cursor_position(self):
+        self.api.GetCursorPos.argtypes = [ctypes.POINTER(PhysicalPoint)]
+        self.api.GetCursorPos.restype = wintypes.BOOL
+        point = PhysicalPoint()
+        if not self.api.GetCursorPos(ctypes.byref(point)):
+            raise RuntimeError("Cannot observe physical cursor position.")
+        return point.x, point.y
 
     def foreground(self):
         self.api.GetForegroundWindow.restype = wintypes.HWND

@@ -11,6 +11,7 @@ import queue
 import threading
 from ctypes import wintypes
 
+from monster.agent.diagnostics import RUNTIME
 from monster.computer.contracts import Bounds, integer
 from monster.computer.executor import InputExecutor
 from monster.computer.windows import WindowsInput
@@ -77,7 +78,7 @@ def run_worker(connection):
 
         thread = threading.Thread(target=execute_jobs, name="bounded-input", daemon=True)
         thread.start()
-        send(connection, {"event": "ready"})
+        send(connection, {"event": "ready", "runtime": RUNTIME})
         busy = False
         seen = set()
         previous_armed = False

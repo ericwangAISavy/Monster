@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from monster.agent.diagnostics import exception_evidence
 from monster.providers.base import ProviderError
 
 
@@ -23,6 +24,7 @@ def unexpected_error(exc: Exception) -> str:
 
 class ProviderJobs(QObject):
     completed = Signal(int, object, str)
+    diagnostic = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,6 +56,7 @@ class ProviderJobs(QObject):
             except ProviderError as exc:
                 error = str(exc)
             except Exception as exc:  # noqa: BLE001 - Expose safe metadata, never provider payloads.
+                self.diagnostic.emit({"job": job, "evidence": exception_evidence(exc)})
                 error = unexpected_error(exc)
             if not self.closing:
                 self.completed.emit(job, result, error)

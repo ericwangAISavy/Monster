@@ -39,6 +39,7 @@ def observation(color="#ffffff", foreground=77, blink=None):
 class FakeInput(QObject):
     completed = Signal(int, object, str)
     interrupted = Signal()
+    diagnostic = Signal(object)
 
     def __init__(self, cleanup=True):
         super().__init__()
@@ -814,6 +815,10 @@ def test_initial_pill_focus_handoff_is_explicit_before_task_start(
             assert engine.task_foreground == 77
         else:
             assert "No task was started" in ui.last_failure
+            assert ui.last_failure_snapshot.data["task"] == (
+                'Type "Hello from Monster" into the current Slack composer. Do not send.'
+            )
+            assert ui.last_failure_snapshot.data["summary"]["accepted_transactions"] == 0
         assert not bridge.executed
     finally:
         ui.shutdown()
@@ -1365,3 +1370,160 @@ def test_named_key_diagnostics_omit_unknown_payloads():
     assert action_description({"op": "chord", "keys": ["ALT", "F4"]}) == "chord ALT+F4"
     assert "PRIVATE" not in action_description({"op": "press", "key": "PRIVATE_PAYLOAD"})
     assert "PRIVATE" not in action_description({"op": "chord", "keys": ["ALT", "PRIVATE_PAYLOAD"]})
+
+
+def test_full_run_report_preserves_instruction_geometry_and_paired_results(qtbot):
+    instruction = 'Type "Hello" into the current Slack composer. Do not send.'
+    engine, bridge, _ = controller([
+        Decision("action", "Focus composer", {"op": "click", "x": 30, "y": 20},
+                 risk="routine", expected_result="Composer focused"),
+        Decision("action", "Type Hello", {"op": "text", "text": "Hello"},
+                 expected_result="Hello is visible in composer"),
+        Decision("complete", "Draft visible"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    try:
+        engine.submit(instruction)
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        engine.respond(engine.question_id, "approve")
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        snapshot = engine.diagnostic_snapshot()
+        data = snapshot.data
+        assert data["task"] == instruction
+        assert data["outcome"]["status"] == "complete"
+        assert data["outcome"]["cleanup_confirmed"] is True
+        dispatches = [event for event in data["events"] if event["event"] == "dispatch_requested"]
+        assert dispatches[0]["content"]["image_action"]["x"] == 30
+        assert dispatches[0]["content"]["physical_action"]["x"] == -70
+        assert dispatches[0]["details"]["observation"]
+        checks = [event for event in data["events"] if event["event"] == "verification_result"]
+        assert checks[0]["content"]["expected_result"] == "Composer focused"
+        assert checks[1]["content"]["action"] == {"op": "text", "text": "Hello"}
+        assert data["summary"]["accepted_transactions"] == len(bridge.executed) == 2
+        assert snapshot.images
+        assert "Hello" not in engine.failure_diagnostics()
+    finally:
+        engine.close()
+
+
+def test_full_failure_report_contains_rejected_proposal_and_exact_reason(qtbot):
+    bad = Decision("action", "Unsupported shortcut", {"op": "chord", "keys": ["CTRL", "W"]})
+    engine, bridge, _ = controller([bad] * 3)
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    try:
+        engine.submit("Open Sticky Notes")
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        data = engine.diagnostic_snapshot().data
+        assert data["task"] == "Open Sticky Notes"
+        assert data["outcome"]["stage"] == "deciding"
+        rejected = [event for event in data["events"] if event["event"] == "proposal_rejected"]
+        assert len(rejected) == 3
+        assert "Shortcut" in rejected[0]["content"]["reason"]
+        assert rejected[0]["content"]["proposal"]["action"]["keys"] == ["CTRL", "W"]
+        assert not bridge.executed
+    finally:
+        engine.close()
+
+
+def test_diagnostic_report_preserves_primary_failure_when_cleanup_also_fails(qtbot):
+    engine, _, _ = controller([Decision("unable", "Cannot identify target")], cleanup=False)
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    try:
+        engine.submit("Open Sticky Notes")
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        outcome = engine.diagnostic_snapshot().data["outcome"]
+        assert outcome["stage"] == "closing" and outcome["cleanup_failed"] is True
+        assert outcome["primary"]["stage"] == "deciding"
+        assert "Model could not continue" in outcome["primary"]["reason"]
+    finally:
+        engine.close()
+
+
+def test_report_logs_original_and_effective_instruction_when_execution_truncates(qtbot):
+    original = "Open Sticky Notes " + "x" * 2300
+    engine, _, _ = controller([Decision("unable", "Unable")])
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    try:
+        engine.submit(original)
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        data = engine.diagnostic_snapshot().data
+        assert data["task"] == original
+        start = data["events"][0]
+        assert start["details"]["instruction_truncated_for_execution"] is True
+        assert start["content"]["effective_instruction"] == original[:2000]
+    finally:
+        engine.close()
+
+
+def test_provider_diagnostics_remain_bound_to_their_original_run():
+    import asyncio
+
+    import httpx
+
+    from monster.agent.diagnostics import RunDiagnostics
+    from monster.providers.ollama import OllamaProvider
+
+    engine, _, _ = controller([])
+    engine.provider_factory = lambda config: OllamaProvider(
+        config, httpx.MockTransport(lambda request: httpx.Response(200, json={"version": "test"}))
+    )
+    first = RunDiagnostics("FIRST", engine.config)
+    try:
+        provider = engine._provider(first, "probing")
+        engine.run_diagnostics = RunDiagnostics("SECOND", engine.config)
+        asyncio.run(provider.health())
+        assert first.snapshot().data["events"][0]["event"] == "provider_http_result"
+        assert not engine.run_diagnostics.snapshot().data["events"]
+    finally:
+        engine.close()
+
+
+def test_late_worker_and_background_diagnostics_do_not_contaminate_new_run(qtbot):
+    engine, bridge, _ = controller([])
+    try:
+        engine.submit("FIRST TASK")
+        qtbot.waitUntil(lambda: engine.phase == "observing")
+        old_run = engine.run_diagnostics.run_id
+        old_open = 1
+        old_model = engine.jobs.next_id
+        engine.cancel()
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        engine.submit("SECOND TASK")
+        qtbot.waitUntil(lambda: engine.phase == "observing")
+        engine.jobs.diagnostic.emit({"job": old_model, "evidence": {"exception_class": "PRIVATE_OLD_EXCEPTION"}})
+        bridge.diagnostic.emit({"event": "ready", "source_open_job": old_open,
+                                "runtime": {"source_sha256": "0" * 64}})
+        snapshot = engine.diagnostic_snapshot()
+        assert snapshot.data["task"] == "SECOND TASK"
+        assert "PRIVATE_OLD_EXCEPTION" not in snapshot.text()
+        assert snapshot.data["runtime_consistency"]["source_mismatch"] is None
+        ignored = [event for event in snapshot.data["events"] if event["event"] == "diagnostic_ignored"]
+        assert len(ignored) == 2
+        assert all(event["details"]["source_run_id"] == old_run for event in ignored)
+    finally:
+        engine.close()
+
+
+def test_worker_diagnostic_reports_known_stop_reason_without_arbitrary_message(qtbot):
+    from monster.agent.input_bridge import InputBridge
+
+    bridge = InputBridge()
+    events = []
+    bridge.diagnostic.connect(events.append)
+    try:
+        bridge._worker_event({"event": "disarmed", "reason": "Keyboard focus changed."}, 1, 0)
+        bridge._worker_event({"event": "disarmed", "reason": "PRIVATE_UNKNOWN_REASON"}, 1, 0)
+        assert events[0]["reason"] == "Keyboard focus changed."
+        assert events[1]["reason"] == "unclassified worker stop reason"
+        assert "PRIVATE_UNKNOWN_REASON" not in str(events)
+    finally:
+        bridge.shutdown()

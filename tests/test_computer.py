@@ -278,3 +278,26 @@ def test_restoring_already_foreground_window_does_not_reactivate_it():
     backend.api = SimpleNamespace(SetForegroundWindow=lambda handle: calls.append(handle))
     assert backend.restore_foreground(77)
     assert not calls
+
+
+def test_mouse_receipt_observes_actual_cursor_without_changing_input_outcome():
+    backend, executor, generation = armed()
+    backend.cursor_position = lambda: (-70, 20)
+    result = executor.execute({"op": "click", "x": -70, "y": 20}, generation)
+    assert result["status"] == "inserted"
+    assert result["cursor_physical_after"] == {"x": -70, "y": 20}
+    assert backend.events == [("move", -70, 20), ("mouse", "left", True), ("mouse", "left", False)]
+
+
+def test_failed_cursor_observation_does_not_reclassify_or_replay_inserted_click():
+    backend, executor, generation = armed()
+
+    def unavailable():
+        raise RuntimeError("PRIVATE_NATIVE_ERROR")
+
+    backend.cursor_position = unavailable
+    result = executor.execute({"op": "click", "x": -70, "y": 20}, generation)
+    assert result["status"] == "inserted"
+    assert result["cursor_observation_error"]["exception_class"] == "RuntimeError"
+    assert "PRIVATE_NATIVE_ERROR" not in str(result)
+    assert len(backend.events) == 3
