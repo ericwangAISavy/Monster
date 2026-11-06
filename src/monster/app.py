@@ -22,7 +22,7 @@ from monster.capture import CaptureIsolation
 from monster.config import Preferences, load, save
 from monster.geometry import beside_cursor
 from monster.lifecycle import MockTaskController, State, TaskController
-from monster.native import GlobalHotkeys, focus_window
+from monster.native import GlobalHotkeys, focus_window, foreground_window
 from monster.preview import PreviewTaskController
 from monster.providers import config as provider_config
 from monster.ui.companion import Companion, draw_monster
@@ -59,6 +59,7 @@ class CompanionApp:
         self.last_failure = None
         self.last_task_outcome = None
         self.preview_capture = None
+        self.activation_target = None
         self.controller_bindings = []
         self.startup_error = ""
         self.provider_path = config_path.with_name("ollama.json")
@@ -151,6 +152,7 @@ class CompanionApp:
         self.register_hotkeys()
         self.bind_controller(controller)
         self.pending_question = None
+        self.activation_target = None
         self.last_preview = None
         self.last_task_outcome = None
         self.active, self.paused = False, False
@@ -291,6 +293,12 @@ class CompanionApp:
                 self.controller.toggle_pause()
             self.notice("Paused · resume or stop from the tray")
             return
+        if getattr(self.controller, "is_supervised", False) and not (
+            self.pill.isVisible() and self.pill.mode == "input"
+        ):
+            target = foreground_window()
+            owned = {int(self.pill.winId()), int(self.companion.winId())}
+            self.activation_target = target if target and target not in owned else None
         self.state_timer.stop()
         self.pill.show_input()
         if not self.controller.is_mock:
@@ -310,14 +318,34 @@ class CompanionApp:
         self.set_state(State.LISTENING)
 
     def submit(self, instruction):
-        if self.isolation.busy:
+        if self.isolation.busy or self.active or not instruction.strip():
             return
+        target = self.activation_target
+        if getattr(self.controller, "is_supervised", False):
+            from monster.computer.windows import WindowsInput
+
+            self.pill.hide()
+            try:
+                if not target or not WindowsInput().restore_foreground(target):
+                    raise RuntimeError("Cannot restore the initial target window.")
+            except RuntimeError:
+                self.activation_target = None
+                self.failed(
+                    "Stopped incomplete: Cannot restore the initial target window. "
+                    "Focus the intended composer and activate Monster again. No task was started."
+                )
+                return
         if self.controller.submit(instruction):
+            if getattr(self.controller, "is_supervised", False):
+                # Pin the current-composer task before any asynchronous capture.
+                self.controller.task_foreground = target
+            self.activation_target = None
             self.last_task_outcome = "running"
             self.pill.input.clear()
             self.pill.hide()
 
     def dismiss(self):
+        self.activation_target = None
         self.isolation.suppress_restore(self.pill)
         if self.pending_question:
             # Dismissal never grants approval. Explicitly reject/cancel the request.
@@ -408,6 +436,7 @@ class CompanionApp:
             self.pill.hide()
 
     def stop(self):
+        self.activation_target = None
         # A real controller must synchronously disarm its input worker here.
         self.pending_question = None
         self.isolation.suppress_restore(self.pill)

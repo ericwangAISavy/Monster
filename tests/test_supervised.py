@@ -758,3 +758,63 @@ def test_draft_insertion_cannot_be_followed_by_more_input(qtbot, approve_each_st
         assert "rejected" in " ".join(model.history[-1]).lower()
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("target", [77, 0, "owned"])
+@pytest.mark.parametrize("restored", [True, False])
+def test_initial_pill_focus_handoff_is_explicit_before_task_start(
+    qtbot, qapp, tmp_path, monkeypatch, restored, target
+):
+    import monster.app as app_module
+    import monster.computer.windows as windows_module
+    from monster import native
+    from monster.lifecycle import MockTaskController
+
+    engine, bridge, _ = controller([])
+    ui = app_module.CompanionApp(
+        qapp, MockTaskController(), tmp_path / "companion.json", enable_tray=False
+    )
+    ui.switch_controller(engine)
+    foreground = [int(ui.pill.winId()) if target == "owned" else target]
+    restores = []
+    starts = []
+
+    class Api:
+        GetForegroundWindow = staticmethod(lambda: foreground[0])
+
+    class Windows:
+        def restore_foreground(self, target):
+            assert not ui.pill.isVisible()
+            restores.append(target)
+            if restored:
+                foreground[0] = target
+            return restored
+
+    # Stand in for native focus infrastructure, never target text or UI semantics.
+    monkeypatch.setattr(native, "user32", lambda: Api())
+    monkeypatch.setattr(windows_module, "WindowsInput", Windows)
+    monkeypatch.setattr(app_module, "focus_window", lambda window: foreground.__setitem__(0, 999))
+    monkeypatch.setattr(ui, "register_hotkeys", list)
+    real_submit = engine.submit
+
+    def submit(instruction):
+        starts.append(foreground[0])
+        return real_submit(instruction)
+
+    monkeypatch.setattr(engine, "submit", submit)
+    try:
+        ui.activate()
+        assert foreground[0] == 999
+        # Reopening an already-visible input pill must not replace the saved target.
+        ui.activate()
+        ui.submit('Type "Hello from Monster" into the current Slack composer. Do not send.')
+        assert restores == ([77] if target == 77 else [])
+        assert starts == ([77] if restored and target == 77 else [])
+        if restored and target == 77:
+            assert engine.task_foreground == 77
+        else:
+            assert "No task was started" in ui.last_failure
+        assert not bridge.executed
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)

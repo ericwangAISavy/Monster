@@ -50,6 +50,15 @@ def exclude_capture(window) -> bool:
     return bool(api and api.SetWindowDisplayAffinity(int(window.winId()), 0x11))
 
 
+def foreground_window() -> int:
+    """Focus identity only; never inspect target titles, controls or contents."""
+    api = user32()
+    if not api:
+        return 0
+    api.GetForegroundWindow.restype = wintypes.HWND
+    return int(api.GetForegroundWindow() or 0)
+
+
 def focus_window(window):
     api = user32()
     if api:

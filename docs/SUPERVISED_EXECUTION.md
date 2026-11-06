@@ -18,7 +18,7 @@ actions are described in the approval-setting section below.
 2. Open tray → **AI model settings…**. Keep your existing LAN URL and model; run **Test vision + JSON** for the current settings. Select **Real computer control (experimental)** and Save.
 3. Open Notepad manually with an empty, disposable document on your intended display with that window foreground. Close sensitive applications and other Monster instances. Keep the target standard privilege; no administrator elevation is needed or supported.
 4. Activate with **Ctrl+Alt+M** and request a small task such as **“Type Hello from Monster into the open Notepad document.”** Start with a short sentence, not a complex cross-application workflow.
-5. Monster checks the model, captures display 1 with its own overlays hidden, and shows an approval in the existing pill. Review the operation, coordinates/key/text payload and visible target. Scroll long text to inspect it. No input is sent just because a proposal appeared.
+5. Monster restores the pre-pill target, checks the model, captures that foreground window's display with its own overlays hidden, and shows an approval in the existing pill. Review the operation, coordinates/key/text payload and visible target. Scroll long text to inspect it. No input is sent just because a proposal appeared.
 6. Choose **Approve** for that specific action or **Decline** to stop. Escape also cancels. After approval the pill hides, Monster restores the previously observed foreground window, captures a fresh frame and checks whether the scene still matches. A changed scene invalidates the approval and triggers a fresh proposal instead of executing stale input.
 7. After input insertion, Monster captures again and asks the model to verify the concrete expected result in the intended field. The next planning call receives the current screenshot and bounded actual-action/outcome history. Failed actions are not blindly repeated. Additional input follows your configured approval policy.
 8. When the model reports completion, inspect Notepad yourself. The final pill asks you to confirm the visible result against your original instruction. Only that explicit confirmation produces **“Completed · visible result confirmed by you.”** A model claim or an input receipt alone is not recorded as completion.
@@ -255,3 +255,29 @@ as successes/attempts for each cell; do not count blocked or unrun trials as pas
 Screenshots and proposed coordinates must be inspected locally on that machine;
 no personal screen captures, message contents or raw reasoning should be collected
 by default.
+
+### Initial focus handoff
+
+For real-input tasks, Monster records the native foreground window identity
+before opening the command pill. Submission hides the pill and explicitly
+restores that window before starting the worker/model workflow. A missing target,
+a Monster-owned overlay target, or denied focus restoration prevents startup;
+focus the intended application and activate Monster again. Reopening an already
+visible command pill preserves the original target. Dismiss, Stop and mode
+changes discard it.
+
+Current-composer draft tasks are bound to this pre-pill target, including their
+first observation after the model probe. If foreground changes while inference
+is pending, the controller stops rather than adopting the new window. Automatic
+steps still do not restore focus after manual takeover. Native handles are used
+only for focus infrastructure; no target titles, text or control trees are read.
+
+Portable GUI regressions simulate the focus transition and verify restoration
+occurs while the pill is hidden and before task startup, successful target
+binding, denied restoration, missing handles and Monster-owned targets. They do
+not establish that Windows accepts restoration or that Slack restores the desired
+child editor's caret. On Windows, first focus an empty composer, invoke
+Ctrl+Alt+M, submit the exact draft task and confirm the caret/text returns there.
+Then test a visible unfocused composer, both approval settings and foreground
+changes during the initial probe. If Windows denies restoration, expect an
+incomplete outcome with no started task; do not bypass the check.
