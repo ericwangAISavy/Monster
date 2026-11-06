@@ -546,6 +546,9 @@ class CompanionApp:
                 f"\n\nLast executed action visual check: {verification.status}\n"
                 f"Evidence: {verification.evidence}"
             )
+        timings = getattr(self.controller, "timings", None)
+        if timings is not None:
+            text += "\n\n" + timings.report()
         self._show_details(
             "Monster · action proposal",
             text,

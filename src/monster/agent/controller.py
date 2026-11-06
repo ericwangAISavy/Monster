@@ -7,6 +7,7 @@ import uuid
 from PySide6.QtCore import QTimer, Signal
 
 from monster.agent.input_bridge import InputBridge
+from monster.agent.metrics import OperationTimings
 from monster.agent.progress import (
     action_description,
     action_signature,
@@ -30,6 +31,7 @@ class SupervisedController(TaskController):
     def __init__(self, config, provider_factory=OllamaProvider, input_bridge=None, parent=None):
         super().__init__(parent)
         self.config, self.provider_factory = config, provider_factory
+        self.timings = OperationTimings()
         self.jobs = ProviderJobs(self)
         self.jobs.completed.connect(self._model_result)
         self.input = input_bridge or InputBridge(parent=self)
@@ -70,6 +72,7 @@ class SupervisedController(TaskController):
             or not instruction.strip()
         ):
             return False
+        self.timings.reset()
         self.instruction = instruction.strip()[:2000]
         self.active, self.paused = True, False
         self.generation += 1
@@ -90,12 +93,30 @@ class SupervisedController(TaskController):
         # GUI releases its stop registration before the child registers it. No
         # automated input can be armed before the child reports ready.
         self.worker_owned.emit(True)
-        self.input_job = self.input.submit("open")
+        self.input_job = self._start_input("open")
         return True
+
+    def _start_model(self, operation):
+        stage = {
+            "probing": "probe", "deciding": "planning",
+            "comparing": "recheck", "verifying": "verification",
+        }[self.phase]
+        job = self.jobs.start(operation)
+        self.timings.begin(("model", job), stage)
+        return job
+
+    def _start_input(self, operation, *args):
+        job = self.input.submit(operation, *args)
+        self.timings.begin(("input", job), "startup" if operation == "open" else "dispatch")
+        return job
 
     def _input_result(self, job, result, error):
         if job != self.input_job:
             return
+        successful = not error and bool(result)
+        if self.phase == "executing":
+            successful = successful and result.get("status") == "inserted"
+        self.timings.finish(("input", job), "completed" if successful else "failed")
         self.input_job = None
         if self.phase == "closing":
             self.phase = "idle"
@@ -150,7 +171,7 @@ class SupervisedController(TaskController):
 
     def _probe(self):
         self.phase = "probing"
-        self.job = self.jobs.start(
+        self.job = self._start_model(
             lambda: self.provider_factory(self.config).probe(self.config.model)
         )
 
@@ -181,7 +202,7 @@ class SupervisedController(TaskController):
                 # thread pool is unnecessary for this bounded comparison.
                 return scene_matches(before, observation, action)
 
-            self.job = self.jobs.start(compare)
+            self.job = self._start_model(compare)
             return
         if self.phase == "verifying_capture":
             self.observation = observation
@@ -191,7 +212,7 @@ class SupervisedController(TaskController):
             instruction = self._task_context()
             self.verification_calls += 1
             self.state_changed.emit(State.THINKING)
-            self.job = self.jobs.start(
+            self.job = self._start_model(
                 lambda: self.provider_factory(self.config).verify_action(
                     self.config.model,
                     instruction,
@@ -215,7 +236,7 @@ class SupervisedController(TaskController):
         self.phase = "deciding"
         instruction, history = self._task_context(), history_window(self.history)
         self.state_changed.emit(State.THINKING)
-        self.job = self.jobs.start(
+        self.job = self._start_model(
             lambda: self.provider_factory(self.config).decide(
                 self.config.model,
                 instruction,
@@ -230,6 +251,7 @@ class SupervisedController(TaskController):
         if job != self.job or not self.active or self.paused:
             return
         self.jobs.futures.pop(job, None)
+        self.timings.finish(("model", job), "failed" if error else "completed")
         self.job = None
         if error:
             if self.phase == "deciding" and error.startswith(
@@ -317,7 +339,7 @@ class SupervisedController(TaskController):
             self.phase = "executing"
             self.state_changed.emit(State.WORKING)
             keyboard = action["op"] in {"text", "press", "chord"}
-            self.input_job = self.input.submit(
+            self.input_job = self._start_input(
                 "execute",
                 action,
                 self.observation.foreground if keyboard else None,
@@ -465,6 +487,7 @@ class SupervisedController(TaskController):
         return (
             f"Planning calls: {self.calls}; visual checks: {self.verification_calls}.\n"
             + "\n".join(self.trace[-12:])
+            + "\n\n" + self.timings.report()
         )
 
     def capture_failed(self, error):
@@ -475,6 +498,7 @@ class SupervisedController(TaskController):
             self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
+        self.timings.cancel_pending()
         self.input.stop()
         self.generation += 1
         if self.job:
@@ -489,6 +513,7 @@ class SupervisedController(TaskController):
         self.phase = "closing"
         self.terminal = (kind, message)
         self.input_job = self.input.close()
+        self.timings.begin(("input", self.input_job), "cleanup")
         self.instruction = ""
         self.observation = self.pending = None
 

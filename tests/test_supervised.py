@@ -862,3 +862,60 @@ def test_pre_pill_target_is_enforced_on_first_capture_after_probe(qtbot, approve
     finally:
         release_probe.set()
         engine.close()
+
+
+def test_task_timings_survive_completion_without_private_payloads(qtbot):
+    content = "PRIVATE_DRAFT_CANARY_2918"
+    engine, bridge, _ = controller(
+        [
+            Decision("action", "Type draft", {"op": "text", "text": content}),
+            Decision("complete", "Draft is visible"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    finished = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit(f'Type "{content}" into the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        engine.respond(engine.question_id, "approve")
+        qtbot.waitUntil(lambda: bool(finished))
+        report = engine.failure_diagnostics()
+        assert "Planning: completed 2, failed 0, cancelled 0" in report
+        assert "Visual verification: completed 1" in report
+        assert "Input dispatch: completed 1" in report
+        assert "Input startup: completed 1" in report
+        assert "Input cleanup: completed 1" in report
+        assert content not in report and "Simulated expected" not in report
+        assert len(bridge.executed) == 1
+    finally:
+        engine.close()
+
+
+def test_cancelled_model_wait_is_reported_and_does_not_finish_late(qtbot):
+    import asyncio
+    import threading
+
+    engine, bridge, model = controller([])
+    probing = threading.Event()
+
+    async def probe(model_name):
+        probing.set()
+        await asyncio.sleep(30)
+        return ProbeResult(model_name, "abc", "test", True, True)
+
+    model.probe = probe
+    try:
+        assert engine.submit("Type a harmless draft in Slack. Do not send.")
+        qtbot.waitUntil(probing.is_set)
+        engine.cancel()
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        report = engine.failure_diagnostics()
+        assert "Model compatibility check: completed 0, failed 0, cancelled 1" in report
+        assert "Input cleanup: completed 1" in report
+        assert not bridge.executed
+    finally:
+        engine.close()

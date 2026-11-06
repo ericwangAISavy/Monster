@@ -281,3 +281,29 @@ Ctrl+Alt+M, submit the exact draft task and confirm the caret/text returns there
 Then test a visible unfocused composer, both approval settings and foreground
 changes during the initial probe. If Windows denies restoration, expect an
 incomplete outcome with no started task; do not bypass the check.
+
+### Operation timings for native trials
+
+**Last action preview** and **Last failure** now include content-free elapsed-wait
+summaries for model compatibility checks, planning, scene rechecks, visual
+verification, input startup, input dispatch and cleanup. Each stage reports
+completed/failed/cancelled counts, total seconds and maximum seconds. Timings are
+kept only in RAM, reset for each accepted task and remain available after that
+task ends. No screenshot, prompt, typed text or model evidence is added to the
+timing recorder, and it writes no files.
+
+These are controller-observed wall-clock waits, including scheduling/event-loop
+and worker overhead, not isolated model inference or SendInput duration. The
+compatibility check can contain multiple provider requests. Input dispatch
+includes arming and disarming. Cancelled waits stop at cancellation; they are
+included in total/max and do not measure when remote work actually stops. Pending
+operations have no completed sample yet. A completed provider request or dispatch
+wait does not prove correct grounding, successful verification, intended input,
+or task completion. Check the actual visual outcome separately.
+
+After each native trial, inspect the details locally and record these non-content
+numbers alongside the trial outcome. Separate model compatibility/cold-load time,
+planning and verification from input-worker waits. Existing action-preview details
+can contain the proposed text and visual evidence, so share only the timing block
+unless you intentionally choose to share those contents. Opening details during
+an active task retains the existing manual-takeover behavior.
