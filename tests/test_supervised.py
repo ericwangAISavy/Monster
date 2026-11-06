@@ -1265,3 +1265,103 @@ def test_automatic_step_keeps_exact_proposal_binding_through_recheck(qtbot):
         assert "proposal changed" in failures[0].lower()
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("instruction", [
+    "Close the current Chrome browser", "Please close the active window.",
+])
+def test_explicit_window_close_requires_review_even_in_automatic_mode(qtbot, instruction):
+    close = {"op": "chord", "keys": ["ALT", "F4"]}
+    engine, bridge, _ = controller([
+        Decision("action", "Close current window", close, risk="routine"),
+        Decision("complete", "Requested window is closed"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    questions = []
+
+    def capture():
+        # Closing the reviewed window intentionally changes foreground.
+        engine.observation_ready(
+            observation(foreground=88 if bridge.executed else 77), engine.generation
+        )
+
+    engine.capture_requested.connect(capture)
+    engine.approval_requested.connect(lambda rid, text: questions.append((rid, text)))
+    try:
+        engine.submit(instruction)
+        qtbot.waitUntil(lambda: bool(questions))
+        assert not bridge.executed
+        assert "unsaved" in questions[0][1].lower()
+        engine.respond(questions[0][0], "approve")
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert [item[0] for item in bridge.executed] == [close]
+        assert bridge.executed[0][1] == 77
+        assert "chord ALT+F4" in engine.failure_diagnostics()
+    finally:
+        engine.close()
+
+
+def test_close_shortcut_is_blocked_for_unrelated_or_negated_tasks():
+    for instruction in ["Open Chrome", "Do not close the current Chrome browser", "Close all windows"]:
+        engine, _, _ = controller([])
+        try:
+            engine.instruction = instruction
+            with pytest.raises(ValueError):
+                engine._prepare_action({"op": "chord", "keys": ["ALT", "F4"]}, observation())
+        finally:
+            engine.close()
+
+
+def test_non_draft_rejections_report_policy_category_without_composer_advice(qtbot):
+    bad = Decision("action", "Click target", {"op": "click", "x": 500, "y": 500})
+    engine, bridge, _ = controller([bad] * 3)
+    failures = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Open Sticky Notes")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert "composer" not in failures[0].lower()
+        assert "tool/action validation" in engine.failure_diagnostics()
+        assert not bridge.executed
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("intervention", ["decline", "changed_focus", "repeated_close"])
+def test_window_closing_does_not_redirect_repeat_or_bypass_decline(qtbot, intervention):
+    close = Decision("action", "Close current window", {"op": "chord", "keys": ["ALT", "F4"]})
+    engine, bridge, _ = controller([close] * 4)
+    engine.config = replace(engine.config, approve_each_step=False)
+    questions, failures = [], []
+
+    def capture():
+        foreground = 88 if intervention == "changed_focus" and engine.phase == "rechecking" else 77
+        engine.observation_ready(observation(foreground=foreground), engine.generation)
+
+    engine.capture_requested.connect(capture)
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Close the current Chrome browser")
+        qtbot.waitUntil(lambda: bool(questions))
+        engine.respond(questions[0], "reject" if intervention == "decline" else "approve")
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        assert len(bridge.executed) == (1 if intervention == "repeated_close" else 0)
+        if intervention == "changed_focus":
+            assert "target window changed" in failures[0]
+        if intervention == "repeated_close":
+            assert "tool/action validation" in engine.failure_diagnostics()
+    finally:
+        engine.close()
+
+
+def test_named_key_diagnostics_omit_unknown_payloads():
+    from monster.agent.progress import action_description
+
+    assert action_description({"op": "press", "key": "WIN"}) == "press WIN"
+    assert action_description({"op": "chord", "keys": ["ALT", "F4"]}) == "chord ALT+F4"
+    assert "PRIVATE" not in action_description({"op": "press", "key": "PRIVATE_PAYLOAD"})
+    assert "PRIVATE" not in action_description({"op": "chord", "keys": ["ALT", "PRIVATE_PAYLOAD"]})

@@ -8,6 +8,15 @@ from PySide6.QtGui import QImage
 from monster.computer.contracts import Bounds, validate_action
 
 
+def window_close_requested(instruction):
+    """Narrow explicit English intent, never inferred from model output."""
+    return bool(re.fullmatch(
+        r"\s*(?:please\s+)?close\s+(?:the\s+)?(?:current|active|foreground)\s+"
+        r"(?:chrome(?:\s+browser)?(?:\s+window)?|browser(?:\s+window)?|window)\s*[.!]?\s*",
+        instruction, flags=re.IGNORECASE,
+    ))
+
+
 def approval_reason(decision):
     """User-authorized automatic mode still escalates sensitive/uncertain effects.
 
@@ -15,6 +24,8 @@ def approval_reason(decision):
     validation remain in effect; this is not a security boundary for arbitrary apps.
     """
     action = decision.action or {}
+    if action == {"op": "chord", "keys": ["ALT", "F4"]}:
+        return "Closing a window can discard unsaved work. Review the intended target."
     if re.search(
         r"(?i)\b(send(?:ing)?|submit(?:ting)?|delet(?:e|ing|ion)|remov(?:e|ing)|"
         r"purchas(?:e|ing)|buy(?:ing)?|pay(?:ment|ments|ing)?|transfer(?:ring)?|install(?:ing|ation)?|"
@@ -66,7 +77,7 @@ def needs_human_approval(decision):
     return approval_reason(decision) is not None
 
 
-def prepare_action(action, observation):
+def prepare_action(action, observation, *, allow_window_close=False):
     action = validate_action(
         action, [Bounds(0, 0, observation.bounds.width, observation.bounds.height)]
     )
@@ -85,7 +96,7 @@ def prepare_action(action, observation):
         raise ValueError("Delete is outside the supervised demo.")
     if action.get("op") == "chord":
         keys = action.get("keys", [])
-        if keys not in (
+        if not (allow_window_close and keys == ["ALT", "F4"]) and keys not in (
             ["CTRL", "A"],
             ["CTRL", "C"],
             ["CTRL", "Z"],

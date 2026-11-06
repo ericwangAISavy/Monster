@@ -411,3 +411,46 @@ These details remain local/in memory and may contain proposed text or screen
 information, as the existing preview already does. Share only non-sensitive
 parts. The content-free failure trace continues to omit those payloads. No limits
 or input policies were relaxed for app-opening tasks.
+
+### Explicitly closing the current window
+
+A narrowly recognized instruction such as **Close the current Chrome browser**
+or **Please close the active window** now permits one **Alt+F4** transaction.
+The controller binds the target foreground window before dispatch and requires
+human review even when routine-step approval is off. Inspect the actual window
+and any unsaved work before approving. This targets the current window, not every
+Chrome window/process, and does not read titles, application APIs or control trees.
+
+For these recognized tasks, guessed title-bar clicks and other input operations
+are rejected. The controller will not issue a second close, click through an
+unsaved-work dialog, or automatically dismiss confirmations. It observes the
+result and requires final visible-result confirmation. A confirmation dialog,
+blocked close or ambiguous outcome must be inspected manually. Unrelated,
+negated or bulk-close instructions do not authorize Alt+F4. Recognition currently
+covers a narrow set of English current/active/foreground-window phrases; it is
+not a general natural-language permission parser. Ctrl+W/tab closing and closing
+background/all windows are not added by this change.
+
+The worker checks focus through the chord's final key-down. Closing may itself
+change foreground; afterward only worker-owned key releases remain. Those releases
+no longer misclassify that expected transition as a partial outcome. A focus change
+before the final key-down still aborts and cleans up. Portable tests simulate both
+cases, mandatory review, decline, target changes, unsupported intent and blocked
+repeat closes. They do not qualify actual Chrome/Windows behavior.
+
+To qualify on Windows, use one disposable Chrome window with no unsaved form data.
+Request the exact phrase above. Verify the Alt+F4 proposal includes an unsaved-work
+warning, Decline once to confirm no close, then start a new task and approve only
+the intended window. Confirm the one window closes, no other window closes, and
+no Alt/F4 remains held. Test emergency stop separately. Do not use personal work
+or unsaved forms for initial qualification.
+
+### Rejection diagnostics
+
+Failure traces now distinguish invalid model responses, repeated/previously failed
+input, tool/action validation and unsupported completion. Named key presses and
+chords include their validated key names (for example `press WIN` or
+`chord ALT+F4`); unknown key payloads are omitted. App-opening/window-closing failures
+now direct the user to inspect the target and action preview rather than telling
+them to focus a message composer. These categories do not prove why an older run
+failed; inspect the proposed action, expected result and visual evidence as well.

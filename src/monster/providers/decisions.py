@@ -47,6 +47,7 @@ ACTION_SCHEMA = {
                             ["SHIFT", "LEFT"],
                             ["SHIFT", "RIGHT"],
                             ["SHIFT", "ENTER"],
+                            ["ALT", "F4"],
                         ]
                     }
                 },

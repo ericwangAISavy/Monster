@@ -171,8 +171,13 @@ class InputExecutor:
                     self.expected_focus = None
                 emit("key", action["key"], False)
             elif op == "chord":
-                for key in action["keys"]:
+                for key in action["keys"][:-1]:
                     emit("key", key, True)
+                with self.lock:
+                    emit("key", action["keys"][-1], True)
+                    # A completed chord may close/switch its target. Only owned
+                    # releases remain; do not misreport that expected transition.
+                    self.expected_focus = None
                 for key in reversed(action["keys"]):
                     emit("key", key, False)
             elif op in ("key_down", "key_up"):

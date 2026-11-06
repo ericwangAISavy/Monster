@@ -239,3 +239,29 @@ def test_monitor_info_layout_is_fixed_width_on_all_hosts():
     assert ctypes.sizeof(PhysicalRect) == 16
     assert ctypes.sizeof(MonitorInfo) == 40
     assert MonitorInfo.flags.offset == 36
+
+
+@pytest.mark.parametrize("change_after", ["ALT", "F4"])
+def test_window_close_chord_checks_focus_before_final_down_and_releases_after_it(change_after):
+    backend, executor, generation = armed()
+    focus = [77]
+    backend.foreground = lambda: focus[0]
+
+    def change_focus():
+        if backend.events[-1] == ("key", change_after, True):
+            focus[0] = 88
+
+    backend.on_event = change_focus
+    receipt = executor.execute(
+        {"op": "chord", "keys": ["ALT", "F4"]}, generation, expected_focus=77
+    )
+    if change_after == "F4":
+        assert receipt["status"] == "inserted"
+        assert backend.events == [
+            ("key", "ALT", True), ("key", "F4", True),
+            ("key", "F4", False), ("key", "ALT", False),
+        ]
+    else:
+        assert receipt["status"] == "partial_or_unknown"
+        assert ("key", "F4", True) not in backend.events
+    assert not executor.owned

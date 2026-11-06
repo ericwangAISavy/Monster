@@ -5,6 +5,8 @@ import json
 import re
 import unicodedata
 
+from monster.computer.contracts import KEYS
+
 
 def canonical_action(action):
     value = dict(action)
@@ -83,6 +85,16 @@ def action_description(action):
     """Human-shareable metadata: no typed text, prompts, or verification evidence."""
     if action.get("op") == "text":
         return f"text ({len(action.get('text', ''))} characters)"
+    if action.get("op") == "press":
+        key = action.get("key")
+        return f"press {key}" if type(key) is str and key in KEYS else "press (unknown key)"
+    if action.get("op") == "chord":
+        keys = action.get("keys")
+        if type(keys) is list and 2 <= len(keys) <= 4 and all(
+            type(key) is str and key in KEYS for key in keys
+        ):
+            return "chord " + "+".join(keys)
+        return "chord (unknown keys)"
     if "x" in action:
         return f"{action['op']} at image ({action['x']}, {action['y']})"
     return action.get("op", "unknown")

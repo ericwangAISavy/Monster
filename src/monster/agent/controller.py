@@ -17,7 +17,12 @@ from monster.agent.progress import (
     history_window,
     validate_draft_action,
 )
-from monster.agent.validation import approval_reason, prepare_action, scene_matches
+from monster.agent.validation import (
+    approval_reason,
+    prepare_action,
+    scene_matches,
+    window_close_requested,
+)
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import OllamaProvider
@@ -54,6 +59,7 @@ class SupervisedController(TaskController):
         self.reviewed_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
+        self.close_dispatched = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.restore_focus = None
@@ -92,6 +98,7 @@ class SupervisedController(TaskController):
         self.reviewed_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
+        self.close_dispatched = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.actions = self.calls = self.stale = 0
@@ -169,6 +176,8 @@ class SupervisedController(TaskController):
                 return
             self.actions += 1
             action = dict(self.pending.action)
+            if action == {"op": "chord", "keys": ["ALT", "F4"]}:
+                self.close_dispatched = True
             if action["op"] == "text":
                 self.inserted_text.add(action_signature(action))
             self.history.append(
@@ -208,13 +217,18 @@ class SupervisedController(TaskController):
         if not self.active or self.paused or generation != self.generation:
             return
         self.timings.finish(("capture", generation), "completed")
-        if draft_only(self.instruction):
+        if draft_only(self.instruction) or (
+            window_close_requested(self.instruction) and not self.close_dispatched
+        ):
             if self.task_foreground is None:
                 self.task_foreground = observation.foreground
             elif self.task_foreground != observation.foreground:
                 self.fail(
                     "Current-composer target window changed. Focus the intended composer "
                     "and start a new task; no input was redirected to another window."
+                    if draft_only(self.instruction) else
+                    "Close target window changed before dispatch. Focus the intended window "
+                    "and start a new task; no close shortcut was redirected."
                 )
                 return
         if self.phase == "rechecking":
@@ -288,7 +302,7 @@ class SupervisedController(TaskController):
                     "Model did not return valid structured JSON",
                 )
             ):
-                self._reject_proposal(error)
+                self._reject_proposal(error, "model_response")
                 return
             stage = {
                 "probing": "Model compatibility check",
@@ -379,7 +393,7 @@ class SupervisedController(TaskController):
                     self._capture()
                 return
             try:
-                action = prepare_action(self.pending.action, self.observation)
+                action = self._prepare_action(self.pending.action, self.observation)
                 self._validate_draft_proposal()
             except (ValueError, TypeError):
                 self.fail("Action is outside the supervised demo policy.")
@@ -421,16 +435,19 @@ class SupervisedController(TaskController):
                     action["op"] == "text" and action_signature(action) in self.inserted_text
                 ) or any(equivalent_action(action, failed) for failed in self.failed_actions):
                     self._reject_proposal(
-                        "This action already failed or its text was already inserted."
+                        "This action already failed or its text was already inserted.", "repeat"
                     )
                     return
                 try:
-                    prepare_action(action, self.observation)
+                    self._prepare_action(action, self.observation)
                     self._validate_draft_proposal()
                 except (ValueError, TypeError) as exc:
-                    self._reject_proposal(str(exc))
+                    self._reject_proposal(str(exc), "action_validation")
                     return
                 reason = (
+                    "Closing a window can discard unsaved work. Confirm the intended window "
+                    "is the current foreground target."
+                    if window_close_requested(self.instruction) else
                     "Per-step approval is enabled."
                     if self.config.approve_each_step
                     else approval_reason(result)
@@ -452,7 +469,7 @@ class SupervisedController(TaskController):
             else:
                 if self.last_verification and self.last_verification.status != "succeeded":
                     self._reject_proposal(
-                        "Completion is unsupported: the last action failed visual verification."
+                        "Completion is unsupported: the last action failed visual verification.", "completion"
                     )
                     return
                 text = (
@@ -520,6 +537,14 @@ class SupervisedController(TaskController):
                 "propose the requested draft text or ask for help."
             )
 
+    def _prepare_action(self, action, observation):
+        closing = window_close_requested(self.instruction)
+        if closing and (self.close_dispatched or action != {"op": "chord", "keys": ["ALT", "F4"]}):
+            raise ValueError(
+                "Current-window closing supports one reviewed Alt+F4 only; no guessed clicks or retry."
+            )
+        return prepare_action(action, observation, allow_window_close=closing)
+
     def _reviewed_proposal_matches(self):
         if self.reviewed_proposal is None or self.pending != self.reviewed_proposal:
             self.fail("Action proposal changed during review/recheck. No changed input was authorized.")
@@ -544,6 +569,14 @@ class SupervisedController(TaskController):
                 "Type the complete requested draft in one text transaction. After text insertion, "
                 "only observe and report completion or ask for help; do not append, edit or send."
             )
+        if window_close_requested(self.instruction):
+            text += (
+                "\nClose the current foreground window only. Propose Alt+F4, not clicks "
+                "at guessed title-bar coordinates. Human review is mandatory because "
+                "closing can discard unsaved work. One close transaction is permitted. "
+                "Do not close other windows or dismiss unsaved-work confirmation dialogs. "
+                "Verify the visible result, then request final confirmation; ask for help if uncertain."
+            )
         if self.human_confirmed_focus:
             text += (
                 "\nHuman focus confirmation: the user confirmed the intended editable "
@@ -553,18 +586,26 @@ class SupervisedController(TaskController):
             )
         return text
 
-    def _reject_proposal(self, reason):
+    def _reject_proposal(self, reason, category="unspecified"):
         self.rejected_proposals += 1
-        self.trace.append("Proposal rejected: repeated/invalid action or unsupported completion.")
+        label = {
+            "model_response": "invalid model response",
+            "repeat": "repeated/previously failed input",
+            "action_validation": "tool/action validation",
+            "completion": "unsupported completion",
+        }.get(category, "unspecified validation")
+        self.trace.append(f"Proposal rejected: {label}.")
         self.history.append(
             f"Controller rejected the proposed step: {reason} "
             "No input was executed. Choose a different valid approach or ask for help."
         )
         if self.rejected_proposals >= 3:
-            self.fail(
-                "Three repeated/invalid proposals rejected without input. Focus the current "
-                "message composer manually and give a fresh typing instruction."
+            advice = (
+                "Focus the current message composer manually and give a fresh typing instruction."
+                if draft_only(self.instruction) else
+                "Inspect the target application and Last action preview before starting a new task."
             )
+            self.fail("Three repeated/invalid proposals rejected without input. " + advice)
             return
         self.phase = "observing"
         self._capture()
