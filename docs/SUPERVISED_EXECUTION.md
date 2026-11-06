@@ -601,3 +601,12 @@ new mapping plus before/after images and native cursor receipt. A further failur
 can still be a grounding error; verification, reviews, stop and limits remain in
 force. General window-task recovery no longer asks the model/user to focus a
 message composer.
+
+Explicit requests ending in “click … once” have a deterministic one-click input
+budget in both approval modes. Only pointer movement and one single click are
+allowed; keyboard, text and scroll substitutes and double-clicks are rejected.
+After that click, no further input is allowed. Failed or uncertain visual
+verification stops incomplete immediately, without another target guess. A
+successful visual check still requires final user confirmation. Compound tasks
+such as “click once, then type hello” use the ordinary supervised workflow.
+This budget does not establish that the model located the right target.

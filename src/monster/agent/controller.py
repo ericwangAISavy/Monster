@@ -24,6 +24,7 @@ from monster.agent.validation import (
     approval_reason,
     prepare_action,
     scene_matches,
+    single_click_requested,
     window_close_requested,
 )
 from monster.lifecycle import State, TaskController
@@ -79,6 +80,8 @@ class SupervisedController(TaskController):
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
+        self.single_click_policy = False
+        self.single_click_dispatched = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.restore_focus = None
@@ -107,6 +110,7 @@ class SupervisedController(TaskController):
             return False
         self.timings.reset()
         self.instruction = instruction.strip()[:2000]
+        self.single_click_policy = single_click_requested(self.instruction)
         self.run_diagnostics = RunDiagnostics(instruction.strip(), self.config)
         self.log_frame = self.planned_frame = None
         self.run_diagnostics.add(
@@ -114,6 +118,7 @@ class SupervisedController(TaskController):
             content={"effective_instruction": self.instruction},
             instruction_truncated_for_execution=instruction.strip() != self.instruction,
             close_policy=window_close_requested(self.instruction),
+            single_click_policy=self.single_click_policy,
             limits={"input_transactions": 10, "planning_calls": 20, "task_seconds": 300,
                     "review_seconds": 60, "invalid_proposals": 3},
         )
@@ -128,6 +133,7 @@ class SupervisedController(TaskController):
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
+        self.single_click_dispatched = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.actions = self.calls = self.stale = 0
@@ -291,6 +297,8 @@ class SupervisedController(TaskController):
             action = dict(self.pending.action)
             if action == {"op": "chord", "keys": ["ALT", "F4"]}:
                 self.close_dispatched = True
+            if action["op"] == "click":
+                self.single_click_dispatched = True
             if action["op"] == "text":
                 self.inserted_text.add(action_signature(action))
             self.history.append(
@@ -410,6 +418,7 @@ class SupervisedController(TaskController):
         self._record("planning_requested", observation=self.log_frame,
                      draft_policy=draft_only(self.instruction),
                      close_policy=window_close_requested(self.instruction),
+                     single_click_policy=self.single_click_policy,
                      content={"task_context": instruction, "history": history})
         self.state_changed.emit(State.THINKING)
         diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
@@ -468,6 +477,16 @@ class SupervisedController(TaskController):
                 f"Step {self.actions} visual verification: {result.status}. "
                 f"Evidence: {result.evidence}"
             )
+            if (
+                result.status != "succeeded"
+                and self.single_click_policy
+                and self.single_click_dispatched
+            ):
+                self.fail(
+                    "The requested one-click input was dispatched, but its visible result "
+                    "was not verified. Inspect the desktop; no second input will be attempted."
+                )
+                return
             if result.status != "succeeded":
                 self.failed_actions.append(dict(self.pending.action))
                 self.recovery_attempts += 1
@@ -703,6 +722,13 @@ class SupervisedController(TaskController):
             )
 
     def _prepare_action(self, action, observation):
+        if self.single_click_policy:
+            if self.single_click_dispatched:
+                raise ValueError("The requested one-click input was already dispatched; no further input.")
+            if action.get("op") not in {"move", "click"}:
+                raise ValueError("A one-click request permits pointer movement and one click only; no substitutes.")
+            if action.get("op") == "click" and action.get("count", 1) != 1:
+                raise ValueError("The request permits one click only, not a double click.")
         closing = window_close_requested(self.instruction)
         if closing and (self.close_dispatched or action != {"op": "chord", "keys": ["ALT", "F4"]}):
             raise ValueError(
@@ -733,6 +759,12 @@ class SupervisedController(TaskController):
                 "requested text is visibly present in that editable composer, not in chat history. "
                 "Type the complete requested draft in one text transaction. After text insertion, "
                 "only observe and report completion or ask for help; do not append, edit or send."
+            )
+        if self.single_click_policy:
+            text += (
+                "\nTrusted task boundary: at most one single click. Locate the target from "
+                "the screenshot, never assume a taskbar layout. After the click, only observe "
+                "and report completion or ask for help; do not click again or substitute keys."
             )
         if window_close_requested(self.instruction):
             text += (

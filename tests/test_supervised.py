@@ -1552,3 +1552,150 @@ def test_window_task_failure_does_not_instruct_model_or_user_to_focus_composer(q
         assert "composer" not in " ".join(engine.history).lower()
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("approve_each_step", [False, True])
+@pytest.mark.parametrize("status", ["failed", "uncertain", "succeeded"])
+def test_explicit_click_once_never_dispatches_second_input(qtbot, approve_each_step, status):
+    engine, bridge, model = controller([
+        Decision("action", "Click Start", {"op": "click", "x": 44, "y": 70}, risk="routine"),
+        Decision("action", "Try another position", {"op": "click", "x": 15, "y": 99}, risk="routine"),
+        Decision("action", "Try keyboard", {"op": "press", "key": "WIN"}, risk="routine"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    failures = []
+
+    async def verify(*args):
+        return Verification(status, "Simulated result")
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(
+        lambda rid, text: QTimer.singleShot(0, lambda: engine.respond(rid, "approve"))
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("go to startup btn and click once")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert len(bridge.executed) == 1
+        assert engine.verification_calls == 1
+        if status != "succeeded":
+            assert engine.calls == 1
+            assert "one-click" in failures[0].lower()
+    finally:
+        engine.close()
+
+
+def test_click_once_rejects_double_click_before_dispatch(qtbot):
+    engine, bridge, _ = controller([
+        Decision("action", "Click Start", {"op": "click", "x": 44, "y": 70, "count": 2}, risk="routine"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Click the Start button once")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert bridge.executed == []
+    finally:
+        engine.close()
+
+
+def test_click_once_success_requires_confirmation_and_budget_resets(qtbot):
+    engine, bridge, model = controller([])
+    engine.config = replace(engine.config, approve_each_step=False)
+    questions, finished = [], []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    engine.finished.connect(finished.append)
+    try:
+        for trial in range(2):
+            model.decisions = [
+                Decision("action", "Click Start", {"op": "click", "x": 44, "y": 70}, risk="routine"),
+                Decision("complete", "Start menu is visible"),
+            ]
+            engine.submit("Click Start once")
+            qtbot.waitUntil(lambda trial=trial: len(questions) == trial + 1)
+            assert engine.phase == "confirming"
+            assert len(finished) == trial
+            assert len(bridge.executed) == trial + 1
+            engine.respond(questions[-1], "approve")
+            qtbot.waitUntil(lambda trial=trial: len(finished) == trial + 1)
+    finally:
+        engine.close()
+
+
+def test_one_click_budget_is_checked_at_dispatch_preparation():
+    engine, _, _ = controller([])
+    engine.instruction = "click Start once"
+    engine.single_click_policy = True
+    engine.single_click_dispatched = True
+    try:
+        with pytest.raises(ValueError, match="no further input"):
+            engine._prepare_action({"op": "press", "key": "WIN"}, observation())
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("approve_each_step", [False, True])
+@pytest.mark.parametrize("action", [
+    {"op": "press", "key": "WIN"},
+    {"op": "text", "text": "Start"},
+    {"op": "scroll", "x": 44, "y": 70, "delta": -1},
+])
+def test_one_click_request_rejects_initial_input_substitutes(qtbot, approve_each_step, action):
+    engine, bridge, _ = controller([Decision("action", "Open Start", action, risk="routine")])
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    failures = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("click Start once")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("instruction, expected", [
+    ("go to startup btn and click once", True),
+    ("Click the Start button once.", True),
+    ("click once, then type hello", False),
+    ("Click twice", False),
+    ("Open Slack", False),
+])
+def test_explicit_single_click_policy_scope(instruction, expected):
+    from monster.agent.validation import single_click_requested
+    assert single_click_requested(instruction) is expected
+
+
+@pytest.mark.parametrize("clarify_after_click", [False, True])
+def test_clarification_cannot_relax_original_one_click_budget(qtbot, clarify_after_click):
+    click = Decision("action", "Click Start", {"op": "click", "x": 44, "y": 70}, risk="routine")
+    decisions = [click] if clarify_after_click else []
+    decisions += [Decision("clarify", "Which button?"), click, click]
+    engine, bridge, _ = controller(decisions)
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.clarification_requested.connect(
+        lambda rid, text: QTimer.singleShot(0, lambda: engine.respond(rid, "the taskbar button"))
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("click Start once")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert len(bridge.executed) == 1
+    finally:
+        engine.close()
