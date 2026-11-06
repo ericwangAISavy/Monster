@@ -303,3 +303,64 @@ def test_action_risk_is_normalized_and_invalid_classifications_rejected():
             parse_decision({**action, "risk": invalid}, 100, 100)
     legacy = {k: v for k, v in action.items() if k != "risk"}
     assert parse_decision(legacy, 100, 100).risk is None
+
+
+def test_visual_verification_request_checks_actual_composer_result():
+    requests = []
+    adapter = OllamaProvider(
+        config(),
+        transport(
+            requests,
+            decision={"status": "failed", "evidence": "Text is in search, not the composer"},
+        ),
+    )
+    result = asyncio.run(
+        adapter.verify_action(
+            "vision:small",
+            "Type Hello in current Slack composer",
+            {"op": "text", "text": "Hello"},
+            "Hello appears in the unsent composer",
+            b"PNG",
+            100,
+            100,
+        )
+    )
+    assert result.status == "failed"
+    payload = json.loads(requests[-1].content)
+    assert '"text": "Hello"' in payload["messages"][1]["content"]
+    assert "not an existing conversation or search field" in payload["messages"][1]["content"]
+    assert payload["format"]["properties"]["status"]["enum"] == ["succeeded", "failed", "uncertain"]
+    adapter = OllamaProvider(
+        config(), transport([], decision={"status": "succeeded", "evidence": "ok", "execute": True})
+    )
+    with pytest.raises(ProviderError, match="verification"):
+        asyncio.run(
+            adapter.verify_action(
+                "vision:small",
+                "test",
+                {"op": "press", "key": "TAB"},
+                "Focus visible",
+                b"PNG",
+                100,
+                100,
+            )
+        )
+
+
+def test_action_expectations_and_allowed_keys_are_constrained():
+    from monster.providers.decisions import ACTION_SCHEMA
+
+    value = {
+        "kind": "action",
+        "summary": "Type draft",
+        "risk": "routine",
+        "action": {"op": "text", "text": "Hello"},
+        "expected_result": "Hello is visible in the editable composer, unsent",
+    }
+    assert "unsent" in parse_decision(value, 100, 100).expected_result
+    with pytest.raises(ProviderError, match="expected result"):
+        parse_decision({**value, "expected_result": ""}, 100, 100)
+    press = next(s for s in ACTION_SCHEMA["oneOf"] if s["properties"]["op"]["const"] == "press")
+    assert "CTRL+A" not in press["properties"]["key"]["enum"]
+    chord = next(s for s in ACTION_SCHEMA["oneOf"] if s["properties"]["op"]["const"] == "chord")
+    assert ["SHIFT", "ENTER"] in chord["properties"]["keys"]["enum"]

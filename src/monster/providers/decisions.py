@@ -1,6 +1,6 @@
 """Strict next-action schema. A decision is data; this module has no executor dependency."""
 
-from monster.computer.contracts import Bounds, validate_action
+from monster.computer.contracts import KEYS, Bounds, validate_action
 from monster.providers.base import Decision, ProviderError
 
 # Flatten provider schema variants into exactly the same three categories as local tools.
@@ -33,15 +33,21 @@ ACTION_SCHEMA = {
                 },
             ),
             ("text", {"text": {"type": "string", "minLength": 1, "maxLength": 2000}}),
-            ("press", {"key": {"type": "string"}}),
+            ("press", {"key": {"enum": [key for key in KEYS if key != "DELETE"]}}),
             (
                 "chord",
                 {
                     "keys": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 2,
-                        "maxItems": 4,
+                        "enum": [
+                            ["CTRL", "A"],
+                            ["CTRL", "C"],
+                            ["CTRL", "Z"],
+                            ["CTRL", "HOME"],
+                            ["CTRL", "END"],
+                            ["SHIFT", "LEFT"],
+                            ["SHIFT", "RIGHT"],
+                            ["SHIFT", "ENTER"],
+                        ]
                     }
                 },
             ),
@@ -58,8 +64,9 @@ DECISION_SCHEMA = {
                 "summary": {"type": "string", "minLength": 1, "maxLength": 300},
                 "action": ACTION_SCHEMA,
                 "risk": {"enum": ["routine", "sensitive", "uncertain"]},
+                "expected_result": {"type": "string", "minLength": 1, "maxLength": 300},
             },
-            "required": ["kind", "summary", "action", "risk"],
+            "required": ["kind", "summary", "action", "risk", "expected_result"],
             "additionalProperties": False,
         },
         {
@@ -86,7 +93,7 @@ def parse_decision(value, width: int, height: int) -> Decision:
     if type(summary) is not str or not 1 <= len(summary.strip()) <= 300:
         raise ProviderError("Model returned an invalid summary.")
     required = {"kind", "summary", "action"} if value["kind"] == "action" else {"kind", "summary"}
-    allowed = required | {"risk"} if value["kind"] == "action" else required
+    allowed = required | {"risk", "expected_result"} if value["kind"] == "action" else required
     if not required <= set(value) or set(value) - allowed:
         raise ProviderError("Model decision contains missing or unknown fields.")
     risk = value.get("risk")
@@ -94,6 +101,11 @@ def parse_decision(value, width: int, height: int) -> Decision:
         type(risk) is not str or risk not in {"routine", "sensitive", "uncertain"}
     ):
         raise ProviderError("Model returned an invalid action risk classification.")
+    expected = value.get("expected_result")
+    if "expected_result" in value and (
+        type(expected) is not str or not 1 <= len(expected.strip()) <= 300
+    ):
+        raise ProviderError("Model returned an invalid expected result.")
     action = value.get("action")
     if action is not None:
         if type(action) is not dict:
@@ -116,4 +128,4 @@ def parse_decision(value, width: int, height: int) -> Decision:
                 ) from None
     elif value["kind"] == "action":
         raise ProviderError("Action decision requires an action.")
-    return Decision(value["kind"], summary.strip(), action, risk)
+    return Decision(value["kind"], summary.strip(), action, risk, expected)

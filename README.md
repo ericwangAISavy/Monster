@@ -111,3 +111,9 @@ before every action**. It defaults on. Turning it off automates routine
 text/navigation/movement and model-classified benign clicks/Enter. Sensitive,
 uncertain or unclassified actions and final completion still require review. Screen rechecks and Ctrl+Alt+X remain
 active. See the [approval setting](docs/SUPERVISED_EXECUTION.md#choose-whether-every-step-needs-approval).
+
+For typing into an already-open chat composer, include the exact text and
+**“Do not send.”** The loop now checks the visible result after input, remembers
+actual recent actions, and blocks repeated failed clicks or duplicate text. Limit
+stops are reported as **Stopped incomplete**, with details in **Last failure**.
+See the [Slack draft workflow](docs/SUPERVISED_EXECUTION.md#typing-an-unsent-message-in-an-existing-slack-composer).

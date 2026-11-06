@@ -44,6 +44,14 @@ class Input(ctypes.Structure):
     _fields_ = [("type", U32), ("payload", Payload)]
 
 
+class PhysicalRect(ctypes.Structure):
+    _fields_ = [("left", I32), ("top", I32), ("right", I32), ("bottom", I32)]
+
+
+class MonitorInfo(ctypes.Structure):
+    _fields_ = [("size", U32), ("monitor", PhysicalRect), ("work", PhysicalRect), ("flags", U32)]
+
+
 def enable_dpi_awareness():
     if sys.platform != "win32":
         raise RuntimeError("Real computer tools require Windows.")
@@ -82,6 +90,21 @@ class WindowsInput:
     def foreground(self):
         self.api.GetForegroundWindow.restype = wintypes.HWND
         return int(self.api.GetForegroundWindow() or 0)
+
+    def foreground_bounds(self, handle):
+        if not handle:
+            raise RuntimeError("Focus the intended target window before capture.")
+        self.api.MonitorFromWindow.argtypes = [wintypes.HWND, U32]
+        self.api.MonitorFromWindow.restype = wintypes.HANDLE
+        self.api.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        self.api.GetMonitorInfoW.restype = wintypes.BOOL
+        monitor = self.api.MonitorFromWindow(handle, 2)
+        info = MonitorInfo()
+        info.size = ctypes.sizeof(info)
+        if not monitor or not self.api.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            raise RuntimeError("Cannot identify the foreground application's display.")
+        rect = info.monitor
+        return Bounds(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
 
     def restore_foreground(self, handle):
         self.api.SetForegroundWindow.argtypes = [wintypes.HWND]

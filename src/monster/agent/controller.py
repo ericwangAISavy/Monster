@@ -7,6 +7,14 @@ import uuid
 from PySide6.QtCore import QTimer, Signal
 
 from monster.agent.input_bridge import InputBridge
+from monster.agent.progress import (
+    action_description,
+    action_signature,
+    draft_only,
+    equivalent_action,
+    history_window,
+    validate_draft_action,
+)
 from monster.agent.validation import approval_reason, prepare_action, scene_matches
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
@@ -36,7 +44,12 @@ class SupervisedController(TaskController):
         self.history = []
         self.actions = self.calls = self.stale = 0
         self.cleanup_blocked = False
-        self.repeats = {}
+        self.failed_actions = []
+        self.inserted_text = set()
+        self.last_verification = None
+        self.task_foreground = None
+        self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
+        self.trace = []
         self.restore_focus = None
         self.deadline = QTimer(self)
         self.deadline.setSingleShot(True)
@@ -44,7 +57,7 @@ class SupervisedController(TaskController):
         self.approval_timer = QTimer(self)
         self.approval_timer.setSingleShot(True)
         self.approval_timer.timeout.connect(
-            lambda: self.fail("Approval expired; no action executed.")
+            lambda: self.fail("Review expired; no additional input was authorized.")
         )
         self.terminal = None
         self.instruction = ""
@@ -61,7 +74,12 @@ class SupervisedController(TaskController):
         self.active, self.paused = True, False
         self.generation += 1
         self.history = []
-        self.repeats = {}
+        self.failed_actions = []
+        self.inserted_text = set()
+        self.last_verification = None
+        self.task_foreground = None
+        self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
+        self.trace = []
         self.actions = self.calls = self.stale = 0
         self.terminal = None
         self.active_changed.emit(True)
@@ -118,12 +136,16 @@ class SupervisedController(TaskController):
                 )
                 return
             self.actions += 1
-            # Record only categories, not text payloads, in the bounded in-memory history.
+            action = dict(self.pending.action)
+            if action["op"] == "text":
+                self.inserted_text.add(action_signature(action))
             self.history.append(
-                f"Input transaction {self.actions}: {self.pending.action['op']} inserted; "
-                "inspect the next screenshot to determine its visible result."
+                f"Step {self.actions}: input inserted, not yet visually verified. "
+                f"Action: {json.dumps(action, ensure_ascii=False)}. "
+                f"Expected: {self.pending.expected_result or self.pending.summary}"
             )
-            self.phase = "observing"
+            self.trace.append(f"Step {self.actions}: {action_description(action)}; input inserted.")
+            self.phase = "verifying_capture"
             QTimer.singleShot(350, self, self._capture)
 
     def _probe(self):
@@ -140,6 +162,15 @@ class SupervisedController(TaskController):
     def observation_ready(self, observation, generation):
         if not self.active or self.paused or generation != self.generation:
             return
+        if draft_only(self.instruction):
+            if self.task_foreground is None:
+                self.task_foreground = observation.foreground
+            elif self.task_foreground != observation.foreground:
+                self.fail(
+                    "Current-composer target window changed. Focus the intended composer "
+                    "and start a new task; no input was redirected to another window."
+                )
+                return
         if self.phase == "rechecking":
             before, action = self.observation, dict(self.pending.action)
             self.observation = observation
@@ -152,15 +183,37 @@ class SupervisedController(TaskController):
 
             self.job = self.jobs.start(compare)
             return
+        if self.phase == "verifying_capture":
+            self.observation = observation
+            self.phase = "verifying"
+            action = dict(self.pending.action)
+            expected = self.pending.expected_result or self.pending.summary
+            instruction = self._task_context()
+            self.verification_calls += 1
+            self.state_changed.emit(State.THINKING)
+            self.job = self.jobs.start(
+                lambda: self.provider_factory(self.config).verify_action(
+                    self.config.model,
+                    instruction,
+                    action,
+                    expected,
+                    observation.png,
+                    observation.bounds.width,
+                    observation.bounds.height,
+                )
+            )
+            return
         if self.phase != "observing":
             return
         if self.calls >= 20:
-            self.fail("Supervised task budget reached (10 actions / 20 model calls).")
+            self.fail(
+                "Task limit reached (20 planning calls). The task is incomplete, not completed."
+            )
             return
         self.observation = observation
         self.calls += 1
         self.phase = "deciding"
-        instruction, history = self.instruction, tuple(self.history[-10:])
+        instruction, history = self._task_context(), history_window(self.history)
         self.state_changed.emit(State.THINKING)
         self.job = self.jobs.start(
             lambda: self.provider_factory(self.config).decide(
@@ -179,14 +232,72 @@ class SupervisedController(TaskController):
         self.jobs.futures.pop(job, None)
         self.job = None
         if error:
+            if self.phase == "deciding" and error.startswith(
+                (
+                    "Model returned an invalid",
+                    "Model decision contains",
+                    "Unsupported model action",
+                    "Model action failed validation",
+                    "Model did not return valid structured JSON",
+                )
+            ):
+                self._reject_proposal(error)
+                return
             stage = {
                 "probing": "Model compatibility check",
                 "comparing": "Screen recheck after approval",
                 "deciding": "Model decision",
+                "verifying": "Visual action verification",
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
         elif self.phase == "probing":
             self.phase = "observing"
+            self._capture()
+        elif self.phase == "verifying":
+            self.last_verification = result
+            self.trace.append(f"Step {self.actions}: visual verification {result.status}.")
+            self.history.append(
+                f"Step {self.actions} visual verification: {result.status}. "
+                f"Evidence: {result.evidence}"
+            )
+            if result.status != "succeeded":
+                self.failed_actions.append(dict(self.pending.action))
+                self.recovery_attempts += 1
+                self.history.append(
+                    "The last action did not achieve a verified result. Do not "
+                    "repeat it or jitter its coordinates. Choose a materially "
+                    "different strategy or ask the user to focus the composer."
+                )
+                if self.pending.action["op"] == "text" and result.status == "uncertain":
+                    self.phase = "confirming"
+                    self.question_id = uuid.uuid4().hex
+                    self.state_changed.emit(State.WAITING)
+                    self.approval_requested.emit(
+                        self.question_id,
+                        "Text was inserted once, but the model cannot verify its location. "
+                        "Inspect the editable composer and confirm your ENTIRE task is complete. "
+                        "If it is missing, in the wrong field, or incomplete, Decline. "
+                        "No automatic retyping will occur.\nTask: " + self.instruction[:2000],
+                    )
+                    self.approval_timer.start(60000)
+                    return
+                if self.pending.action["op"] == "text":
+                    self.fail(
+                        "Typed text could not be verified in the intended field. Inspect "
+                        "the composer before retrying; no text was automatically retyped."
+                    )
+                    return
+                if self.recovery_attempts >= 3:
+                    self.fail(
+                        "No verified progress after three attempts. Focus the intended "
+                        "field manually and start a new task."
+                    )
+                    return
+            else:
+                self.recovery_attempts = self.rejected_proposals = 0
+            self.phase = "observing"
+            # Verification can take seconds. Plan from a fresh frame rather than
+            # the now-stale image that was submitted to the verifier.
             self._capture()
         elif self.phase == "comparing":
             if not result or time.monotonic() - self.observation.captured_at > 2:
@@ -199,6 +310,7 @@ class SupervisedController(TaskController):
                 return
             try:
                 action = prepare_action(self.pending.action, self.observation)
+                validate_draft_action(self.pending, self.instruction, bool(self.inserted_text))
             except (ValueError, TypeError):
                 self.fail("Action is outside the supervised demo policy.")
                 return
@@ -230,17 +342,23 @@ class SupervisedController(TaskController):
                 return
             if result.kind == "action":
                 if self.actions >= 10:
-                    self.fail("Ten-action budget reached; inspect the result manually.")
+                    self.fail(
+                        "Ten-action limit reached. The task is incomplete; inspect the result."
+                    )
                     return
-                fingerprint = (json.dumps(result.action, sort_keys=True), self.observation.sha256)
-                self.repeats[fingerprint] = self.repeats.get(fingerprint, 0) + 1
-                if self.repeats[fingerprint] >= 3:
-                    self.fail("Repeated action without visual progress; inspect manually.")
+                action = result.action
+                if (
+                    action["op"] == "text" and action_signature(action) in self.inserted_text
+                ) or any(equivalent_action(action, failed) for failed in self.failed_actions):
+                    self._reject_proposal(
+                        "This action already failed or its text was already inserted."
+                    )
                     return
                 try:
-                    prepare_action(result.action, self.observation)
-                except (ValueError, TypeError):
-                    self.fail("Proposed action is outside the supervised demo policy.")
+                    prepare_action(action, self.observation)
+                    validate_draft_action(result, self.instruction, bool(self.inserted_text))
+                except (ValueError, TypeError) as exc:
+                    self._reject_proposal(str(exc))
                     return
                 reason = (
                     "Per-step approval is enabled."
@@ -261,6 +379,11 @@ class SupervisedController(TaskController):
                     self._begin_recheck(restore=False)
                     return
             else:
+                if self.last_verification and self.last_verification.status != "succeeded":
+                    self._reject_proposal(
+                        "Completion is unsupported: the last action failed visual verification."
+                    )
+                    return
                 text = (
                     "Confirm the visible result meets your task:\n"
                     + self.instruction
@@ -289,7 +412,16 @@ class SupervisedController(TaskController):
             self.phase = "observing"
             self._capture()
         elif answer != "approve":
-            self.cancel()
+            if (
+                self.phase == "confirming"
+                and self.last_verification
+                and self.last_verification.status == "uncertain"
+            ):
+                self.fail(
+                    "Typed result was not confirmed in the intended composer. No automatic retyping occurred."
+                )
+            else:
+                self.cancel()
         elif self.phase == "confirming":
             self._terminate("complete", "Completed · visible result confirmed by you")
         elif self.phase == "approval":
@@ -301,12 +433,44 @@ class SupervisedController(TaskController):
         self.restore_focus = self.observation.foreground if restore else None
         self._capture()
 
+    def _task_context(self):
+        text = self.instruction
+        if draft_only(text):
+            text += (
+                "\nTrusted task boundary: draft/typing only in the currently open composer. "
+                "Do not send, submit, switch applications or press Enter. Stop when the "
+                "requested text is visibly present in that editable composer, not in chat history."
+            )
+        return text
+
+    def _reject_proposal(self, reason):
+        self.rejected_proposals += 1
+        self.trace.append("Proposal rejected: repeated/invalid action or unsupported completion.")
+        self.history.append(
+            f"Controller rejected the proposed step: {reason} "
+            "No input was executed. Choose a different valid approach or ask for help."
+        )
+        if self.rejected_proposals >= 3:
+            self.fail(
+                "Three repeated/invalid proposals rejected without input. Focus the current "
+                "message composer manually and give a fresh typing instruction."
+            )
+            return
+        self.phase = "observing"
+        self._capture()
+
+    def failure_diagnostics(self):
+        return (
+            f"Planning calls: {self.calls}; visual checks: {self.verification_calls}.\n"
+            + "\n".join(self.trace[-12:])
+        )
+
     def capture_failed(self, error):
         self.fail(error)
 
     def fail(self, message):
         if self.active:
-            self._terminate("error", message)
+            self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
         self.input.stop()

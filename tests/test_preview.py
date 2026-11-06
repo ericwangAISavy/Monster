@@ -145,7 +145,7 @@ def test_companion_preview_wires_isolated_capture_and_details(qtbot, qapp, tmp_p
     from monster.computer import screenshot
     from monster.lifecycle import MockTaskController
 
-    monkeypatch.setattr(screenshot, "capture_display", observation)
+    monkeypatch.setattr(screenshot, "capture_display", lambda *args: observation())
     ui = CompanionApp(qapp, MockTaskController(), tmp_path / "companion.json", enable_tray=False)
     try:
         ui.model_config = config()

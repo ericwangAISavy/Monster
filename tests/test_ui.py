@@ -185,3 +185,21 @@ def test_failure_details_survive_transient_notice_and_are_copyable(qtbot, qapp, 
     finally:
         ui.shutdown()
         qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_incomplete_outcome_remains_visible_in_tray_after_notice_hides(qtbot, qapp, tmp_path):
+    from types import SimpleNamespace
+
+    tips = []
+    ui = CompanionApp(qapp, MockTaskController(), tmp_path / "prefs.json", enable_tray=False)
+    ui.tray = SimpleNamespace(setToolTip=tips.append, hide=lambda: None)
+    try:
+        ui.failed("Stopped incomplete: Task limit reached")
+        ui.pill.hide()
+        ui._return_idle()
+        assert ui.last_task_outcome == "incomplete"
+        assert "stopped incomplete" in tips[-1]
+        assert "completed" not in tips[-1]
+    finally:
+        ui.shutdown()
+        qapp.aboutToQuit.disconnect(ui.shutdown)

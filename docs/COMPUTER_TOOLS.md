@@ -28,7 +28,7 @@ Displays are 1-based; `--display 0` explicitly captures the complete virtual des
 uv run monster --capture-test isolated.png
 ```
 
-The companion opens its pill briefly, hides its surfaces through the existing capture-isolation transaction, captures display 1, restores visibility and reports the save. Open the PNG manually and verify that Monster and the pill are absent. The GUI remains open afterward. Capture does not overwrite an existing file. As before, native display affinity is requested but not assumed sufficient: the hide-before-capture fallback remains enabled. Other applications/other Monster processes cannot be hidden by this transaction. Do not open the tray/settings during the diagnostic.
+The companion opens its pill briefly, hides its surfaces through the existing capture-isolation transaction, captures the foreground application's display, restores visibility and reports the save. Open the PNG manually and verify that Monster and the pill are absent. The GUI remains open afterward. Capture does not overwrite an existing file. As before, native display affinity is requested but not assumed sufficient: the hide-before-capture fallback remains enabled. Other applications/other Monster processes cannot be hidden by this transaction. Do not open the tray/settings during the diagnostic.
 
 ### Mouse
 

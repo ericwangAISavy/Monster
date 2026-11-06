@@ -36,6 +36,13 @@ class Decision:
     summary: str
     action: dict | None = None
     risk: str | None = None
+    expected_result: str | None = None
+
+
+@dataclass(frozen=True)
+class Verification:
+    status: str
+    evidence: str
 
 
 class Provider(Protocol):
@@ -43,6 +50,16 @@ class Provider(Protocol):
     async def models(self) -> list[Model]: ...
     async def capabilities(self, model: str) -> Capabilities: ...
     async def probe(self, model: str) -> ProbeResult: ...
+    async def verify_action(
+        self,
+        model: str,
+        instruction: str,
+        action: dict,
+        expected: str,
+        image: bytes,
+        width: int,
+        height: int,
+    ) -> Verification: ...
     async def decide(
         self,
         model: str,

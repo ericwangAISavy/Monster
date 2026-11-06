@@ -16,11 +16,11 @@ actions are described in the approval-setting section below.
    ```
 
 2. Open tray → **AI model settings…**. Keep your existing LAN URL and model; run **Test vision + JSON** for the current settings. Select **Real computer control (experimental)** and Save.
-3. Open Notepad manually with an empty, disposable document on display 1. Close sensitive applications and other Monster instances. Keep the target standard privilege; no administrator elevation is needed or supported.
+3. Open Notepad manually with an empty, disposable document on your intended display with that window foreground. Close sensitive applications and other Monster instances. Keep the target standard privilege; no administrator elevation is needed or supported.
 4. Activate with **Ctrl+Alt+M** and request a small task such as **“Type Hello from Monster into the open Notepad document.”** Start with a short sentence, not a complex cross-application workflow.
 5. Monster checks the model, captures display 1 with its own overlays hidden, and shows an approval in the existing pill. Review the operation, coordinates/key/text payload and visible target. Scroll long text to inspect it. No input is sent just because a proposal appeared.
 6. Choose **Approve** for that specific action or **Decline** to stop. Escape also cancels. After approval the pill hides, Monster restores the previously observed foreground window, captures a fresh frame and checks whether the scene still matches. A changed scene invalidates the approval and triggers a fresh proposal instead of executing stale input.
-7. After a successful input insertion, Monster captures again. The next model call receives the current screenshot and a bounded history of input receipt categories, and decides whether to continue or propose completion. Every additional input needs another approval.
+7. After input insertion, Monster captures again and asks the model to verify the concrete expected result in the intended field. The next planning call receives the current screenshot and bounded actual-action/outcome history. Failed actions are not blindly repeated. Additional input follows your configured approval policy.
 8. When the model reports completion, inspect Notepad yourself. The final pill asks you to confirm the visible result against your original instruction. Only that explicit confirmation produces **“Completed · visible result confirmed by you.”** A model claim or an input receipt alone is not recorded as completion.
 
 This mode can move your real pointer and type into real applications. Keep tests non-sensitive and do not interact with the desktop during an approved transaction. Decline uncertain targets. A passing synthetic model probe does not demonstrate GUI grounding accuracy.
@@ -36,7 +36,7 @@ This mode can move your real pointer and type into real applications. Keep tests
 
 ## Runtime boundaries
 
-A supervised run is limited to **10 input transactions, 20 decision calls and five minutes**. Each approval/clarification expires after 60 seconds. Three proposals of the same action on the same captured pixels stop as no visual progress. More than two changed-scene revalidations also stop. These are proposed conservative operating limits, not model-performance guarantees.
+A supervised run is limited to **10 input transactions, 20 decision calls and five minutes**. Each approval/clarification expires after 60 seconds. Visually failed actions and nearby coordinate-jitter retries are blocked regardless of screenshot hashes. Three repeated/invalid proposals stop incomplete; limits never count as completion. One visual verification call is allowed per inserted transaction, separately from the 20 planning calls. More than two changed-scene revalidations also stop. These are proposed conservative operating limits, not model-performance guarantees.
 
 The worker is disarmed after each successful transaction and remains unarmed during inference and user review. It has its own heartbeat/30-second arm lease and two-second held-input limits. Stop/failure invalidates pending bridge epochs, task generations and approvals. Partial/unknown insertion results stop rather than replaying text/clicks. There is one serial input client and one input executor.
 
@@ -52,7 +52,7 @@ Long approval payloads are rendered as plain selectable text inside a bounded sc
 
 ## Data handling and implementation
 
-Screenshots, task text, pending decisions and the last action preview remain in process memory. No transcripts/screenshots are persisted by this mode. Approval necessarily displays the proposed text; avoid secrets. Native worker receipts omit typed payloads. The bounded model history contains transaction categories rather than typed contents. The server still receives screenshots and the original instruction under your selected local/LAN configuration.
+Screenshots, task text, pending decisions and the last action preview remain in process memory. No transcripts/screenshots are persisted by this mode. Approval necessarily displays the proposed text; avoid secrets. Native worker receipts omit typed payloads. The bounded in-memory model history now includes recent actual action payloads (including typed text), expected results and visual verification feedback so the planner can avoid duplicating input. This history is sent only to the same configured inference server and is not logged or persisted. Human-shareable failure traces redact typed text and verification evidence. The server still receives screenshots and the original instruction under your selected local/LAN configuration.
 
 - `agent/controller.py`: lifecycle, model/capture/approval/receipt loop, budgets and user-confirmed completion.
 - `agent/validation.py`: image-coordinate mapping, conservative policy and scene comparison.
@@ -137,3 +137,49 @@ This model assessment is fallible and is not proof that a GUI action is safe. Th
 experimental mode is intended for non-sensitive tests; scene validation, operation
 limits, blocked-action policy and independent stop remain active. Opening settings
 or changing policy never silently authorizes an already-pending proposal.
+
+## Typing an unsent message in an existing Slack composer
+
+For example: **Type "Hello from Monster" into the current Slack message box. Do
+not send.** Leave the desired workspace/conversation visible; if convenient, focus
+the composer before activating Monster. No Slack API, DOM or accessibility tree
+is used. If message content/topic is missing, the model should ask what to type.
+
+The intended sequence is focus the existing composer if needed, type once, verify
+that exact text in the editable composer (not an existing chat message), then ask
+for final confirmation. For recognized type/write/draft/prepare message tasks,
+Enter-to-send and send/submit proposals are rejected. Shift+Enter is available
+for a requested line break. This is an English task-intent rule, not a proof of
+safety for every language, application or click target.
+
+Each planned input declares `expected_result`. After insertion, a separate
+structured visual check reports `succeeded`, `failed` or `uncertain` with evidence.
+It uses the same selected vision model, so it can still be wrong; Windows accepting
+input and model verification are distinct signals. Inspect the actual composer.
+
+The planner retains bounded recent action payloads and results in RAM. A failed
+click cannot be repeated by shifting coordinates a few pixels or by waiting for a
+caret/clock to change the PNG hash. Already-inserted text cannot be blindly typed
+again in the same task. A failed text check stops incomplete; an uncertain text
+check asks the user to inspect the intended field and confirm the **entire task**
+or decline. Neither path automatically retypes the text.
+
+Budget/deadline/no-progress stops explicitly say **Stopped incomplete**. That
+outcome remains in the tray tooltip after the brief pill disappears. **Last
+failure** includes a redacted action-result trace; **Last action preview** includes
+the latest model verification evidence for local inspection. A task is completed
+only after explicit user result confirmation.
+
+Regressions exercise a scripted Slack-like draft sequence, wrong clicks followed
+by coordinate jitter and changing screenshot bytes, duplicate typing, draft Enter
+rejection, uncertain-result review and limit-failure semantics. These are fake
+provider/input tests, not live Slack/Gemma qualification. A small vision model may
+still fail to locate/read the composer; this update improves feedback and stops
+invalid repetition rather than guaranteeing grounding accuracy.
+
+Agent captures now use the foreground window's monitor rather than hardcoded
+display 1. The current-composer draft workflow binds to that foreground window
+and stops if it changes instead of redirecting text to another window. Monitor
+selection uses only native focus/display geometry, not application text or APIs.
+This change still needs a real mixed-monitor Windows check. The explicit CLI
+`monster-tools screenshot --display N` keeps its requested display selection.

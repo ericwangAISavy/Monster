@@ -55,3 +55,49 @@ def test_invalid_crops_and_display_do_not_capture(fake_capture):
     with pytest.raises(ValueError):
         capture_display(2)
     assert not fake_capture
+
+
+def test_agent_capture_selects_foreground_display_instead_of_primary(fake_capture, monkeypatch):
+    import monster.computer.screenshot as module
+
+    base = sys.modules["mss"].mss
+
+    class TwoDisplays(base):
+        def __init__(self):
+            self.monitors = [
+                {"left": -100, "top": 0, "width": 200, "height": 100},
+                {"left": -100, "top": 0, "width": 100, "height": 100},
+                {"left": 0, "top": 0, "width": 100, "height": 100},
+            ]
+
+    monkeypatch.setattr(sys.modules["mss"], "mss", TwoDisplays)
+    monkeypatch.setattr(
+        module,
+        "WindowsInput",
+        lambda: SimpleNamespace(
+            desktop_ready=lambda: True,
+            foreground=lambda: 77,
+            foreground_bounds=lambda hwnd: Bounds(0, 0, 100, 100),
+        ),
+    )
+    frame = capture_display(None)
+    assert frame.bounds == Bounds(0, 0, 100, 100)
+    assert frame.foreground == 77
+    assert fake_capture[-1]["left"] == 0
+
+
+def test_agent_capture_does_not_fall_back_to_wrong_monitor(fake_capture, monkeypatch):
+    import monster.computer.screenshot as module
+
+    monkeypatch.setattr(
+        module,
+        "WindowsInput",
+        lambda: SimpleNamespace(
+            desktop_ready=lambda: True,
+            foreground=lambda: 77,
+            foreground_bounds=lambda hwnd: Bounds(5000, 0, 100, 100),
+        ),
+    )
+    with pytest.raises(RuntimeError, match="geometry changed"):
+        capture_display(None)
+    assert not fake_capture

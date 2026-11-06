@@ -57,6 +57,7 @@ class CompanionApp:
         self.preview_window = None
         self.last_preview = None
         self.last_failure = None
+        self.last_task_outcome = None
         self.preview_capture = None
         self.controller_bindings = []
         self.startup_error = ""
@@ -151,6 +152,7 @@ class CompanionApp:
         self.bind_controller(controller)
         self.pending_question = None
         self.last_preview = None
+        self.last_task_outcome = None
         self.active, self.paused = False, False
         self._paused_changed(False)
         self.pill.hide()
@@ -311,6 +313,7 @@ class CompanionApp:
         if self.isolation.busy:
             return
         if self.controller.submit(instruction):
+            self.last_task_outcome = "running"
             self.pill.input.clear()
             self.pill.hide()
 
@@ -336,7 +339,12 @@ class CompanionApp:
                     if self.model_config.approve_each_step
                     else "routine steps automatic"
                 )
-            self.tray.setToolTip(f"Monster · {mode} · {state}")
+            outcome = (
+                "stopped incomplete · Last failure"
+                if state == State.IDLE and self.last_task_outcome == "incomplete"
+                else state
+            )
+            self.tray.setToolTip(f"Monster · {mode} · {outcome}")
 
     def _return_idle(self):
         if not self.active and self.pill.mode not in ("input", "clarification", "approval"):
@@ -355,21 +363,25 @@ class CompanionApp:
         self.place_pill()
 
     def completed(self, text):
+        self.last_task_outcome = "completed"
         self.pending_question = None
         self.notice(text)
         self.state_timer.start(2700)
 
     def failed(self, text):
+        self.last_task_outcome = "incomplete"
         self.last_failure = (
             text
             + "\n\nConfirmed input transactions: "
             + str(getattr(self.controller, "actions", 0))
             + "\nInspect the desktop: failed or partial input may have occurred. "
-            "No automatic retry was performed."
+            "No failed or ambiguous input transaction was automatically replayed."
         )
+        if hasattr(self.controller, "failure_diagnostics"):
+            self.last_failure += "\n\n" + self.controller.failure_diagnostics()
         self.pending_question = None
         self.set_state(State.ERROR)
-        self.notice(text, 5000)
+        self.notice("Stopped incomplete · open tray → Last failure for details", 5000)
         self.state_timer.start(5100)
 
     def question(self, request_id, text, approval):
@@ -468,7 +480,7 @@ class CompanionApp:
                 self.controller.restore_focus = None
                 if not WindowsInput().restore_foreground(target):
                     raise RuntimeError("Cannot restore the approved target's focus.")
-            self.capture_desktop(capture_display)
+            self.capture_desktop(lambda: capture_display(None))
         except RuntimeError as exc:
             self.preview_capture = None
             self.controller.capture_failed(str(exc))
@@ -499,11 +511,17 @@ class CompanionApp:
             f"Risk: {self.last_preview.risk or 'unclassified'}\n\n"
             + json.dumps(self.last_preview.action, ensure_ascii=False, indent=2)
         )
+        verification = getattr(self.controller, "last_verification", None)
+        if verification:
+            text += (
+                f"\n\nLast executed action visual check: {verification.status}\n"
+                f"Evidence: {verification.evidence}"
+            )
         self._show_details(
             "Monster · action proposal",
             text,
             "Model proposal only. Inspect the desktop to verify the result.\n"
-            "Coordinates refer to display 1's screenshot.",
+            "Coordinates refer to the captured target display's image.",
         )
 
     def show_failure_details(self):
@@ -697,7 +715,7 @@ def main():
 
         def diagnostic_capture():
             ui.activate()
-            QTimer.singleShot(500, lambda: ui.capture_desktop(capture_display))
+            QTimer.singleShot(500, lambda: ui.capture_desktop(lambda: capture_display(None)))
 
         QTimer.singleShot(1000, diagnostic_capture)
     if args.smoke_test:

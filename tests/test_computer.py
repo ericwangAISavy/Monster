@@ -229,3 +229,13 @@ def test_keyboard_focus_and_geometry_expectations_are_enforced():
         {"op": "text", "text": "Hi"}, generation, expected_geometry=[Bounds(0, 0, 10, 10)]
     )
     assert receipt["status"] == "rejected" and not backend.events
+
+
+def test_monitor_info_layout_is_fixed_width_on_all_hosts():
+    import ctypes
+
+    from monster.computer.windows import MonitorInfo, PhysicalRect
+
+    assert ctypes.sizeof(PhysicalRect) == 16
+    assert ctypes.sizeof(MonitorInfo) == 40
+    assert MonitorInfo.flags.offset == 36

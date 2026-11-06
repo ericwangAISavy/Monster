@@ -36,13 +36,13 @@ Only one secondary Monster surface is opened at a time. Model settings stay out 
 
 ## Try a preview task
 
-1. Close settings and put a non-sensitive application such as a disposable Notepad document on display 1.
+1. Close settings and put a non-sensitive application such as a disposable Notepad document on the foreground application's display.
 2. Press **Ctrl+Alt+M**, type an instruction such as “Write a short paragraph in Notepad,” and press Enter.
-3. Monster collapses the pill, reruns the synthetic model compatibility check, captures display 1 through the overlay-isolation gate, and sends that single screenshot plus your instruction to the configured server.
+3. Monster collapses the pill, reruns the synthetic model compatibility check, captures the foreground application's display through the overlay-isolation gate, and sends that single screenshot plus your instruction to the configured server.
 4. When inference finishes, the pill says **Preview ready · no computer actions performed**.
 5. Open tray → **Last action preview…** to inspect the decision kind, summary and complete proposed action. There is intentionally no Execute button. A model `complete` response is displayed as an unverified hypothesis, never as actual task completion.
 
-Coordinates in a preview are **image-relative physical pixels** in display 1's native-resolution screenshot. They are not Qt device-independent coordinates or directly executable virtual-desktop coordinates. A future engine must retain the observation's monitor origin and transforms, check freshness/focus/policy, then map coordinates before dispatch. The preview does not export or arm an InputSession.
+Coordinates in a preview are **image-relative physical pixels** in the selected target display's native-resolution screenshot. They are not Qt device-independent coordinates or directly executable virtual-desktop coordinates. A future engine must retain the observation's monitor origin and transforms, check freshness/focus/policy, then map coordinates before dispatch. The preview does not export or arm an InputSession.
 
 **Ctrl+Alt+P** pauses/cancels pending inference. Resuming restarts compatibility checking and obtains a fresh screenshot; it does not replay a cached proposal. **Ctrl+Alt+X** cancels the preview and invalidates pending observation/result generations. Because no real input is connected, these GUI controls only cancel capture/inference. The separate real-input worker's independent stop mechanism is unchanged.
 

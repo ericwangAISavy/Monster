@@ -10,13 +10,15 @@ from monster.agent.controller import SupervisedController
 from monster.agent.validation import prepare_action, scene_matches
 from monster.computer.contracts import Bounds
 from monster.computer.screenshot import Observation
-from monster.providers.base import Decision, ProbeResult
+from monster.providers.base import Decision, ProbeResult, Verification
 from monster.providers.config import OllamaConfig
 
 
-def observation(color="#ffffff", foreground=77):
+def observation(color="#ffffff", foreground=77, blink=None):
     image = QImage(100, 100, QImage.Format.Format_RGB32)
     image.fill(QColor(color))
+    if blink is not None:
+        image.setPixelColor(99, 99, QColor(blink % 255, 0, 0))
     data = QByteArray()
     buffer = QBuffer(data)
     buffer.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -74,6 +76,9 @@ class FakeModel:
 
     async def probe(self, model):
         return ProbeResult(model, "abc", "test", True, True)
+
+    async def verify_action(self, *args):
+        return Verification("succeeded", "Simulated expected visual result is present")
 
     async def decide(self, *args, history=()):
         self.history.append(history)
@@ -459,3 +464,258 @@ def test_automatic_mode_explains_retained_risk_review(qtbot, risk, summary):
         assert any(word in questions[0] for word in ("sensitive", "uncertain"))
     finally:
         engine.close()
+
+
+def test_slack_draft_blocks_send_and_never_types_same_message_twice(qtbot):
+    content = "Hello, this is a draft for the team."
+    engine, bridge, model = controller(
+        [
+            Decision("action", "Press Enter", {"op": "press", "key": "ENTER"}, risk="routine"),
+            Decision(
+                "action",
+                "Type draft",
+                {"op": "text", "text": content},
+                risk="routine",
+                expected_result="Requested text is visible in the Slack composer, unsent.",
+            ),
+            Decision("action", "Type draft again", {"op": "text", "text": content}, risk="routine"),
+            Decision("complete", "The draft is visible"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    questions, finished = [], []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit(f'Type "{content}" in the current Slack message panel. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert len(bridge.executed) == 1
+        assert bridge.executed[0][0] == {"op": "text", "text": content}
+        feedback = " ".join(model.history[-1])
+        assert content in feedback and "succeeded" in feedback
+        assert "already inserted" in feedback
+        assert not finished
+        engine.respond(questions[-1], "approve")
+        qtbot.waitUntil(lambda: bool(finished))
+    finally:
+        engine.close()
+
+
+def test_wrong_click_cannot_repeat_despite_changed_screenshot_and_coordinate_jitter(qtbot):
+    engine, bridge, model = controller(
+        [
+            Decision("action", "Focus composer", {"op": "click", "x": 10, "y": 10}, risk="routine"),
+            Decision("action", "Focus composer", {"op": "click", "x": 13, "y": 12}, risk="routine"),
+            Decision("action", "Focus composer", {"op": "click", "x": 11, "y": 10}, risk="routine"),
+            Decision(
+                "action", "Focus actual composer", {"op": "click", "x": 70, "y": 70}, risk="routine"
+            ),
+            Decision("action", "Type hello", {"op": "text", "text": "Hello"}, risk="routine"),
+            Decision("complete", "Draft visible"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    checks = []
+    frames = []
+
+    async def verify(*args):
+        checks.append(args)
+        last_input = bridge.executed[-1][0]
+        correct = last_input["op"] == "text" or last_input.get("x") == -30
+        return Verification(
+            "succeeded" if correct else "failed",
+            "Expected result visible" if correct else "Composer unchanged",
+        )
+
+    model.verify_action = verify
+
+    def capture():
+        # Every screenshot's bytes/hash differ, as happens with clocks/carets.
+        frames.append(True)
+        engine.observation_ready(observation(blink=len(frames)), engine.generation)
+
+    engine.capture_requested.connect(capture)
+    try:
+        engine.submit('Type "Hello" in current Slack message panel')
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        actions = [entry[0] for entry in bridge.executed]
+        assert len(actions) == 3
+        assert actions[0]["x"] == -90 and actions[1]["x"] == -30
+        assert actions[2] == {"op": "text", "text": "Hello"}
+        assert engine.verification_calls == 3
+        assert any("different" in line or "rejected" in line for line in engine.history)
+    finally:
+        engine.close()
+
+
+def test_uncertain_typing_needs_human_review_without_replay_or_private_diagnostics(qtbot):
+    content = "PRIVATE_TYPED_CANARY_8372"
+    engine, bridge, model = controller(
+        [
+            Decision("action", "Type draft", {"op": "text", "text": content}, risk="routine"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures, finished = [], []
+
+    async def verify(*args):
+        return Verification("uncertain", "PRIVATE_SCREEN_CANARY: cannot see intended composer")
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("Type my supplied message in current Slack composer")
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert not finished and not failures
+        engine.respond(engine.question_id, "reject")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert len(bridge.executed) == 1
+        assert "Stopped incomplete" in failures[0]
+        assert not finished
+        diagnostics = engine.failure_diagnostics()
+        assert content not in diagnostics and "PRIVATE_SCREEN_CANARY" not in diagnostics
+        assert "uncertain" in diagnostics
+    finally:
+        engine.close()
+
+
+def test_repeated_bad_proposals_stop_incomplete_before_action_limit(qtbot):
+    bad = Decision(
+        "action", "Click unchanged target", {"op": "click", "x": 20, "y": 20}, risk="routine"
+    )
+    engine, bridge, model = controller([bad] * 6)
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures, finished = [], []
+
+    async def verify(*args):
+        return Verification("failed", "Target did not focus")
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("Focus current Slack composer")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert len(bridge.executed) == 1 and engine.calls < 20
+        assert "Stopped incomplete" in failures[0] and not finished
+    finally:
+        engine.close()
+
+
+def test_task_limit_is_failure_not_completed(qtbot):
+    engine, bridge, _ = controller([])
+    failures, finished = [], []
+
+    def capture():
+        engine.calls = 20
+        engine.observation_ready(observation(), engine.generation)
+
+    engine.capture_requested.connect(capture)
+    engine.failed.connect(failures.append)
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("Type in current composer")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert "limit" in failures[0] and "incomplete" in failures[0]
+        assert not finished and not bridge.executed
+    finally:
+        engine.close()
+
+
+def test_uncertain_draft_can_only_complete_after_explicit_user_verification(qtbot):
+    engine, bridge, model = controller(
+        [
+            Decision("action", "Type hello", {"op": "text", "text": "Hello"}, risk="routine"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    finished = []
+
+    async def verify(*args):
+        return Verification("uncertain", "Cannot read the small composer text")
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit('Type "Hello" in the current Slack message panel; leave unsent')
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert len(bridge.executed) == 1 and not finished
+        engine.respond(engine.question_id, "approve")
+        qtbot.waitUntil(lambda: bool(finished))
+        assert "confirmed by you" in finished[0] and len(bridge.executed) == 1
+    finally:
+        engine.close()
+
+
+def test_draft_policy_is_revalidated_at_dispatch_after_approval(qtbot):
+    engine, bridge, _ = controller(
+        [Decision("action", "Type hello", {"op": "text", "text": "Hello"}, risk="routine")]
+    )
+    failures = []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit('Type "Hello" in the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "approval")
+        request_id = engine.question_id
+        # An altered pending proposal must not bypass dispatch-side policy checks.
+        engine.pending = Decision(
+            "action", "Press Enter", {"op": "press", "key": "ENTER"}, risk="routine"
+        )
+        engine.respond(request_id, "approve")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+        assert "incomplete" in failures[0]
+    finally:
+        engine.close()
+
+
+def test_current_slack_task_never_redirects_typing_to_new_foreground_window(qtbot):
+    engine, bridge, _ = controller(
+        [Decision("action", "Type hello", {"op": "text", "text": "Hello"}, risk="routine")]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    frames, failures = [], []
+
+    def capture():
+        frames.append(True)
+        engine.observation_ready(
+            observation(foreground=77 if len(frames) == 1 else 88), engine.generation
+        )
+
+    engine.capture_requested.connect(capture)
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit('Type "Hello" in the current Slack message panel')
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+        assert "target window changed" in failures[0]
+    finally:
+        engine.close()
+
+
+def test_repeat_identity_normalizes_defaults_unicode_and_nearby_coordinates():
+    from monster.agent.progress import action_signature, equivalent_action
+
+    assert equivalent_action(
+        {"op": "click", "x": 10, "y": 10},
+        {"op": "click", "x": 12, "y": 14, "button": "left", "count": 1},
+    )
+    assert action_signature({"op": "text", "text": "café "}) == action_signature(
+        {"op": "text", "text": "cafe\u0301"}
+    )

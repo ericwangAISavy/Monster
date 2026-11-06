@@ -20,7 +20,7 @@ class Observation:
     foreground: int = 0
 
 
-def capture_display(display: int = 1, crop: Bounds | None = None) -> Observation:
+def capture_display(display: int | None = 1, crop: Bounds | None = None) -> Observation:
     from mss import mss
     from mss.tools import to_png
 
@@ -29,6 +29,21 @@ def capture_display(display: int = 1, crop: Bounds | None = None) -> Observation
         raise RuntimeError("An unlocked standard Windows desktop is required for capture.")
     with mss() as backend:
         monitors = backend.monitors
+        target_foreground = windows.foreground()
+        if display is None:
+            target = windows.foreground_bounds(target_foreground)
+            display = next(
+                (
+                    index
+                    for index, m in enumerate(monitors[1:], 1)
+                    if Bounds(m["left"], m["top"], m["width"], m["height"]) == target
+                ),
+                None,
+            )
+            if display is None:
+                raise RuntimeError(
+                    "Foreground display geometry changed; focus the target and retry."
+                )
         integer(display, 0, len(monitors) - 1)  # 0 explicitly requests full virtual desktop.
         displays = tuple(Bounds(m["left"], m["top"], m["width"], m["height"]) for m in monitors[1:])
         monitor = monitors[display]
@@ -47,10 +62,14 @@ def capture_display(display: int = 1, crop: Bounds | None = None) -> Observation
         if bounds.width * bounds.height > 40_000_000:
             raise ValueError("Capture exceeds the 40 megapixel limit; select a display or crop.")
         started = time.monotonic()
-        foreground = windows.foreground()
+        foreground = target_foreground
         shot = backend.grab(
             {"left": bounds.x, "top": bounds.y, "width": bounds.width, "height": bounds.height}
         )
+        if windows.foreground() != foreground:
+            raise RuntimeError(
+                "Foreground window changed during capture; focus the target and retry."
+            )
         if not any(shot.rgb):
             raise RuntimeError("Capture is black/unavailable; inspect the desktop manually.")
         png = to_png(shot.rgb, shot.size)

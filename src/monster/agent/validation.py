@@ -56,6 +56,7 @@ def approval_reason(decision):
         ["CTRL", "END"],
         ["SHIFT", "LEFT"],
         ["SHIFT", "RIGHT"],
+        ["SHIFT", "ENTER"],
     ):
         return None
     return "This operation needs review."
@@ -92,6 +93,7 @@ def prepare_action(action, observation):
             ["CTRL", "END"],
             ["SHIFT", "LEFT"],
             ["SHIFT", "RIGHT"],
+            ["SHIFT", "ENTER"],
         ):
             raise ValueError("Shortcut is outside the supervised demo allowlist.")
     if "x" in action:
