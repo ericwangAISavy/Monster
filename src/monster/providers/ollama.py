@@ -166,12 +166,32 @@ class OllamaProvider:
                         "images": [base64.b64encode(image).decode("ascii")],
                     },
                 ],
-                "options": {"temperature": 0, "num_predict": 1200},
+                "think": self.config.thinking,
+                "keep_alive": self.config.keep_alive,
+                "options": {
+                    "temperature": 0,
+                    "num_predict": self.config.max_output_tokens,
+                    "num_ctx": self.config.context_size,
+                },
             },
         )
         message = result.get("message")
-        if result.get("done") is not True or result.get("done_reason") in {"length", "error"}:
-            raise ProviderError("Ollama response was incomplete; no decision accepted.")
+        if result.get("done_reason") == "length":
+            raise ProviderError(
+                f"Ollama reached the output-token limit ({self.config.max_output_tokens}); "
+                "response incomplete, no decision accepted. In AI model settings, disable "
+                "thinking or increase Max output tokens, then start a fresh task."
+            )
+        if result.get("done_reason") == "error":
+            raise ProviderError(
+                "Ollama response was incomplete (server error); no decision accepted. "
+                "Check the Ollama server logs."
+            )
+        if result.get("done") is not True:
+            raise ProviderError(
+                "Ollama response was incomplete (completion flag missing/false); "
+                "no decision accepted. Check the Ollama server version and logs."
+            )
         if type(message) is not dict or type(message.get("content")) is not str:
             raise ProviderError("Ollama returned no structured message.")
         if message.get("tool_calls"):

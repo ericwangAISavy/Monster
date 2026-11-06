@@ -171,3 +171,29 @@ def test_companion_preview_wires_isolated_capture_and_details(qtbot, qapp, tmp_p
     finally:
         ui.shutdown()
         qapp.aboutToQuit.disconnect(ui.shutdown)
+
+
+def test_advanced_inference_fields_persist_and_invalidate_probe(qtbot):
+    from dataclasses import replace
+
+    cfg = replace(config(), max_output_tokens=8192, context_size=32768, keep_alive="15m")
+    dialog = ProviderSettings(cfg, provider_factory=FakeProvider)
+    qtbot.addWidget(dialog)
+    saved = []
+    dialog.saved.connect(saved.append)
+    try:
+        assert dialog.max_output.value() == 8192
+        assert dialog.context_size.value() == 32768
+        assert dialog.keep_alive.currentText() == "15m"
+        assert not dialog.thinking.isChecked()
+        dialog.probe()
+        qtbot.waitUntil(lambda: dialog.pending is None)
+        dialog.apply()
+        assert saved[-1] == cfg
+        dialog.max_output.setValue(4096)
+        assert dialog.probed_config is None
+        dialog.apply()
+        assert len(saved) == 1
+        assert "probe" in dialog.status.text()
+    finally:
+        dialog.jobs.close()

@@ -187,3 +187,91 @@ def test_no_screenshot_transmission_without_confirmation():
     with pytest.raises(ProviderError, match="Confirm"):
         asyncio.run(adapter.decide("vision:small", "test", b"PNG", 100, 100))
     assert calls == []
+
+
+def test_inference_settings_are_sent_explicitly_and_length_is_diagnostic():
+    requests = []
+    cfg = replace(
+        config(), context_size=16384, max_output_tokens=8192, keep_alive="5m", thinking=False
+    )
+    adapter = OllamaProvider(
+        cfg, transport(requests, decision={"kind": "complete", "summary": "Visible"})
+    )
+    asyncio.run(adapter.decide("vision:small", "test", b"PNG", 100, 100))
+    payload = json.loads(requests[-1].content)
+    assert payload["think"] is False and payload["keep_alive"] == "5m"
+    assert payload["options"]["num_ctx"] == 16384
+    assert payload["options"]["num_predict"] == 8192
+    adapter = OllamaProvider(
+        cfg,
+        httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={
+                    "done": True,
+                    "done_reason": "length",
+                    "message": {
+                        "content": '{"kind":"action"',
+                        "thinking": "private model reasoning",
+                    },
+                },
+            )
+        ),
+    )
+    with pytest.raises(ProviderError) as error:
+        asyncio.run(adapter.decide("vision:small", "test", b"PNG", 100, 100))
+    assert "8192" in str(error.value) and "output-token limit" in str(error.value)
+    assert "private" not in str(error.value)
+
+
+def test_legacy_config_gets_inference_defaults_and_roundtrips(tmp_path):
+    path = tmp_path / "ollama.json"
+    path.write_text(
+        json.dumps(
+            {
+                "url": "http://localhost:11434",
+                "model": "gemma4:e4b",
+                "local_server_confirmed": True,
+                "mode": "supervised",
+            }
+        )
+    )
+    cfg = load(path)
+    assert cfg.max_output_tokens == 4096 and not cfg.thinking
+    assert cfg.context_size == 16384 and cfg.keep_alive == "5m"
+    save(path, replace(cfg, max_output_tokens=8192))
+    assert load(path).max_output_tokens == 8192
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"max_output_tokens": 0},
+        {"max_output_tokens": True},
+        {"context_size": -1},
+        {"context_size": 999999},
+        {"thinking": "false"},
+        {"keep_alive": "forever"},
+    ],
+)
+def test_invalid_inference_configuration_is_rejected(overrides):
+    with pytest.raises(ValueError):
+        replace(config(), **overrides).validate()
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ({"done": True, "done_reason": "error"}, "server error"),
+        ({"done": False}, "completion flag missing/false"),
+    ],
+)
+def test_incomplete_response_distinguishes_server_error_from_missing_completion(reply, expected):
+    reply = {**reply, "message": {"content": "private incomplete payload"}}
+    adapter = OllamaProvider(
+        config(), httpx.MockTransport(lambda _: httpx.Response(200, json=reply))
+    )
+    with pytest.raises(ProviderError) as error:
+        asyncio.run(adapter.decide("vision:small", "test", b"PNG", 100, 100))
+    assert expected in str(error.value)
+    assert "private" not in str(error.value)

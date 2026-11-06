@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from monster.providers.config import OllamaConfig
@@ -81,6 +83,41 @@ class ProviderSettings(QDialog):
         form.addRow(self.local)
         form.addRow("Task mode", self.mode)
         layout.addLayout(form)
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setText("Advanced inference settings")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.advanced_toggle.setStyleSheet("QToolButton {color:#eeeaff; padding:4px;}")
+        layout.addWidget(self.advanced_toggle)
+        self.advanced = QWidget()
+        advanced_form = QFormLayout(self.advanced)
+        self.context_size = QSpinBox()
+        self.context_size.setRange(512, 131072)
+        self.context_size.setSingleStep(1024)
+        self.context_size.setValue(config.context_size)
+        self.max_output = QSpinBox()
+        self.max_output.setRange(256, 16384)
+        self.max_output.setSingleStep(256)
+        self.max_output.setValue(config.max_output_tokens)
+        self.keep_alive = QComboBox()
+        self.keep_alive.addItems(["0", "1m", "5m", "15m", "30m"])
+        self.keep_alive.setCurrentText(config.keep_alive)
+        self.thinking = QCheckBox("Enable model thinking (uses output budget and time)")
+        self.thinking.setChecked(config.thinking)
+        advanced_form.addRow("Context size · tokens", self.context_size)
+        advanced_form.addRow("Max output tokens", self.max_output)
+        advanced_form.addRow("Keep model loaded", self.keep_alive)
+        advanced_form.addRow(self.thinking)
+        hint = QLabel(
+            "Larger context/output limits can use more server memory and time. "
+            "Incomplete JSON is never executed."
+        )
+        hint.setWordWrap(True)
+        advanced_form.addRow(hint)
+        layout.addWidget(self.advanced)
+        self.advanced.hide()
+        self.advanced_toggle.toggled.connect(self.toggle_advanced)
         actions = QHBoxLayout()
         self.connect_button = QPushButton("Test connection / discover")
         self.probe_button = QPushButton("Test vision + JSON")
@@ -109,6 +146,10 @@ class ProviderSettings(QDialog):
             self.timeout.valueChanged,
             self.http.toggled,
             self.local.toggled,
+            self.context_size.valueChanged,
+            self.max_output.valueChanged,
+            self.keep_alive.currentTextChanged,
+            self.thinking.toggled,
         ):
             signal.connect(self.invalidate)
         self.finished.connect(lambda _: self.jobs.close())
@@ -121,9 +162,25 @@ class ProviderSettings(QDialog):
             self.http.isChecked(),
             self.local.isChecked(),
             self.mode.currentData(),
+            **self.inference_values(),
         )
         config.validate()
         return config
+
+    def inference_values(self):
+        return {
+            "context_size": self.context_size.value(),
+            "max_output_tokens": self.max_output.value(),
+            "keep_alive": self.keep_alive.currentText(),
+            "thinking": self.thinking.isChecked(),
+        }
+
+    def toggle_advanced(self, expanded):
+        self.advanced.setVisible(expanded)
+        self.advanced_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.adjustSize()
 
     def invalidate(self, *_):
         self.probed_config = None
@@ -177,6 +234,7 @@ class ProviderSettings(QDialog):
             self.http.isChecked(),
             self.local.isChecked(),
             "demo",
+            **self.inference_values(),
         )
         config.validate()
         return config

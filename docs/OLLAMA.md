@@ -89,3 +89,42 @@ The separate opt-in **Supervised real input** task mode now connects approved
 model actions to the real worker. Preview mode remains non-executing. See
 [Supervised execution](SUPERVISED_EXECUTION.md) before enabling the experimental
 mode; native Windows qualification remains outstanding.
+
+## Inference settings and incomplete replies
+
+Expand **Advanced inference settings** in AI model settings to control the native
+Ollama request:
+
+| Setting | Default | Request field |
+| --- | --- | --- |
+| Context size | 16384 tokens | `options.num_ctx` |
+| Max output tokens | 4096 | `options.num_predict` |
+| Keep model loaded | `5m` | `keep_alive` |
+| Enable model thinking | Off | `think: false` |
+
+These defaults match the context/keep-loaded/thinking settings supplied from the
+other application. The request timeout remains separately configurable; email
+classification deadlines, email batch counts and body-length limits do not apply
+to Monster's screenshot tasks. Increasing context or output limits may increase
+memory use and latency. Thinking mode, when enabled and supported, also consumes
+time/output budget.
+
+Older saved Monster settings gain these defaults without losing the selected
+server or model. Previously Monster hardcoded a 1,200-token output cap and omitted
+an explicit thinking preference. That small budget could be exhausted before a
+thinking model produced its final JSON decision. The new default raises the cap
+and explicitly disables thinking. Editing any inference value invalidates the
+settings probe; rerun **Test vision + JSON** before saving an inference mode.
+
+Truncated JSON is still rejected, including a syntactically valid JSON fragment
+returned with `done_reason: length`. The error now distinguishes output-token
+exhaustion, server-reported errors, and a missing/false completion flag. A length
+error identifies the configured limit and suggests disabling thinking or raising
+Max output tokens. No mouse/keyboard transaction is automatically replayed.
+
+If a failure reports **Confirmed input transactions: 1**, an earlier input was
+accepted before the subsequent model decision failed. Inspect the desktop first;
+do not blindly rerun a task that could duplicate its earlier action. Use a fresh,
+disposable Notepad document for the next test. Live Gemma/Ollama behavior still
+requires testing against your server; simulated-response tests do not establish
+that every incomplete response is caused by a token cap.

@@ -16,6 +16,10 @@ class OllamaConfig:
     allow_lan_http: bool = False
     local_server_confirmed: bool = False
     mode: str = "demo"
+    context_size: int = 16384
+    max_output_tokens: int = 4096
+    keep_alive: str = "5m"
+    thinking: bool = False
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -57,6 +61,14 @@ class OllamaConfig:
             raise ValueError("Confirm unencrypted HTTP on your trusted LAN, or use HTTPS.")
         if type(self.timeout) is not int or not 5 <= self.timeout <= 300:
             raise ValueError("Request timeout must be 5–300 seconds.")
+        if type(self.context_size) is not int or not 512 <= self.context_size <= 131072:
+            raise ValueError("Context size must be 512–131072 tokens.")
+        if type(self.max_output_tokens) is not int or not 256 <= self.max_output_tokens <= 16384:
+            raise ValueError("Maximum output must be 256–16384 tokens.")
+        if self.keep_alive not in {"0", "1m", "5m", "15m", "30m"}:
+            raise ValueError("Choose a supported keep-loaded duration.")
+        if type(self.thinking) is not bool:
+            raise ValueError("Thinking must be enabled or disabled explicitly.")
         if (
             type(self.model) is not str
             or len(self.model) > 200
