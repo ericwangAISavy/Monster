@@ -539,7 +539,7 @@ def test_wrong_click_cannot_repeat_despite_changed_screenshot_and_coordinate_jit
 
     engine.capture_requested.connect(capture)
     try:
-        engine.submit('Type "Hello" in current Slack message panel')
+        engine.submit('Type "Hello" in the open Notepad editor')
         qtbot.waitUntil(lambda: engine.phase == "confirming")
         actions = [entry[0] for entry in bridge.executed]
         assert len(actions) == 3
@@ -989,5 +989,157 @@ def test_capture_wait_distinguishes_cancel_from_backend_failure(qtbot, cancel):
         report = engine.failure_diagnostics()
         engine.observation_ready(observation(), captures[0])
         assert engine.failure_diagnostics() == report
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("approve_each_step", [True, False])
+@pytest.mark.parametrize("focus_result", ["failed", "uncertain"])
+def test_human_focus_confirmation_recovers_without_more_clicks_or_false_completion(
+    qtbot, approve_each_step, focus_result
+):
+    engine, bridge, model = controller(
+        [
+            Decision("action", "Focus composer", {"op": "click", "x": 10, "y": 10}, risk="routine"),
+            Decision("action", "Focus elsewhere", {"op": "click", "x": 70, "y": 70}, risk="routine"),
+            Decision("complete", "Focus means done"),
+            Decision("action", "Type draft", {"op": "text", "text": "Hello from Monster"}),
+            Decision("complete", "Draft visible"),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    captures, finished = [], []
+
+    async def verify(*args):
+        if bridge.executed[-1][0]["op"] == "click":
+            return Verification(focus_result, "Cannot recognize the caret")
+        return Verification("succeeded", "Requested text is visible in the editable composer")
+
+    def capture():
+        captures.append((engine.phase, engine.restore_focus))
+        engine.restore_focus = None  # Simulate the GUI's one-time focus restoration.
+        engine.observation_ready(observation(), engine.generation)
+
+    def approve_input(rid, text):
+        if engine.phase == "approval":
+            QTimer.singleShot(0, lambda: engine.respond(rid, "approve"))
+
+    model.verify_action = verify
+    engine.capture_requested.connect(capture)
+    engine.approval_requested.connect(approve_input)
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit('Type "Hello from Monster" into the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "focus_review")
+        assert len(bridge.executed) == 1 and not finished
+        engine.respond("stale-focus-question", "approve")
+        assert engine.phase == "focus_review"
+        engine.respond(engine.question_id, "approve")
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert [item[0]["op"] for item in bridge.executed] == ["click", "text"]
+        assert ("observing", 77) in captures
+        assert any("user confirmed" in " ".join(history).lower() for history in model.history)
+        assert "visual verification " + focus_result in engine.failure_diagnostics()
+        assert "User confirmed composer focus" in engine.failure_diagnostics()
+        assert not finished
+        engine.respond(engine.question_id, "approve")
+        qtbot.waitUntil(lambda: bool(finished))
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("intervention", ["decline", "expiry", "stop"])
+def test_focus_review_never_continues_without_explicit_confirmation(qtbot, intervention):
+    engine, bridge, model = controller(
+        [Decision("action", "Focus composer", {"op": "click", "x": 10, "y": 10}, risk="routine")]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+
+    async def verify(*args):
+        return Verification("failed", "Cannot see caret")
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    finished = []
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit('Type "Hello" in the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "focus_review")
+        rid = engine.question_id
+        if intervention == "decline":
+            engine.respond(rid, "reject")
+        elif intervention == "expiry":
+            engine.approval_timer.start(1)
+        else:
+            engine.cancel()
+        qtbot.waitUntil(lambda: engine.phase == "idle")
+        engine.respond(rid, "approve")
+        assert len(bridge.executed) == 1 and not finished
+        assert engine.calls == 1
+    finally:
+        engine.close()
+
+
+def test_focus_confirmation_does_not_override_failed_text_verification(qtbot):
+    engine, bridge, model = controller(
+        [
+            Decision("action", "Focus composer", {"op": "click", "x": 10, "y": 10}, risk="routine"),
+            Decision("action", "Type draft", {"op": "text", "text": "Hello"}),
+        ]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures, finished = [], []
+
+    async def verify(*args):
+        return Verification("failed", "Expected result not visible")
+
+    def review(rid, text):
+        if engine.phase == "focus_review":
+            QTimer.singleShot(0, lambda: engine.respond(rid, "approve"))
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(review)
+    engine.failed.connect(failures.append)
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit('Type "Hello" in the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: bool(failures))
+        assert [entry[0]["op"] for entry in bridge.executed] == ["click", "text"]
+        assert "Typed text could not be verified" in failures[0]
+        assert not finished
+    finally:
+        engine.close()
+
+
+def test_focus_confirmation_still_rejects_changed_foreground(qtbot):
+    engine, bridge, model = controller(
+        [Decision("action", "Focus composer", {"op": "click", "x": 10, "y": 10}, risk="routine")]
+    )
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+
+    async def verify(*args):
+        return Verification("failed", "Caret not recognized")
+
+    def capture():
+        engine.observation_ready(
+            observation(foreground=88 if engine.human_confirmed_focus else 77), engine.generation
+        )
+
+    model.verify_action = verify
+    engine.capture_requested.connect(capture)
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit('Type "Hello" in the current Slack composer. Do not send.')
+        qtbot.waitUntil(lambda: engine.phase == "focus_review")
+        engine.respond(engine.question_id, "approve")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert "target window changed" in failures[0]
+        assert len(bridge.executed) == 1 and engine.calls == 1
     finally:
         engine.close()

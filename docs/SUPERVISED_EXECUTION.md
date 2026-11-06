@@ -325,3 +325,42 @@ including overlay removal and compositor settling, but excluding the separate
 separately. A completed capture is not evidence of overlay-free pixels or correct
 focus; inspect those on Windows. Late frames from cancelled tasks do not update
 the ended task's timings.
+
+
+### When the composer focused but the model reports failure
+
+A visual model can miss the caret or focused border of an empty Slack composer.
+For a recognized message-drafting task, a failed or uncertain click check now
+pauses immediately for a human focus review instead of trying more coordinates.
+The pill asks whether the intended editable composer gained keyboard focus.
+
+Approve only if you observed that the click focused the correct composer before
+the review pill opened. The pill itself takes focus during review. If the click
+missed, activated another field, or you cannot tell, Decline and focus the intended
+composer manually before starting a new task. The prompt expires after 60 seconds;
+Escape, Decline, Stop and expiry never authorize more input. This review remains
+required with automatic routine steps enabled.
+
+After explicit approval, Monster restores the reviewed foreground window and
+takes a fresh screenshot. The next model request receives a separately labelled
+human focus confirmation. Additional click/navigation proposals are blocked; the
+model may propose the requested draft text or ask for help. The original failed
+or uncertain visual result stays in the diagnostic trace. Human focus confirmation
+is not model verification, text verification or task completion. Foreground binding,
+scene rechecks, sensitive-action review, one text transaction, independent stop,
+and final visible-result confirmation still apply. A failed subsequent text check
+still stops without retyping.
+
+Portable regressions cover a false-negative focus check followed by human review,
+a fresh observation, one text insertion and final confirmation in both approval
+modes. They also cover declined/expired/stopped reviews, stale responses, rejected
+extra clicks, premature completion, foreground changes and failed text verification.
+The reported Windows behavior came from user observation; native recovery with
+Slack still needs validation.
+
+On Windows, reproduce the exact draft task. If focus review appears after a click
+that you saw focus the composer, approve that focus review, inspect any subsequent
+text proposal, and verify the draft appears exactly once and remains unsent. Only
+then approve final completion. Record whether the focused child editor/caret is
+restored after the review pill closes. Also test Decline and Ctrl+Alt+X at focus
+review; neither should type or issue another click.

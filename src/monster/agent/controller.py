@@ -50,6 +50,7 @@ class SupervisedController(TaskController):
         self.inserted_text = set()
         self.last_verification = None
         self.task_foreground = None
+        self.human_confirmed_focus = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.restore_focus = None
@@ -85,6 +86,7 @@ class SupervisedController(TaskController):
         self.inserted_text = set()
         self.last_verification = None
         self.task_foreground = None
+        self.human_confirmed_focus = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.actions = self.calls = self.stale = 0
@@ -308,6 +310,26 @@ class SupervisedController(TaskController):
                     "repeat it or jitter its coordinates. Choose a materially "
                     "different strategy or ask the user to focus the composer."
                 )
+                if (
+                    self.pending.action["op"] == "click"
+                    and draft_only(self.instruction)
+                    and not self.inserted_text
+                ):
+                    self.phase = "focus_review"
+                    self.question_id = uuid.uuid4().hex
+                    self.state_changed.emit(State.WAITING)
+                    self.approval_requested.emit(
+                        self.question_id,
+                        "The model could not verify composer focus after the click. "
+                        "Inspect the intended editable message composer. Approve ONLY if "
+                        "that composer gained keyboard focus and is ready for the requested "
+                        "draft. If the click missed, focus is unclear, or another field is "
+                        "active, Decline and focus the composer manually before a new task. "
+                        "This confirms focus only, not typing or task completion. "
+                        "No further click will be tried automatically.",
+                    )
+                    self.approval_timer.start(60000)
+                    return
                 if self.pending.action["op"] == "text" and result.status == "uncertain":
                     self.phase = "confirming"
                     self.question_id = uuid.uuid4().hex
@@ -350,7 +372,7 @@ class SupervisedController(TaskController):
                 return
             try:
                 action = prepare_action(self.pending.action, self.observation)
-                validate_draft_action(self.pending, self.instruction, bool(self.inserted_text))
+                self._validate_draft_proposal()
             except (ValueError, TypeError):
                 self.fail("Action is outside the supervised demo policy.")
                 return
@@ -396,7 +418,7 @@ class SupervisedController(TaskController):
                     return
                 try:
                     prepare_action(action, self.observation)
-                    validate_draft_action(result, self.instruction, bool(self.inserted_text))
+                    self._validate_draft_proposal()
                 except (ValueError, TypeError) as exc:
                     self._reject_proposal(str(exc))
                     return
@@ -462,10 +484,31 @@ class SupervisedController(TaskController):
                 )
             else:
                 self.cancel()
+        elif self.phase == "focus_review":
+            self.human_confirmed_focus = True
+            self.history.append(
+                "The user confirmed keyboard focus in the intended editable composer. "
+                "This is human focus evidence, not successful model verification or task "
+                "completion. Do not click or navigate again; propose the requested text "
+                "only if the fresh screenshot still supports the intended target."
+            )
+            self.trace.append("User confirmed composer focus; text remains unverified.")
+            self.recovery_attempts = self.rejected_proposals = 0
+            self.restore_focus = self.observation.foreground
+            self.phase = "observing"
+            self._capture()
         elif self.phase == "confirming":
             self._terminate("complete", "Completed · visible result confirmed by you")
         elif self.phase == "approval":
             self._begin_recheck(restore=True)
+
+    def _validate_draft_proposal(self):
+        validate_draft_action(self.pending, self.instruction, bool(self.inserted_text))
+        if self.human_confirmed_focus and self.pending.action.get("op") != "text":
+            raise ValueError(
+                "The user already confirmed composer focus. Do not click or navigate again; "
+                "propose the requested draft text or ask for help."
+            )
 
     def _begin_recheck(self, restore):
         self.phase = "rechecking"
@@ -482,6 +525,13 @@ class SupervisedController(TaskController):
                 "requested text is visibly present in that editable composer, not in chat history. "
                 "Type the complete requested draft in one text transaction. After text insertion, "
                 "only observe and report completion or ask for help; do not append, edit or send."
+            )
+        if self.human_confirmed_focus:
+            text += (
+                "\nHuman focus confirmation: the user confirmed the intended editable "
+                "composer had focus. This is not task completion or text verification. "
+                "Use the fresh screenshot; do not click or navigate again. Propose the "
+                "requested draft text, or ask for help if the target changed."
             )
         return text
 
