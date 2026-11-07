@@ -36,6 +36,15 @@ def draft_only(instruction):
     )
 
 
+def needs_text_target_check(instruction, action):
+    """Verify ordinary Notepad typing without imposing chat-only action limits."""
+    return draft_only(instruction) or (
+        action.get('op') == 'text'
+        and bool(re.search(r'\bnotepad\b', instruction, re.IGNORECASE))
+        and bool(re.search(r'\b(?:type|write|enter|insert)\b', instruction, re.IGNORECASE))
+    )
+
+
 def validate_draft_action(decision, instruction, text_inserted=False):
     if not draft_only(instruction):
         return

@@ -71,7 +71,7 @@ def test_schema3_copy_preserves_prior_checkpoint_and_effect_audit(tmp_path):
         from monster.mission.coordinator import MissionCoordinator
 
         async with MissionCoordinator(tmp_path) as c:
-            assert c.store.connection.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert c.store.connection.execute("PRAGMA user_version").fetchone()[0] == 6
             assert (
                 c.store.connection.execute("SELECT count(*) FROM effect_audit").fetchone()[0]
                 == audit_count

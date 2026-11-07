@@ -221,3 +221,52 @@ This runs fake subtasks only. The new native pilot is disabled without explicit
 reviewed Phase2/3 qualification metadata; **native qualification remains PENDING**.
 See [execution architecture and commands](docs/PHASE4_LONG_HORIZON_EXECUTION.md)
 and [qualification/evidence](docs/WINDOWS_PHASE4_QUALIFICATION.md).
+
+## Strategic planning simulation (v3 Phase 5)
+
+The experimental Phase 5 layer proposes a typed objective DAG, validates it
+against a fixed simulation catalog, binds plan/revision consent to exact digests,
+and evaluates the original goal rubric against journal evidence. It reuses the
+Phase 4 scheduler and retains all effect/stop boundaries. **Dynamic native desktop
+planning is disabled; Windows qualification and live-model benchmarks are PENDING.**
+
+Tray → **Phase 5 · plan and simulate…** accepts the supported design-proposal
+fixture goal. Review the temporary plan dialog, then consent to the simulation.
+The **safe replan simulation…** pauses after two synthetic outcomes; choose
+**review safe revision…** to inspect the alternate strategy. **Resume simulation…**
+requires fresh consent. This creates no real document and sends no screenshots.
+
+```powershell
+uv run python -m monster.mission.strategic.pilot --directory .monster-missions --scenario replan_restart --approve-simulation
+```
+
+See [strategic architecture](docs/PHASE5_STRATEGIC_INTELLIGENCE.md),
+[model routing and context](docs/PHASE5_MODEL_ROUTING_AND_CONTEXT.md), and
+[qualification status](docs/WINDOWS_PHASE5_QUALIFICATION.md). Planning simulations
+are not evidence that arbitrary desktop tasks or uncertain visual checks work.
+
+## Independent workspace simulation (v3 Phase 6)
+
+Tray → **Workspaces…** adds an explicit Personal Desktop / Independent Workspace
+simulation selector. Register one guest, verify the simulated pairing, start the
+reviewed six-stage fixture and approve its guest-issued challenge in the pill.
+Guest status, stop, reconnect/resume and one consented synthetic preview are
+available without routing guest commands to the host input controller.
+
+```powershell
+uv run python -m monster.guest --diagnose
+uv run python -m monster.workspaces.simulation --scenario six_stage_fake
+uv run python -m monster.workspaces.simulation --scenario partition_pause
+uv run python -m monster.workspaces.simulation --scenario crash_reconcile
+```
+
+**This is a portable simulation: no VM, TLS sockets, real screenshot or native
+input.** Live TLS/Windows credential and guest-input integration remains gated by
+the Phase 6 prompt's design review and pending Windows qualification. Personal
+Desktop stays the default. The guest role retains the existing engine and journal;
+the host projection never becomes a second authoritative mission database.
+
+See [workspace architecture / ADR006](docs/PHASE6_WORKSPACE_ARCHITECTURE.md),
+[manual VM guide](docs/PHASE6_VM_SETUP.md), [security review](docs/PHASE6_SECURITY_MODEL.md),
+[operations and recovery](docs/PHASE6_OPERATIONS_AND_RECOVERY.md), and
+[native qualification](docs/WINDOWS_PHASE6_QUALIFICATION.md).

@@ -90,6 +90,11 @@ class MissionCoordinator:
             )
             self.scheduler.mode_guard = self._validate_scheduled_mode
             self.scheduler.recover()
+            from .strategic.service import StrategicService
+
+            self.strategy = StrategicService(self)
+            self.strategy.recover()
+            self.scheduler.strategic_guard = self.strategy.guard
             self.effects.schedule_lookup = self.scheduler.exists
             self.effects.mission_guard = lambda mid: (
                 self.scheduler.guard(mid) if self.scheduler.exists(mid) else None
@@ -98,6 +103,7 @@ class MissionCoordinator:
                 self.runner.configure_effects(self.effects)
             self.nodes = MissionNodes(self.store, self.runner, self.clock)
             self.nodes.scheduler = self.scheduler
+            self.nodes.strategy = self.strategy
             self.graph = build_graph(self.nodes, self.checkpointer)
             if self.experimental_gui:
                 self._restart_review = self.store.invalidate_unstarted_authorizations()
@@ -191,12 +197,21 @@ class MissionCoordinator:
         from .scheduling import ScheduledPlan
 
         plan = ScheduledPlan.model_validate(plan.model_dump())
+        if plan.template_ref == "strategic-design-v1":
+            raise ValueError("Dynamic plans require strategic admission")
         self._validate_scheduled_mode(plan)
         if self.effects.unresolved():
             raise ValueError("Unresolved effects require reconciliation")
         self.store.create(plan.mission)
         self.scheduler.register(plan)
         return await self._invoke(plan.mission.mission_id, self.initial(plan.mission.mission_id))
+
+    async def approve_strategic(self, mission_id, consent):
+        self.strategy.admit(mission_id, consent)
+        saved = await self.graph.aget_state(self.config(mission_id))
+        if not saved.values:
+            return await self._invoke(mission_id, self.initial(mission_id))
+        return await self.continue_mission(mission_id)
 
     @exclusive
     async def consent_and_continue(self, mission_id, consent):
@@ -206,6 +221,11 @@ class MissionCoordinator:
             raise ValueError("Terminal missions cannot resume")
         self._validate_scheduled_mode(self.scheduler.plan(mission_id))
         self.scheduler.grant(mission_id, consent)
+        saved = await self.graph.aget_state(self.config(mission_id))
+        if not saved.values:
+            # Admission is committed before the first graph checkpoint. Recover
+            # that boundary from the full initial state, not a partial update.
+            return await self._invoke(mission_id, self.initial(mission_id))
         await self.graph.aupdate_state(
             self.config(mission_id),
             {"status": "running", "reason": None, "pending_approval_id": None},
@@ -214,6 +234,8 @@ class MissionCoordinator:
         return await self._invoke(mission_id, None)
 
     async def request_pause(self, mission_id):
+        if self.strategy.exists(mission_id):
+            self.strategy.pause(mission_id)
         if not self.scheduler.exists(mission_id):
             return await self.stop(mission_id)
         # Latch before the first await: the next stage must see it even if the
@@ -236,7 +258,10 @@ class MissionCoordinator:
     async def mission_report(self, mission_id):
         from .reports import build_report
 
-        return build_report(self, mission_id, await self.snapshot(mission_id))
+        report = build_report(self, mission_id, await self.snapshot(mission_id))
+        if self.strategy.exists(mission_id):
+            report["strategic"] = self.strategy.report(mission_id)
+        return report
 
     async def snapshot(self, mission_id):
         control = self.store.control(mission_id)
@@ -253,7 +278,9 @@ class MissionCoordinator:
         if mission_id in self._active:
             raise RuntimeError("Mission already running")
         snapshot = await self.snapshot(mission_id)
-        if self.effects.unresolved(mission_id):
+        if self.effects.unresolved(mission_id) or (
+            self.strategy.exists(mission_id) and self.strategy.reconciliation_required(mission_id)
+        ):
             return {**snapshot, "status": "paused", "reason": "action_reconciliation_required"}
         if snapshot["status"] in TERMINAL:
             return snapshot
@@ -310,6 +337,14 @@ class MissionCoordinator:
         return await self._invoke(mission_id, Command(resume=decision.model_dump(mode="json")))
 
     async def stop(self, mission_id, *, cancel=False):
+        if self.strategy.exists(mission_id):
+            if cancel:
+                self.strategy.stop(mission_id)
+            else:
+                self.strategy.pause(mission_id)
+            if not self.scheduler.exists(mission_id):
+                return {"mission_id": mission_id, "status": "cancelled" if cancel else "paused",
+                        "reason": "stopped"}
         if self.experimental_gui and hasattr(self.runner, "invalidate_all"):
             self.runner.invalidate_all(mission_id)
         snapshot = await self.snapshot(mission_id)

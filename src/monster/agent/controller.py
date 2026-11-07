@@ -19,6 +19,7 @@ from monster.agent.progress import (
     draft_only,
     equivalent_action,
     history_window,
+    needs_text_target_check,
     validate_draft_action,
 )
 from monster.agent.validation import (
@@ -86,6 +87,9 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.last_verification = None
+        self.verification_retakes = 0
+        self.verification_before = self.verification_before_frame = None
+        self.verification_retry_scene = None
         self.last_verified_proposal = None
         self.reviewed_proposal = None
         self.draft_target_proposal = None
@@ -146,6 +150,9 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.last_verification = None
+        self.verification_retakes = 0
+        self.verification_before = self.verification_before_frame = None
+        self.verification_retry_scene = None
         self.last_verified_proposal = None
         self.reviewed_proposal = None
         self.draft_target_proposal = None
@@ -332,6 +339,10 @@ class SupervisedController(TaskController):
                 )
                 return
             self.actions += 1
+            self.verification_retakes = 0
+            self.verification_before = self.observation
+            self.verification_before_frame = self.log_frame
+            self.verification_retry_scene = None
             action = dict(self.pending.action)
             if action == {"op": "chord", "keys": ["ALT", "F4"]}:
                 self.close_dispatched = True
@@ -422,7 +433,15 @@ class SupervisedController(TaskController):
             self.job = self._start_model(compare)
             return
         if self.phase == "verifying_capture":
-            before = self.observation
+            retry_scene = self.verification_retry_scene
+            if retry_scene is not None and (
+                retry_scene.foreground != observation.foreground
+                or retry_scene.bounds != observation.bounds
+                or retry_scene.displays != observation.displays
+            ):
+                self.fail('Verification target or display changed during observation. Inspect the result; no input was retried.')
+                return
+            before = self.verification_before
             before_image = before.png if (before is not None and before.bounds == observation.bounds
                                           and before.displays == observation.displays) else None
             self.observation = observation
@@ -432,7 +451,7 @@ class SupervisedController(TaskController):
             instruction = self._task_context()
             self.verification_calls += 1
             self._record("verification_requested", observation=self.log_frame,
-                         before=previous_frame if before_image is not None else None,
+                         before=self.verification_before_frame if before_image is not None else None,
                          comparison_scope="before_after" if before_image is not None else "after_only_geometry_changed",
                          content={"action": action, "expected_result": expected,
                                   "task_context": instruction})
@@ -557,9 +576,6 @@ class SupervisedController(TaskController):
             # proposal and checked scene, then obtain a fresh matching capture.
             self._begin_recheck(restore=False)
         elif self.phase == "verifying":
-            if self.action_gate:
-                self._effect_event("observe", status=result.status,
-                                   observation_ref=self.observation.id)
             self.last_verification = result
             self.last_verified_proposal = deepcopy(self.pending)
             self._record("verification_result", observation=self.log_frame, content={
@@ -571,6 +587,20 @@ class SupervisedController(TaskController):
                 f"Step {self.actions} visual verification: {result.status}. "
                 f"Evidence: {result.evidence}"
             )
+            if result.status == 'uncertain' and self.verification_retakes == 0:
+                self.verification_retakes = 1
+                self.verification_retry_scene = self.observation
+                self._record('verification_reobserve_requested', observation=self.log_frame,
+                             attempt=1, input_repeated=False)
+                self.trace.append('Result unclear; observing once more without repeating input.')
+                self.phase = 'verifying_capture'
+                self._schedule_capture()
+                return
+            if self.action_gate:
+                # Keep the receipt awaiting observation during the bounded read-only
+                # recheck. Once finalized, uncertainty still requires reconciliation.
+                self._effect_event("observe", status=result.status,
+                                   observation_ref=self.observation.id)
             if (
                 result.status != "succeeded"
                 and self.single_click_policy
@@ -667,7 +697,7 @@ class SupervisedController(TaskController):
             except (ValueError, TypeError):
                 self.fail("Action is outside the supervised demo policy.")
                 return
-            if draft_only(self.instruction) and self.draft_target_proposal != self.pending:
+            if needs_text_target_check(self.instruction, self.pending.action) and self.draft_target_proposal != self.pending:
                 self.phase = "checking_target"
                 self.state_changed.emit(State.THINKING)
                 self.stage_changed.emit("Target check")

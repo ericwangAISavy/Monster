@@ -60,6 +60,8 @@ class MissionRuntime(QObject):
         scheduled_plan=None,
         native_qualification=None,
         scheduled_resume_mode=None,
+        strategic_text=None,
+        strategic_resume=False,
         parent=None,
     ):
         super().__init__(parent)
@@ -68,6 +70,7 @@ class MissionRuntime(QObject):
         self.scheduled_plan = scheduled_plan
         self.native_qualification = native_qualification
         self.scheduled_resume_mode = scheduled_resume_mode
+        self.strategic_text, self.strategic_resume = strategic_text, strategic_resume
         self.last_report = None
         self.reconciliation_only = reconciliation_only
         self.mission_id = (
@@ -91,7 +94,7 @@ class MissionRuntime(QObject):
 
     def _observe(self, update):
         if not update.get("requested_progress"):
-            self.pending = update.get("consent") or update.get("approval")
+            self.pending = update.get("strategic_consent") or update.get("consent") or update.get("approval")
         if update.get("report"):
             self.last_report = update["report"]
         self.engaged = update["state"]["status"] in ("running", "waiting_approval", "created")
@@ -124,6 +127,13 @@ class MissionRuntime(QObject):
                 )
                 if self.closed:
                     return
+                if self.strategic_text is not None:
+                    self._job = asyncio.create_task(self._prepare_strategy())
+                    await self._exit.wait()
+                    if not self._job.done():
+                        self._job.cancel()
+                        await asyncio.gather(self._job, return_exceptions=True)
+                    return
                 if self.reconciliation_only:
                     records = c.effects.unresolved()
                     self.engaged = False
@@ -133,10 +143,17 @@ class MissionRuntime(QObject):
                     await self._exit.wait()
                     return
                 if self.plan is None and self.scheduled_plan is None and self.resume_id is None:
-                    if self.scheduled_resume_mode:
+                    if self.strategic_resume:
+                        row = c.store.connection.execute(
+                            "SELECT m.mission_id FROM missions m JOIN strategic_sessions s ON m.mission_id=s.mission_id "
+                            "WHERE m.terminal_at IS NULL AND m.cancelled=0 AND s.stopped=0 "
+                            "AND s.active_digest IS NOT NULL ORDER BY m.created_at DESC LIMIT 1"
+                        ).fetchone()
+                    elif self.scheduled_resume_mode:
                         row = c.store.connection.execute(
                             "SELECT m.mission_id FROM missions m JOIN mission_schedules s ON m.mission_id=s.mission_id "
                             "WHERE m.terminal_at IS NULL AND m.cancelled=0 AND json_extract(s.spec,'$.mode')=? "
+                            "AND json_extract(s.spec,'$.template_ref')='editor-six-v1' "
                             "ORDER BY m.created_at DESC LIMIT 1",
                             (self.scheduled_resume_mode,),
                         ).fetchone()
@@ -273,6 +290,21 @@ class MissionRuntime(QObject):
 
     def answer(self, answer):
         from .scheduling import MissionConsent
+        from .strategic.contracts import StrategicConsent
+
+        if isinstance(self.pending, StrategicConsent):
+            consent, self.pending = self.pending, None
+            if answer != "approve":
+                self.stop()
+                return
+
+            def schedule_strategic():
+                if self.coordinator and not self.stopped.is_set() and (self._job is None or self._job.done()):
+                    self._job = asyncio.create_task(self._operation(
+                        self.coordinator.approve_strategic(self.mission_id, consent)))
+
+            self._call(schedule_strategic)
+            return
 
         if isinstance(self.pending, MissionConsent):
             consent, self.pending = self.pending, None
@@ -315,6 +347,54 @@ class MissionRuntime(QObject):
                 await self._operation(self.coordinator.request_pause(self.mission_id))
 
         self._call(lambda: asyncio.create_task(pause()))
+
+    async def _prepare_strategy(self):
+        from .strategic.planning import FakeStrategicPlanner, PlannerFailure
+        from .strategic.service import interpret_design_goal
+
+        try:
+            goal = interpret_design_goal(self.strategic_text)
+            self.strategic_text = None
+            self.mission_id, _ = await self.coordinator.strategy.prepare(goal, FakeStrategicPlanner())
+            if self.closed or self.stopped.is_set():
+                await self.coordinator.stop(self.mission_id, cancel=True)
+                return
+            self._emit_strategic_review()
+        except (ValueError, PlannerFailure, sqlite3.Error, OSError):
+            self.changed.emit({'state': {'mission_id': self.mission_id, 'status': 'paused',
+                              'reason': 'unsupported_goal_or_planner_unavailable'}, 'approval': None})
+        finally:
+            self.strategic_text = None
+
+    def _emit_strategic_review(self):
+        service = self.coordinator.strategy
+        self.changed.emit({'state': {'mission_id': self.mission_id, 'status': 'waiting_approval',
+                                    'reason': 'strategic_review_required'}, 'approval': None,
+                           'strategic_consent': service.consent_request(self.mission_id),
+                           'strategic_preview': service.pending(self.mission_id)})
+
+    def request_strategic_revision(self):
+        async def propose():
+            from .strategic.planning import FakeStrategicPlanner
+
+            try:
+                c = self.coordinator
+                proof = c.store.connection.execute(
+                    'SELECT subtask_id FROM strategic_blockers WHERE mission_id=? AND attempted=0',
+                    (self.mission_id,)).fetchone()
+                if proof is None:
+                    raise ValueError('No safe blocker')
+                await c.strategy.propose_revision(self.mission_id, FakeStrategicPlanner(), proof[0])
+                self._emit_strategic_review()
+            except (ValueError, RuntimeError, sqlite3.Error):
+                self.changed.emit({'state': {'mission_id': self.mission_id, 'status': 'paused',
+                                            'reason': 'safe_revision_unavailable'}, 'approval': None})
+
+        def schedule():
+            if self.coordinator and (self._job is None or self._job.done()):
+                self._job = asyncio.create_task(propose())
+
+        self._call(schedule)
 
     def request_progress(self):
         async def report():

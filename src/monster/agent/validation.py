@@ -53,6 +53,19 @@ def validate_proposal_intent(decision, instruction):
     validate_shortcut_description(action, decision.summary)
     validate_quoted_typing(action, decision.summary)
     expected = decision.expected_result or ""
+    validate_shortcut_description(action, expected)
+    navigation = action in (
+        {'op': 'press', 'key': 'HOME'}, {'op': 'press', 'key': 'END'},
+        {'op': 'chord', 'keys': ['CTRL', 'HOME']},
+        {'op': 'chord', 'keys': ['CTRL', 'END']},
+    )
+    if navigation and re.search(
+        r'\b(?:creat\w*|open\w*)\b[^.!?\n]{0,60}\b(?:new|blank|empty)\s+(?:document|file|tab)\b'
+        r'|\bclear\w*\s+(?:the\s+)?(?:current\s+)?(?:content|document|text)\b',
+        decision.summary + '\n' + expected, re.IGNORECASE,
+    ):
+        raise ValueError('Home/End only move the caret; they do not create or clear a document. '
+                         'For a new Notepad document propose the complete CTRL+N chord or a visible menu action.')
     if terminal_window_requested(instruction) and (
         re.search(r"\bnew\b[^.!?\n]{0,60}\btab\b", expected, re.IGNORECASE)
         or action == {"op": "chord", "keys": ["CTRL", "SHIFT", "T"]}
@@ -181,6 +194,7 @@ def prepare_action(action, observation, *, allow_window_close=False, allow_termi
             ["CTRL", "A"],
             ["CTRL", "C"],
             ["CTRL", "Z"],
+            ["CTRL", "N"],
             ["CTRL", "HOME"],
             ["CTRL", "END"],
             ["SHIFT", "LEFT"],

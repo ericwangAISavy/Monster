@@ -9,7 +9,8 @@ from monster.mission.contracts import ApprovalDecision, Mission, Subtask
 
 
 @pytest.mark.parametrize("journal_failure", [False, True])
-def test_real_controller_gate_uses_journal_before_fake_input(qtbot, tmp_path, journal_failure):
+@pytest.mark.parametrize("reobserve", [False, True])
+def test_real_controller_gate_uses_journal_before_fake_input(qtbot, tmp_path, journal_failure, reobserve):
     from PySide6.QtCore import QTimer
 
     from monster.mission.coordinator import MissionCoordinator
@@ -19,7 +20,7 @@ def test_real_controller_gate_uses_journal_before_fake_input(qtbot, tmp_path, jo
     from monster.mission.workspace import WorkspaceGate
     from monster.providers.base import Decision
 
-    engine, native, _ = controller(
+    engine, native, model = controller(
         [
             Decision(
                 "action",
@@ -31,6 +32,17 @@ def test_real_controller_gate_uses_journal_before_fake_input(qtbot, tmp_path, jo
             Decision("done", "visible"),
         ]
     )
+    if reobserve:
+        from monster.providers.base import Verification
+
+        checks = []
+
+        async def verify(*args):
+            checks.append(args)
+            return Verification('uncertain' if len(checks) == 1 else 'succeeded',
+                                'Synthetic delayed visible result')
+
+        model.verify_action = verify
     engine.capture_requested.connect(
         lambda: engine.observation_ready(observation(), engine.generation)
     )
@@ -116,6 +128,9 @@ def test_real_controller_gate_uses_journal_before_fake_input(qtbot, tmp_path, jo
             < codes.index("input_inserted")
         )
         assert codes.index("input_inserted") < codes.index("observed_success")
+        if reobserve:
+            assert len(checks) == 2
+            assert 'uncertain' not in codes  # no terminal uncertainty rewritten into success
         data = b"".join(p.read_bytes() for p in (tmp_path / "state").glob("*.sqlite3*"))
         assert EXPECTED_TEXT["editor-a"].encode() not in data
     bridge.shutdown()

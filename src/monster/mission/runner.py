@@ -42,6 +42,9 @@ class FakeGuiSubtaskRunner:
             raise RuntimeError("Private error detail must not persist")
         if outcome == "malformed":
             return {"password": "must-not-persist"}
+        receipt_only = outcome == "receipt_only"
+        if receipt_only:
+            outcome = "uncertain"  # receipt is never visual completion evidence
         verified = outcome in ("verified_success", "verified_failure")
         return TaskResult(
             mission_id=request.mission_id,
@@ -53,8 +56,8 @@ class FakeGuiSubtaskRunner:
             evidence_kind="fake" if verified else "none",
             reason="verified" if verified else "not_observed",
             cleanup_confirmed=True,
-            confirmed_input_transactions=1 if verified else None,
-            model_planning_calls=1 if verified else None,
+            confirmed_input_transactions=1 if verified or receipt_only else None,
+            model_planning_calls=1 if verified or receipt_only else None,
             review_count=0 if verified else None,
         )
 

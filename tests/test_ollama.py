@@ -592,3 +592,18 @@ def test_invalid_before_image_is_rejected_without_transmission(before):
         asyncio.run(adapter.verify_action('vision:small', 'open Notepad',
                     {'op': 'press', 'key': 'WIN'}, 'Start opens.', b'AFTER', 100, 100, before))
     assert requests == []
+
+
+def test_new_document_shortcut_is_available_except_in_draft_only_schema():
+    from monster.providers.decisions import (
+        decision_schema_for_draft,
+        decision_schema_for_navigation,
+    )
+
+    def chords(schema):
+        variants = schema['oneOf'][0]['properties']['action']['oneOf']
+        return next(v['properties']['keys']['enum'] for v in variants
+                    if v['properties']['op']['const'] == 'chord')
+
+    assert ['CTRL', 'N'] in chords(decision_schema_for_navigation('create a new Notepad document'))
+    assert ['CTRL', 'N'] not in chords(decision_schema_for_draft())

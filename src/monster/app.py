@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMenu,
+    QMessageBox,
     QSystemTrayIcon,
     QTextEdit,
     QVBoxLayout,
@@ -53,6 +55,11 @@ class CompanionApp:
         self.manual_lease = None
         self.manual_generation = None
         self.mission_runtime = None
+        self.strategic_review = None
+        self.workspace_mode = "personal_desktop"
+        self.workspace_runtime = None
+        self.workspace_window = None
+        self.workspace_registry = None
         self.phase4_qualification = None
         self.reconciliation_effect = None
         self.mission_review_timer = QTimer()
@@ -266,9 +273,14 @@ class CompanionApp:
         self.add_action("Phase 4 · qualified native pilot…", lambda: self.start_phase4("supervised_pilot"))
         self.add_action("Phase 4 · resume simulation…", lambda: self.start_phase4("simulation", resume=True))
         self.add_action("Phase 4 · resume qualified pilot…", lambda: self.start_phase4("supervised_pilot", resume=True))
+        self.add_action("Phase 5 · plan and simulate…", self.start_phase5)
+        self.add_action("Phase 5 · safe replan simulation…", lambda: self.start_phase5(replan=True))
+        self.add_action("Phase 5 · review safe revision…", self.propose_phase5_revision)
+        self.add_action("Phase 5 · resume simulation…", lambda: self.start_phase5(resume=True))
         self.add_action("Mission progress…", self.show_mission_progress)
         self.add_action("Mission · pause after stage", self.pause_mission_boundary)
         self.add_action("Mission · resume / request consent", self.resume_mission_boundary)
+        self.add_action("Workspaces…", self.show_workspaces)
         if self.controller.is_mock:
             demo = self.menu.addMenu("GUI demo")
             self.demo_menu = demo
@@ -377,6 +389,12 @@ class CompanionApp:
         self.set_state(State.LISTENING)
 
     def submit(self, instruction):
+        if self.workspace_mode != "personal_desktop":
+            if self.workspace_runtime and instruction.strip().lower() in {"start guest simulation", "start simulation"}:
+                self.workspace_runtime.start_mission()
+            else:
+                self.notice("Independent Workspace · simulation only. Use Workspaces to start the reviewed fixture.")
+            return
         if self.mission_runtime and self.mission_runtime.engaged:
             self.notice("Mission owns this task · stop it before starting another.")
             return
@@ -430,6 +448,9 @@ class CompanionApp:
             self.workspace_gate.release(lease, cleanup_confirmed=True)
 
     def start_experimental_mission(self, *, resume=False, reconciliation_only=False):
+        if self.workspace_mode != "personal_desktop":
+            self.notice("Select Personal Desktop for a local mission.")
+            return
         if (not isinstance(self.controller, SupervisedController) or self.active
                 or self.workspace_gate.busy or self.controller.phase != "idle"
                 or self.input_cleanup_blocked
@@ -463,6 +484,9 @@ class CompanionApp:
         self.mission_runtime.start()
 
     def start_phase4(self, mode="simulation", *, resume=False):
+        if self.workspace_mode != "personal_desktop":
+            self.notice("Select Personal Desktop for the local Phase 4 pilot.")
+            return
         if mode == "supervised_pilot" and self.phase4_qualification is None:
             self.notice("Phase 4 native pilot disabled · qualify Phases 2/3 and supply reviewed evidence.",5000)
             return
@@ -505,7 +529,198 @@ class CompanionApp:
         runtime.changed.connect(lambda update,source=runtime:self._mission_changed(update,source=source))
         runtime.start()
 
+    def start_phase5(self, *, resume=False, replan=False):
+        if self.workspace_mode != "personal_desktop":
+            self.notice("Select Personal Desktop for local strategic planning.")
+            return
+        if self.active or self.workspace_gate.busy or (self.mission_runtime and self.mission_runtime.engaged):
+            self.notice("Finish or stop the current task before planning.")
+            return
+        if self.mission_runtime:
+            self.mission_runtime.close()
+            if self.mission_runtime.thread.is_alive():
+                self.notice("Previous mission is closing · retry shortly.")
+                return
+        from monster.mission.runner import FakeGuiSubtaskRunner
+        from monster.mission.runtime import MissionRuntime
+
+        text = None
+        if not resume:
+            text, accepted = QInputDialog.getText(None, "Monster · fixture planning",
+                "Simulation only. Supported goal: Prepare a short technical design proposal.",
+                text="Prepare a short technical design proposal.")
+            if not accepted:
+                return
+        runner = FakeGuiSubtaskRunner()
+        if replan:
+            runner.preflight_faults = ['ready', 'ready', 'blocked_preflight']
+        runtime = MissionRuntime(self.config_path.parent / "missions", runner, None,
+                                 strategic_text=text, strategic_resume=resume, parent=self.app)
+        self.mission_runtime = runtime
+        runtime.changed.connect(lambda update, source=runtime: self._mission_changed(update, source=source))
+        runtime.start()
+
+    def propose_phase5_revision(self):
+        if self.mission_runtime and not self.mission_runtime.engaged:
+            self.mission_runtime.request_strategic_revision()
+
+    def show_workspaces(self):
+        if self.workspace_mode == 'personal_desktop' and (
+            self.active or self.workspace_gate.busy or (self.mission_runtime and self.mission_runtime.engaged)
+        ):
+            self.stop()
+            self.notice('Finish personal input cleanup before opening workspace settings.')
+            return
+        from monster.ui.workspace_settings import WorkspaceSettings
+        from monster.workspaces.registry import ManualGuestWorkspace
+
+        if self.workspace_window:
+            self.workspace_window.show()
+            self.workspace_window.raise_()
+            return
+        try:
+            self.workspace_registry = ManualGuestWorkspace(self.config_path.parent / 'workspaces.json')
+        except (ValueError, OSError):
+            self.notice('Workspace settings unavailable; no guest connection started.')
+            return
+        descriptor = next(iter(self.workspace_registry.record.guests), None)
+        window = WorkspaceSettings(descriptor)
+        self.workspace_window = window
+        window.mode_requested.connect(self.select_workspace_mode)
+        window.register_requested.connect(self.register_workspace)
+        window.forget_requested.connect(self.forget_workspace)
+        window.pair_requested.connect(lambda: self._workspace_command('begin_pairing'))
+        window.start_requested.connect(lambda: self._workspace_command('start_mission'))
+        window.resume_requested.connect(lambda: self._workspace_command('resume_mission'))
+        window.preview_requested.connect(lambda: self._workspace_command('preview'))
+        window.stop_requested.connect(lambda: self._workspace_command('stop'))
+        window.revoke_requested.connect(lambda: self._workspace_command('revoke'))
+        window.reconcile_requested.connect(lambda: self._workspace_command('reconcile'))
+        window.show()
+
+    def register_workspace(self):
+        if not self.workspace_registry:
+            return
+        try:
+            descriptor = self.workspace_registry.register('Disposable guest')
+            self.workspace_window.registration.setText(descriptor.display_name)
+        except (ValueError, OSError):
+            self.notice('Only one registered guest is supported; inspect existing workspace settings.')
+
+    def forget_workspace(self):
+        if self.workspace_mode != 'personal_desktop' or (self.workspace_runtime and self.workspace_runtime.engaged):
+            self.notice('Stop the guest and select Personal Desktop before forgetting it.')
+            return
+        if self.workspace_runtime:
+            self.workspace_runtime.close()
+            self.workspace_runtime = None
+        try:
+            self.workspace_registry.forget()
+            self.workspace_window.registration.setText('No registered guest')
+        except (ValueError, OSError):
+            self.notice('Workspace registration could not be removed.')
+
+    def select_workspace_mode(self, mode):
+        allowed = mode in ('personal_desktop', 'guest_simulation')
+        busy = self.active or self.workspace_gate.busy or (self.mission_runtime and self.mission_runtime.engaged)
+        remote_busy = self.workspace_runtime and (self.workspace_runtime.engaged or
+            (self.workspace_runtime.last_projection.get('status') or {}).get('cleanup') in ('active', 'unknown'))
+        if not allowed or busy or remote_busy:
+            if remote_busy:
+                self.workspace_runtime.stop()
+            self.notice('Finish input cleanup and guest stop confirmation before switching workspaces.')
+            self._reset_workspace_selector()
+            return False
+        if mode == 'guest_simulation':
+            if not self.workspace_registry or not self.workspace_registry.record.guests:
+                self.notice('Register one guest in Workspaces before selecting the simulation.')
+                self._reset_workspace_selector()
+                return False
+            if self.workspace_runtime is None:
+                from monster.workspaces.runtime import WorkspaceRuntime
+
+                descriptor = self.workspace_registry.record.guests[0]
+                runtime = WorkspaceRuntime(self.config_path.parent / 'guest-simulation' / descriptor.workspace_id,
+                                           descriptor, parent=self.app)
+                self.workspace_runtime = runtime
+                runtime.changed.connect(lambda status, source=runtime: self._workspace_changed(status, source=source))
+                runtime.pairing_offer.connect(lambda offer, source=runtime: self._workspace_pairing(offer, source=source))
+                runtime.review_requested.connect(lambda challenge, source=runtime: self._workspace_review(challenge, source=source))
+                runtime.preview_ready.connect(lambda frame, source=runtime: self._workspace_preview(frame, source=source))
+                runtime.start()
+        elif self.workspace_runtime:
+            self.workspace_runtime.stop()
+        self.workspace_mode = mode
+        self.notice('Personal Desktop selected' if mode == 'personal_desktop' else
+                    'Independent Workspace · simulation selected; no real VM input.')
+        return True
+
+    def _reset_workspace_selector(self):
+        if self.workspace_window:
+            self.workspace_window.mode.blockSignals(True)
+            self.workspace_window.mode.setCurrentIndex(0 if self.workspace_mode == 'personal_desktop' else 1)
+            self.workspace_window.mode.blockSignals(False)
+
+    def _workspace_command(self, operation):
+        if self.workspace_mode != 'guest_simulation' or self.workspace_runtime is None:
+            self.notice('Select Independent Workspace · simulation first.')
+            return
+        # Application-owned button wiring only; no model/network string is dispatched here.
+        methods = {name: getattr(self.workspace_runtime, name) for name in
+                   ('begin_pairing', 'start_mission', 'resume_mission', 'preview', 'stop', 'revoke', 'reconcile')}
+        if operation in methods:
+            methods[operation]()
+
+    def _workspace_pairing(self, offer, *, source):
+        if source is not self.workspace_runtime or self.workspace_mode != 'guest_simulation' or self.closing:
+            return
+        answer = QMessageBox.question(self.workspace_window, 'Verify SIMULATED pairing',
+            'In-memory simulation only; this is not a TLS or Windows pairing test.\n'
+            + 'Simulated console code: ' + offer.code + '\nHost fingerprint: ' + offer.host_fingerprint
+            + '\nGuest fingerprint: ' + offer.guest_fingerprint + '\nConfirm this simulated identity pair?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer == QMessageBox.StandardButton.Yes:
+            source.confirm_pairing(offer)
+
+    def _workspace_changed(self, projection, *, source):
+        if source is not self.workspace_runtime or self.closing:
+            return
+        if self.workspace_window:
+            self.workspace_window.status.setText(projection['message'])
+        if self.workspace_mode == 'guest_simulation':
+            state = (projection.get('status') or {}).get('state')
+            self.set_state(State.WORKING if state == 'running' else State.COMPLETED if state == 'completed' else State.WAITING)
+            if (projection['stale'] or (projection.get('status') or {}).get('cleanup') == 'unknown') and self.pending_question and self.pending_question[0].startswith('workspace-'):
+                self.pending_question = None
+                self._cancel_keyboard_approval()
+                self.pill.hide()
+
+    def _workspace_review(self, challenge, *, source):
+        if source is not self.workspace_runtime or self.workspace_mode != 'guest_simulation' or self.closing:
+            return
+        self.question('workspace-' + challenge.challenge_id,
+            'Independent Workspace · SIMULATION\n' + challenge.summary
+            + '\nPlan ' + challenge.fingerprint[:12] + ' · guest generation ' + str(challenge.binding.generation)
+            + '\nNo real screenshot, model request or desktop input.', True)
+        import time
+        self.mission_review_timer.start(max(1, int((challenge.expires_at - time.time()) * 1000)))
+
+    def _workspace_preview(self, frame, *, source):
+        if source is not self.workspace_runtime or self.workspace_mode != 'guest_simulation' or self.closing:
+            return
+        import base64
+        dialog = QDialog(self.workspace_window)
+        dialog.setWindowTitle('Synthetic guest preview · never used for input')
+        layout = QVBoxLayout(dialog)
+        label = QLabel()
+        pixmap = QPixmap()
+        pixmap.loadFromData(base64.b64decode(frame.png_base64), 'PNG')
+        label.setPixmap(pixmap)
+        layout.addWidget(label)
+        dialog.show()
+
     def pause_mission_boundary(self):
+        self._close_strategic_review()
         if self.mission_runtime and not self.mission_runtime.closed:
             self.mission_runtime.request_boundary_pause()
 
@@ -523,14 +738,20 @@ class CompanionApp:
         used=report['budget_used']
         budget=report['budget']
         title = "SIMULATED" if report['provenance']=='simulated' else report['provenance'].replace('_',' ')
+        total = len(report['verified_subtask_ids']) + len(report['remaining_subtask_ids'])
+        strategic = report.get('strategic')
+        strategy_text = ("\nStrategy revisions: " + str(strategic['context']['replans'])
+                         + " · goal: " + strategic['evaluation']['status'].replace('_', ' ')
+                         + " · synthetic evidence only") if strategic else ""
         self.question("mission-progress",title+" · "+str(len(report['verified_subtask_ids']))
-            +"/6 verified · "+str(len(report['remaining_subtask_ids']))+" remaining\n"
+            +"/"+str(total)+" verified · "+str(len(report['remaining_subtask_ids']))+" remaining\n"
             +"Active budget charged: "+str(round(used['active_ms']/1000,1))+"s / "
             +str(budget['max_active_seconds'])+"s\nInputs charged: "+str(used['input_charged'])
             +" / "+str(budget['max_total_input_transactions'])+" · planning calls: "
             +str(used['models_charged'])+" / "+str(budget['max_total_model_calls'])
             +"\n"+report.get('status','unknown').replace('_',' ')
-            + (" · "+report['reason_code'].replace('_',' ') if report.get('reason_code') else ""),True)
+            + (" · "+report['reason_code'].replace('_',' ') if report.get('reason_code') else "")
+            + strategy_text,True)
         self.pill.show_effect_controls()
         self.pill.approve.setText("Pause after stage")
         self.pill.reject.setText("Stop")
@@ -583,6 +804,18 @@ class CompanionApp:
     def _mission_changed(self, update, *, source=None):
         if self.closing or (source is not None and source is not self.mission_runtime):
             return
+        if update.get("strategic_consent"):
+            from monster.ui.strategic_review import StrategicReviewDialog
+
+            self._close_strategic_review()
+            runtime = self.mission_runtime
+            dialog = StrategicReviewDialog(update['strategic_preview'])
+            self.strategic_review = dialog
+            dialog.simulate.connect(lambda: runtime.answer('approve'))
+            dialog.rejected.connect(lambda: runtime.answer('reject'))
+            dialog.edit_goal.connect(lambda: self.notice("Cancel this mission, then choose Phase 5 · plan and simulate to edit the goal."))
+            dialog.show()
+            return
         state, approval = update["state"], update.get("approval")
         if update.get("requested_progress"):
             self._show_phase4_progress(update["report"])
@@ -595,7 +828,10 @@ class CompanionApp:
             used = update["report"].get("budget_used", {})
             data_scope = ("Desktop screenshots to saved provider " + self.model_config.url
                           + " · model " + consent.model_ref) if consent.mode=="supervised_pilot" else "No screenshots, model requests or native input."
-            text = (label + "\nSix fixed scratch sections A–F; no save, replace or send. Plan "
+            stages = ("\nReviewed strategic fixture objectives; no real document is created. Plan "
+                      if update['report'].get('strategic') else
+                      "\nSix fixed scratch sections A–F; no save, replace or send. Plan ")
+            text = (label + stages
                     + consent.plan_digest[:12] + " · workspace " + consent.workspace_id
                     + "\nWall " + str(budget['max_wall_seconds']) + "s; active "
                     + str(budget['max_active_seconds']) + "s; inputs "
@@ -639,6 +875,9 @@ class CompanionApp:
             self.manual_lease = None
 
     def dismiss(self):
+        if self.workspace_mode != 'personal_desktop':
+            self.stop()
+            return
         if self.mission_runtime and self.mission_runtime.engaged:
             self.stop()
             return
@@ -790,6 +1029,14 @@ class CompanionApp:
             self.answer(pending[1], "approve", source="keyboard")
 
     def answer(self, request_id, answer, *, source="mouse_or_text"):
+        if request_id.startswith('workspace-'):
+            if self.workspace_mode == 'guest_simulation' and self.workspace_runtime and self.pending_question and self.pending_question[0] == request_id:
+                self.mission_review_timer.stop()
+                self.pending_question = None
+                self._cancel_keyboard_approval()
+                self.pill.hide()
+                self.workspace_runtime.answer(request_id.removeprefix('workspace-'), answer)
+            return
         if request_id == "mission-progress" and self.pending_question and self.pending_question[0]==request_id:
             self.pending_question=None
             self._cancel_keyboard_approval()
@@ -833,6 +1080,10 @@ class CompanionApp:
         self.controller.respond(request_id, answer)
 
     def toggle_pause(self):
+        if self.workspace_mode != 'personal_desktop':
+            if self.workspace_runtime:
+                self.workspace_runtime.pause()
+            return
         if self.mission_runtime and self.mission_runtime.engaged:
             self.stop()
             return
@@ -840,7 +1091,24 @@ class CompanionApp:
         if self.active and not self.paused:
             self.pill.hide()
 
+    def _close_strategic_review(self):
+        if self.strategic_review:
+            self.strategic_review.blockSignals(True)
+            self.strategic_review.close()
+            self.strategic_review.deleteLater()
+            self.strategic_review = None
+
     def stop(self):
+        if self.workspace_mode != 'personal_desktop':
+            self.mission_review_timer.stop()
+            self._cancel_keyboard_approval()
+            self.pending_question = None
+            self.pill.hide()
+            if self.workspace_runtime:
+                self.workspace_runtime.stop()
+            self.notice('Guest stop requested; acknowledgement pending.')
+            return
+        self._close_strategic_review()
         self.mission_review_timer.stop()
         if self.mission_runtime:
             self.mission_runtime.stop()
@@ -1191,6 +1459,11 @@ class CompanionApp:
         self.settings_window = None
 
     def shutdown(self):
+        if self.workspace_runtime:
+            self.workspace_runtime.close()
+        if self.workspace_window:
+            self.workspace_window.close()
+        self._close_strategic_review()
         self._cancel_keyboard_approval()
         if self.closing:
             return
