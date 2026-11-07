@@ -967,6 +967,8 @@ class CompanionApp:
             text += f"\nApprove: Ctrl+Alt+Y, then release all keys. Stop: {stop_key}."
         self.set_state(State.WAITING)
         self.pill.show_question(request_id, text, approval, take_focus=not passive)
+        if approval and getattr(self.controller, 'phase', None) == 'launch_query_review':
+            self.pill.approve.setText('Confirm query')
         if getattr(self.controller, "phase", None) == "effect_approval":
             self.pill.show_effect_controls()
         self._log_ui("review_surface", request_id=request_id, passive=passive,
