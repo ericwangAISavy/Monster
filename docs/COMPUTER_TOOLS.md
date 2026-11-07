@@ -137,7 +137,7 @@ capture remains intentional. Windows capture exclusion still needs native
 qualification; accepted display-affinity hints do not bypass hiding.
 
 Synthetic settings checks use a generated three-color image and never invoke the
-desktop capture gate. Their companion badge reads “Vision test”; task stages use
-“Model check”, “Capturing”, “Thinking”, “Rechecking”, “Acting” and “Verifying”.
-These are execution stages, not model reasoning. Passive approval updates apply
+desktop capture gate. They activate the companion’s thinking pose. Task stages remain available in
+accessibility descriptions and reports without visible status text. These are
+execution stages, not model reasoning. Passive approval updates apply
 final focus/input flags once, avoiding an intermediate native window recreation.

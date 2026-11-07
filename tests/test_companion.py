@@ -22,21 +22,20 @@ def test_companion_layout_preferences_roundtrip_and_old_files(tmp_path):
             prefs.validate()
 
 
-def test_companion_labels_are_distinct_and_request_activity_restores_state(qtbot):
+def test_companion_accessible_states_and_request_activity_restore_without_visible_text(qtbot):
     companion = Companion(Preferences(reduced_motion=True))
     qtbot.addWidget(companion)
     labels = []
     for state in State:
         companion.set_state(state)
-        labels.append(companion.status_label.text())
-        assert companion.status_label.text() in companion.accessibleName()
+        labels.append(companion.accessibleName())
     assert len(set(labels)) == len(State)
     companion.set_state(State.WAITING)
     companion.set_activity("Vision test")
-    assert companion.status_label.text() == "Vision test"
+    assert companion.accessibleName() == "Monster · Vision test"
     assert companion.visual_state == State.THINKING
     companion.set_activity("")
-    assert companion.status_label.text() == "Review"
+    assert companion.accessibleName() == "Monster · Review"
     assert companion.visual_state == State.WAITING
     assert companion.windowFlags() & Qt.WindowType.WindowTransparentForInput
     assert companion.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
@@ -52,8 +51,8 @@ def test_scaled_corner_companion_does_not_follow_cursor(qtbot, monkeypatch):
     monkeypatch.setattr(module.QCursor, "pos", lambda: QPoint(10, 10))
     companion.tick()
     first = companion.pos()
-    assert companion.width() == 168
-    assert companion.height() == 132
+    assert companion.width() == 120
+    assert companion.height() == 120
     monkeypatch.setattr(module.QCursor, "pos", lambda: QPoint(300, 300))
     companion.tick()
     assert companion.pos() == first
@@ -77,18 +76,18 @@ def test_capture_stage_and_pause_label_do_not_claim_model_thinking(qtbot):
     qtbot.addWidget(companion)
     companion.set_state(State.WORKING)
     companion.set_stage("Capturing")
-    assert companion.status_label.text() == "Capturing"
+    assert companion.accessibleName() == "Monster · Capturing"
     assert companion.visual_state == State.WORKING
     companion.set_state(State.THINKING)
-    assert companion.status_label.text() == "Thinking"
+    assert companion.accessibleName() == "Monster · Thinking"
     companion.set_paused(True)
-    assert companion.status_label.text() == "Paused"
+    assert companion.accessibleName() == "Monster · Paused"
     companion.set_activity("Vision test")
     companion.set_activity("")
-    assert companion.status_label.text() == "Paused"
+    assert companion.accessibleName() == "Monster · Paused"
 
 
-def test_reduced_motion_thinking_ring_is_static_and_distinct():
+def test_reduced_motion_poses_are_static_and_distinct():
     from PySide6.QtCore import QRectF
     from PySide6.QtGui import QImage, QPainter
 
@@ -102,7 +101,8 @@ def test_reduced_motion_thinking_ring_is_static_and_distinct():
         painter.end()
         return image
 
-    assert render(State.THINKING, 0) == render(State.THINKING, 3)
+    for state in State:
+        assert render(state, 0) == render(state, 3)
     assert render(State.THINKING, 0) != render(State.WORKING, 0)
 
 
@@ -121,4 +121,47 @@ def test_scaled_corner_stays_inside_negative_monitor(qtbot, monkeypatch):
     companion.show()
     companion.tick()
     assert area.contains(companion.frameGeometry())
-    assert companion.pos() == QPoint(-494, 462)
+    assert companion.pos() == QPoint(-446, 474)
+
+
+def test_companion_has_no_visible_text_or_status_panel(qtbot):
+    from PySide6.QtWidgets import QLabel
+    companion = Companion(Preferences())
+    qtbot.addWidget(companion)
+    assert not companion.findChildren(QLabel)
+    assert companion.toolTip() == ""
+
+
+@pytest.mark.parametrize("state", list(State))
+def test_character_draws_neither_text_nor_spinning_arc(state):
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter
+
+    from monster.ui.companion import draw_monster
+
+    class CharacterPainter(QPainter):
+        def drawArc(self, *args):
+            raise AssertionError("Thinking must use a pose, not a spinning arc")
+
+        def drawText(self, *args):
+            raise AssertionError("Companion must not draw text")
+
+    image = QImage(80, 80, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = CharacterPainter(image)
+    try:
+        draw_monster(painter, QRectF(0, 0, 80, 80), state, 1.5)
+    finally:
+        painter.end()
+
+
+def test_paused_companion_uses_waiting_pose_and_request_restores_pause(qtbot):
+    companion = Companion(Preferences())
+    qtbot.addWidget(companion)
+    companion.set_state(State.WORKING)
+    companion.set_paused(True)
+    assert companion.visual_state == State.WAITING
+    companion.set_activity("Vision test")
+    assert companion.visual_state == State.THINKING
+    companion.set_activity("")
+    assert companion.visual_state == State.WAITING

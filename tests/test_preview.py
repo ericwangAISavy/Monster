@@ -331,7 +331,7 @@ def test_model_settings_activity_is_visible_without_capturing_desktop(qtbot, qap
         dialog = ui.provider_window
         dialog.provider_factory = Slow
         dialog.probe()
-        assert ui.companion.status_label.text() == "Vision test"
+        assert ui.companion.accessibleName() == "Monster · Vision test"
         assert ui.companion.visual_state == State.THINKING
         assert ui.companion.isVisible()
         qtbot.waitUntil(lambda: dialog.pending is None)

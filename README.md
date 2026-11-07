@@ -134,17 +134,18 @@ Review locally before sharing. Nothing is saved or uploaded automatically, and
 raw model reasoning and credential/environment dumps are not collected. Evidence
 retention limits and any omitted frames/events are stated in the report.
 
-The companion now shows a small text badge in addition to facial expressions:
-**Thinking** has a purple activity ring, **Acting** marks input dispatch,
-**Review** awaits your decision, and **Done / Stopped** distinguish outcomes.
-During tasks, **Model check**, **Capturing**, **Rechecking** and **Verifying**
-identify the current stage. A busy indicator means a request is pending; it does
-not reveal model reasoning or enable the model's thinking option.
+The companion communicates through a cute, rounded character with a pearl shell,
+glass face and expressive paws. Idle sleeps with closed eyes and slow breathing;
+thinking tilts its head, looks upward and touches its temple; working leans forward
+with tapping paws and short directional light strokes. Ready, waiting, done and
+stopped have distinct postures. There are no visible status labels, text panels or
+spinning circles. Screen-reader state descriptions remain available. The existing
+command/approval pill retains the information required to review actions.
 
 In **Settings → Companion size / position**, choose 75–150% size and cursor
-following (default) or a primary-display corner. Reduced motion keeps the thinking
-ring static. Model settings scroll independently of their request controls, and
-connection/vision tests show activity on the companion until they end or cancel.
+following (default) or a primary-display corner. Reduced motion freezes animation while
+preserving each pose. Model settings scroll independently of their request controls, and
+connection/vision tests use the thinking pose until they end or cancel.
 
 Real screenshot capture still briefly hides both Monster overlays to keep them out
 of the PNG. A successful Windows capture-exclusion hint alone is not treated as
