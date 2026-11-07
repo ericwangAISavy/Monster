@@ -165,3 +165,33 @@ def test_paused_companion_uses_waiting_pose_and_request_restores_pause(qtbot):
     assert companion.visual_state == State.THINKING
     companion.set_activity("")
     assert companion.visual_state == State.WAITING
+
+
+@pytest.mark.parametrize("state", [State.THINKING, State.WORKING, State.COMPLETED])
+def test_active_character_animates_smoothly_while_parked(qtbot, state):
+    companion = Companion(Preferences(companion_position="top_right"))
+    qtbot.addWidget(companion)
+    companion.show()
+    companion.set_state(state)
+    companion.tick()
+    assert companion.timer.interval() <= 34
+
+
+def test_working_animation_moves_whole_body_instead_of_only_small_details():
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter
+
+    from monster.ui.character import draw_monster
+
+    def center(phase):
+        image = QImage(80, 80, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        draw_monster(painter, QRectF(0, 0, 80, 80), State.WORKING, phase)
+        painter.end()
+        # Opaque body pixels exclude the stationary translucent shadow/bloom.
+        pixels = [(x, y) for y in range(80) for x in range(80)
+                  if image.pixelColor(x, y).alpha() > 240]
+        return sum(y for _, y in pixels) / len(pixels)
+
+    assert abs(center(0) - center(.35)) > .8

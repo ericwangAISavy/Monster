@@ -1,4 +1,4 @@
-"""Small vector character: posture carries state, without labels or spinners."""
+"""Animated pastel pocket monster; body language carries state without labels."""
 
 import math
 
@@ -59,7 +59,6 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
     waiting = state == State.WAITING
     happy = state == State.COMPLETED
     stopped = state == State.ERROR
-    accent = QColor(STATE_STYLE[state][1])
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.translate(bounds.x(), bounds.y())
@@ -78,11 +77,16 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
     p.setBrush(bloom)
     p.drawEllipse(QRectF(2, 4, 60, 58))
 
-    breath = math.sin(t * (1.5 if asleep else 2.3)) * (.65 if asleep else .35)
+    # Continuous body animation, even when the cursor and window are stationary.
+    # All motion is smooth and bounded; reduced motion freezes every component.
+    rhythm = math.sin(t * (1.7 if asleep else 5 if working else 3 if happy else 2.4))
+    breath = rhythm * (1.15 if asleep else 2.25 if working or happy else 1.1)
+    sway = math.sin(t * (2.8 if happy else 2 if thinking else 1.8))
     lean = -10 if asleep else -8 if thinking else 7 if working else 5 if waiting else -4 if stopped else 0
     p.translate(32, 36 + (3 if asleep else -1 if working else 0) + breath)
-    p.rotate(lean)
-    p.scale(1.03 if asleep else 1, .9 if asleep else 1)
+    p.rotate(lean + sway * (5 if thinking or happy else 2.5))
+    squash = rhythm * (.035 if asleep or working or happy else .018)
+    p.scale((1.06 if asleep else 1) + squash, (.88 if asleep else 1) - squash)
     p.translate(-32, -36)
 
     # Rounded horns retain Monster's identity, with soft rather than sharp tips.
@@ -92,29 +96,30 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
             p.translate(64, 0)
             p.scale(-1, 1)
         horn = QPainterPath(QPointF(17, 23))
-        horn.cubicTo(11, 18, 13, 10, 18, 8)
+        horn.cubicTo(9, 18, 12, 8, 18, 9)
         horn.cubicTo(16, 14, 23, 12, 25, 20)
         horn.closeSubpath()
         horn_fill = QLinearGradient(14, 9, 25, 23)
-        horn_fill.setColorAt(0, QColor("#c2fff4"))
-        horn_fill.setColorAt(1, QColor("#929cda"))
+        horn_fill.setColorAt(0, QColor("#ffe6ec"))
+        horn_fill.setColorAt(1, QColor("#d4aff2"))
         p.setBrush(horn_fill)
         p.setPen(QPen(QColor("#d7fffb"), .7))
         p.drawPath(horn)
         p.restore()
 
     for x in (24, 40):
-        _paw(p, x, 52.5, -12 if x < 32 else 12)
+        step = math.sin(t * 7 + (0 if x < 32 else math.pi)) * (1.5 if working else .35)
+        _paw(p, x, 52.5 + step, (-12 if x < 32 else 12) + step * 4)
     body = QPainterPath(QPointF(12, 34))
     body.cubicTo(11, 21, 19, 16, 32, 16)
     body.cubicTo(45, 16, 53, 23, 52, 36)
     body.cubicTo(54, 49, 46, 54, 32, 54)
     body.cubicTo(18, 54, 10, 48, 12, 34)
     shell = QRadialGradient(QPointF(24, 21), 39)
-    shell.setColorAt(0, QColor("#fff7ff"))
-    shell.setColorAt(.42, QColor("#e1d6f8"))
-    shell.setColorAt(.78, QColor("#b8a3e4"))
-    shell.setColorAt(1, QColor("#8273b4"))
+    shell.setColorAt(0, QColor("#fff4f5"))
+    shell.setColorAt(.42, QColor("#f1dff6"))
+    shell.setColorAt(.78, QColor("#d5b5ed"))
+    shell.setColorAt(1, QColor("#a78bcb"))
     p.setBrush(shell)
     p.setPen(QPen(QColor("#efe7ff"), .9))
     p.drawPath(body)
@@ -127,11 +132,11 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
     p.restore()
 
     visor = QPainterPath()
-    visor.addRoundedRect(QRectF(15.5, 26, 33, 20.5), 8.8, 8.8)
+    visor.addRoundedRect(QRectF(15, 25, 34, 23), 10, 10)
     glass = QLinearGradient(18, 26, 43, 47)
-    glass.setColorAt(0, QColor("#1c2b44"))
-    glass.setColorAt(.6, QColor("#10192e"))
-    glass.setColorAt(1, QColor("#0b1429"))
+    glass.setColorAt(0, QColor("#fff6fb"))
+    glass.setColorAt(.6, QColor("#f5e9fa"))
+    glass.setColorAt(1, QColor("#e9d4f4"))
     p.setBrush(glass)
     p.setPen(QPen(QColor("#f0eaff"), .85))
     p.drawPath(visor)
@@ -144,29 +149,30 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
     p.setPen(Qt.PenStyle.NoPen)
     p.drawEllipse(QRectF(13, 24, 36, 12))
 
+    blink_phase = t % 4.6
+    blink = max(0, 1 - abs(blink_phase - 4.3) / .13) if not reduced else 0
+    gaze_x = -1 + .7 * math.sin(t * 1.7) if thinking else .7 if working else .35 * sway
+    gaze_y = -1.5 if thinking else .15
     for x in (24, 40):
         eye = QPainterPath()
-        if asleep or happy:
-            eye.moveTo(x - 3, 34)
-            eye.quadTo(x, 37 if asleep else 30, x + 3, 34)
-            _line(p, eye, accent, 1.7)
+        if asleep or happy or blink > .8:
+            eye.moveTo(x - 3.2, 33.5)
+            eye.quadTo(x, 36 if asleep or blink > .8 else 29.2, x + 3.2, 33.5)
+            _line(p, eye, "#62416f", 1.8)
         else:
-            height = 5.8 if working or stopped else 8.2 if waiting else 7.4
-            eye_glow = QRadialGradient(QPointF(x, 34), 6)
-            glow_color = QColor(accent)
-            glow_color.setAlpha(85)
-            eye_glow.setColorAt(0, glow_color)
-            eye_glow.setColorAt(1, QColor(100, 210, 240, 0))
+            height = (10 if waiting else 9) * (1 - blink * .85)
+            eye_x, eye_y = x + gaze_x, 33.3 + gaze_y
+            eye_fill = QLinearGradient(x, 28, x, 39)
+            eye_fill.setColorAt(0, QColor("#483056"))
+            eye_fill.setColorAt(1, QColor("#88619d"))
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(eye_glow)
-            p.drawEllipse(QRectF(x - 6, 28, 12, 12))
-            p.setBrush(accent)
-            p.drawRoundedRect(QRectF(x - 3.2, 34 - height / 2, 6.4, height), 3, 3)
-            gaze_x, gaze_y = (-1, -1.6) if thinking else (1.1, .2) if working else (0, .2)
-            p.setBrush(QColor("#122e43"))
-            p.drawEllipse(QRectF(x - 1.3 + gaze_x, 32.4 + gaze_y, 2.6, 3.3))
-            p.setBrush(QColor("#f4ffff"))
-            p.drawEllipse(QRectF(x - 1.6, 31.2, 1.7, 1.7))
+            p.setBrush(eye_fill)
+            p.drawEllipse(QRectF(eye_x - 3.7, eye_y - height / 2, 7.4, height))
+            if blink < .4:
+                p.setBrush(QColor("#ffffff"))
+                p.drawEllipse(QRectF(eye_x - 2.2, eye_y - 3, 2.7, 2.7))
+                p.setBrush(QColor("#f9daff"))
+                p.drawEllipse(QRectF(eye_x + .7, eye_y + 1.3, 1.3, 1.3))
     # A tiny muzzle and soft cheek lights keep the face friendly at small sizes.
     mouth = QPainterPath(QPointF(29.5, 40.5))
     if asleep:
@@ -177,11 +183,11 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
         mouth.quadTo(31, 41, 32.5, 40)
     else:
         mouth.quadTo(32, 43.2 if happy else 42, 34.5, 40.5)
-    _line(p, mouth, accent, 1)
+    _line(p, mouth, "#805276", 1.15)
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(244, 151, 195, 65 if asleep else 85))
-    p.drawEllipse(QRectF(18, 38, 4, 1.7))
-    p.drawEllipse(QRectF(42, 38, 4, 1.7))
+    p.setBrush(QColor(247, 145, 183, 125 if asleep else 155))
+    p.drawEllipse(QRectF(17, 37.5, 6, 2.7))
+    p.drawEllipse(QRectF(41, 37.5, 6, 2.7))
     if working:
         # Linear data strokes; never an orbit, progress ring, or text glyph.
         p.setBrush(QColor(122, 249, 223, 95))
@@ -190,19 +196,19 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
     p.restore()
 
     if asleep:
-        _paw(p, 24, 47, 15)
-        _paw(p, 40, 47, -15)
+        _paw(p, 24, 47 + rhythm * .3, 15)
+        _paw(p, 40, 47 + rhythm * .3, -15)
     elif thinking:
         _paw(p, 12.5, 43, -25)
-        _paw(p, 49, 29, -32)
+        _paw(p, 49, 29 + .9 * math.sin(t * 3), -32 + 9 * math.sin(t * 3))
         for i, (x, y, r) in enumerate(((48, 12, 2.4), (54, 17, 1.6))):
             color = QColor("#d9c6ff")
             color.setAlpha(int(175 + 25 * math.sin(t * 2 + i)))
             _glint(p, x, y + .5 * math.sin(t * 2 + i), r, color)
     elif working:
         tap = math.sin(t * 7) * 1.8
-        _paw(p, 24, 49 + tap, -18)
-        _paw(p, 41, 49 - tap, 18)
+        _paw(p, 24, 48 + tap, -18 + tap * 6)
+        _paw(p, 41, 48 - tap, 18 - tap * 6)
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(3):
             color = QColor("#9ef9ec")
@@ -210,13 +216,13 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
             p.setBrush(color)
             p.drawRoundedRect(QRectF(3 + i * 1.5, 35 + i * 4, 5 - i, 1.4), .7, .7)
     elif happy:
-        _paw(p, 10, 30, -40)
-        _paw(p, 54, 30, 40)
+        _paw(p, 10, 30 + sway, -40 + 16 * math.sin(t * 7))
+        _paw(p, 54, 30 - sway, 40 - 16 * math.sin(t * 7))
         _glint(p, 50, 12, 3, QColor("#b8ffe0"))
     elif stopped:
         _paw(p, 12, 44, -10)
-        _paw(p, 51, 34, -65)
+        _paw(p, 51, 34 + .5 * sway, -65 + 4 * sway)
     else:
-        _paw(p, 11.5, 39 if waiting else 42, -25)
-        _paw(p, 52.5, 39 if waiting else 42, 25)
+        _paw(p, 11.5, (39 if waiting else 42) + .8 * sway, -25 + 8 * sway)
+        _paw(p, 52.5, (39 if waiting else 42) - .8 * sway, 25 - 8 * sway)
     p.restore()

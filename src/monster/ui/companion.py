@@ -111,7 +111,9 @@ class Companion(QWidget):
         self._phase += elapsed
         self.update()
         moving = (self._position - QPointF(target)).manhattanLength() > 1
-        self.timer.setInterval(16 if moving and not self.preferences.reduced_motion else 66)
+        animated = not self.preferences.reduced_motion and not (self._paused and not self._activity)
+        self.timer.setInterval(16 if moving and animated else
+                               33 if animated and self.visual_state != State.IDLE else 66)
 
     def paintEvent(self, event):
         painter = QPainter(self)

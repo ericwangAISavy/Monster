@@ -134,11 +134,13 @@ Review locally before sharing. Nothing is saved or uploaded automatically, and
 raw model reasoning and credential/environment dumps are not collected. Evidence
 retention limits and any omitted frames/events are stated in the report.
 
-The companion communicates through a cute, rounded character with a pearl shell,
-glass face and expressive paws. Idle sleeps with closed eyes and slow breathing;
+The companion is a continuously animated pastel pocket monster with a soft pearl
+body, big blinking eyes, rosy cheeks and expressive paws. Vector animation stays
+sharp at every supported size without a GIF player or extra dependencies. Idle sleeps with closed eyes and slow breathing;
 thinking tilts its head, looks upward and touches its temple; working leans forward
-with tapping paws and short directional light strokes. Ready, waiting, done and
-stopped have distinct postures. There are no visible status labels, text panels or
+with a springy bounce and alternating paws; completion celebrates with a wave.
+Active poses animate at about 30 fps even when parked in a corner. Ready, waiting
+and stopped have their own gentle movements. There are no visible status labels, text panels or
 spinning circles. Screen-reader state descriptions remain available. The existing
 command/approval pill retains the information required to review actions.
 
