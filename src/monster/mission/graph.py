@@ -41,6 +41,7 @@ class MissionNodes:
         self.store, self.runner, self.clock = store, runner, clock
         self.running: dict[str, asyncio.Task] = {}
         self.scheduler = None
+        self.strategy = None
 
     def update(self, state, **changes):
         if (
@@ -275,6 +276,8 @@ class MissionNodes:
                                 review_count=0,
                             )
                             self.scheduler.settle(mid, reservation, no_start)
+                            if self.strategy and self.strategy.exists(mid):
+                                self.strategy.pre_dispatch_blocked(mid, sid, no_start)
                             return self.update(state, status="paused", reason=decision.reason_code)
                         await asyncio.sleep(backoff(attempt))
                     if self.store.control(mid)["stop_requested"]:
@@ -437,6 +440,8 @@ class MissionNodes:
             return guarded
         effect = self.store.effect(state["mission_id"], state["current_subtask_id"])
         if effect.status == "observed_success" and effect.result is not None:
+            if self.strategy and self.strategy.exists(state["mission_id"]):
+                self.strategy.evaluate(state["mission_id"])
             return self.update(state)
         if effect.status == "dispatch_started":
             self.store.transition(effect, "uncertain")
@@ -459,6 +464,9 @@ class MissionNodes:
             and e.result.evidence_ref
             for e in effects
         )
+        if self.strategy and self.strategy.exists(mission.mission_id):
+            evaluation = self.strategy.evaluate(mission.mission_id)
+            verified = verified and evaluation.status in ("completed", "completed_with_optional_gaps")
         return self.update(
             state,
             status="completed" if verified else "partially_complete",

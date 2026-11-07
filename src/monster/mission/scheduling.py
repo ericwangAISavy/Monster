@@ -32,7 +32,7 @@ class MissionBudget(Contract):
 
 class ScheduledPlan(Contract):
     mission: Mission
-    template_ref: Literal["editor-six-v1"]
+    template_ref: Literal["editor-six-v1", "strategic-design-v1"]
     mode: Literal["simulation", "observe_only", "supervised_pilot"] = "simulation"
     budget: MissionBudget = Field(default_factory=MissionBudget)
     created_at: float = Field(gt=0, allow_inf_nan=False)
@@ -43,6 +43,13 @@ class ScheduledPlan(Contract):
 
     @model_validator(mode="after")
     def admitted_catalog(self):
+        if self.template_ref == "strategic-design-v1":
+            from .strategic.catalog import validate_schedule
+
+            validate_schedule(self)
+            if self.mission.deadline_utc > self.created_at + self.budget.max_wall_seconds:
+                raise ValueError("Mission exceeds wall envelope")
+            return self
         from .plan_templates import PILOT_TEXT
 
         if self.catalog_digest != canonical_digest(PILOT_TEXT):
@@ -146,6 +153,8 @@ class MissionScheduler:
         self.running = {}
         self.observer = None
         self.mode_guard = None
+        self.strategic_guard = None
+        self.workspace_guard = None
 
     def exists(self, mid):
         return (
@@ -257,6 +266,16 @@ class MissionScheduler:
 
     def guard(self, mid, *, tick=False):
         plan = self.plan(mid)
+        if self.workspace_guard is not None:
+            reason = self.workspace_guard(mid)
+            if reason:
+                return reason
+        if plan.template_ref == "strategic-design-v1":
+            if self.strategic_guard is None:
+                return "strategic_admission_required"
+            reason = self.strategic_guard(mid)
+            if reason:
+                return reason
         row = self.row(mid)
         u = self.usage(mid)
         now = self.clock()
@@ -362,7 +381,11 @@ class MissionScheduler:
             "reviews_confirmed": u.reviews_confirmed + (result.review_count or 0),
             "no_progress": 0
             if result.status == "verified_success"
-            else (u.no_progress if result.reason == "cancelled" else min(2, u.no_progress + 1)),
+            # Pure preflight failures were already charged by note_failure. Count
+            # the failure once; charging it again would forbid a safe revision.
+            else (u.no_progress if result.reason == "cancelled" or (
+                result.status == "blocked" and result.proven_not_started
+            ) else min(2, u.no_progress + 1)),
         }
         elapsed = (
             max(0, math.ceil((self.monotonic() - start) * 1000))

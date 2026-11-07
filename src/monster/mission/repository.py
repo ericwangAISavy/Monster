@@ -57,7 +57,7 @@ class Repository:
     def _migrate(self):
         c = self.connection
         version = c.execute("PRAGMA user_version").fetchone()[0]
-        if version > 4:
+        if version > 6:
             raise ValueError("Unsupported ledger schema")
         with c:
             c.execute("BEGIN IMMEDIATE")  # sqlite3 does not begin transactions for DDL.
@@ -98,7 +98,13 @@ class Repository:
             from .scheduling import migrate_scheduling
 
             migrate_scheduling(c)
-            c.execute("PRAGMA user_version=4")
+            from .strategic.service import migrate
+
+            migrate(c)
+            from monster.workspaces.guest_service import migrate as migrate_workspaces
+
+            migrate_workspaces(c)
+            c.execute("PRAGMA user_version=6")
 
     def create(self, mission: Mission):
         with self.connection:
@@ -268,6 +274,13 @@ class Repository:
             raise ValueError("Mission has live or unresolved state")
         with self.connection:
             for table in (
+                "guest_control_challenges",
+                "guest_mission_bindings",
+                "strategic_evaluations",
+                "strategic_blockers",
+                "strategic_calls",
+                "strategic_revisions",
+                "strategic_sessions",
                 "mission_progress",
                 "mission_reservations",
                 "mission_schedules",

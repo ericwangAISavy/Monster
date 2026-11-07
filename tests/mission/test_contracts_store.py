@@ -79,7 +79,7 @@ def test_store_migrates_v1_and_rejects_future_schema(tmp_path):
     conn.execute("PRAGMA user_version=1")
     conn.close()
     with Repository(tmp_path) as store:
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 6
         assert "stop_requested" in {
             r[1] for r in store.connection.execute("PRAGMA table_info(missions)")
         }
@@ -106,7 +106,7 @@ def test_interrupted_migration_rolls_back_all_ddl(tmp_path, monkeypatch):
 
     class FaultConnection(sqlite3.Connection):
         def execute(self, sql, *args, **kwargs):
-            if sql == "PRAGMA user_version=4":
+            if sql == "PRAGMA user_version=6":
                 raise RuntimeError("simulated migration crash")
             return super().execute(sql, *args, **kwargs)
 
@@ -117,7 +117,7 @@ def test_interrupted_migration_rolls_back_all_ddl(tmp_path, monkeypatch):
         pass
     monkeypatch.setattr(repository.sqlite3, "connect", original)
     with repository.Repository(tmp_path) as store:
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
 def test_cancellation_flag_is_monotonic(tmp_path):

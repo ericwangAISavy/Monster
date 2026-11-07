@@ -1587,7 +1587,7 @@ def test_explicit_click_once_never_dispatches_second_input(qtbot, approve_each_s
         engine.submit("go to startup btn and click once")
         qtbot.waitUntil(lambda: bool(failures))
         assert len(bridge.executed) == 1
-        assert engine.verification_calls == 1
+        assert engine.verification_calls == (2 if status == "uncertain" else 1)
         if status != "succeeded":
             assert engine.calls == 1
             assert "one-click" in failures[0].lower()
@@ -2249,3 +2249,53 @@ def test_mission_provider_diagnostics_drop_denied_sensitive_proposals(qtbot):
     engine.cancel()
     qtbot.waitUntil(lambda:engine.phase=='idle')
     engine.close()
+
+
+def test_report_new_notepad_document_chord_is_supported_and_requires_review():
+    from monster.agent.validation import approval_reason, validate_proposal_intent
+
+    decision = Decision('action', 'Create a new document using CTRL+N',
+                        {'op': 'chord', 'keys': ['CTRL', 'N']}, risk='routine',
+                        expected_result='A new empty Notepad document opens.')
+    validate_proposal_intent(decision, 'create a new Notepad document and type hello')
+    assert prepare_action(decision.action, observation()) == decision.action
+    assert approval_reason(decision) is not None
+
+
+def test_report_contradictory_shortcut_in_expected_result_is_rejected():
+    from monster.agent.validation import validate_proposal_intent
+
+    decision = Decision('action', 'Create a new document using a keyboard shortcut',
+                        {'op': 'chord', 'keys': ['CTRL', 'HOME']}, risk='routine',
+                        expected_result='I will use CTRL+N to create a new document.')
+    with pytest.raises(ValueError, match='chord'):
+        validate_proposal_intent(decision, 'create a new document and type hello')
+
+
+def test_report_new_document_rejects_wrong_chord_then_dispatches_reviewed_ctrl_n(qtbot):
+    decisions = [
+        Decision('action', 'Create a new document using a keyboard shortcut',
+                 {'op': 'chord', 'keys': ['CTRL', 'HOME']}, risk='routine',
+                 expected_result='Use CTRL+N to create a new document.'),
+        Decision('action', 'Create a new document using CTRL+N',
+                 {'op': 'chord', 'keys': ['CTRL', 'N']}, risk='routine',
+                 expected_result='A new empty Notepad document opens.'),
+        Decision('unable', 'Simulation verifies shortcut routing only'),
+    ]
+    engine, bridge, _ = controller(decisions)
+    engine.config = replace(engine.config, approve_each_step=False)
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    reviews = []
+
+    def review(rid, text):
+        reviews.append(text)
+        QTimer.singleShot(0, lambda: engine.respond(rid, 'approve'))
+
+    engine.approval_requested.connect(review)
+    try:
+        engine.submit('create new document in currently opening notepade and type hellow')
+        qtbot.waitUntil(lambda: not engine.active and engine.phase == 'idle', timeout=6000)
+        assert [entry[0] for entry in bridge.executed] == [{'op': 'chord', 'keys': ['CTRL', 'N']}]
+        assert len(reviews) == 1
+    finally:
+        engine.close()

@@ -46,7 +46,7 @@ Action coordinates are initially relative to the captured native image. The cont
 
 Scene revalidation compares display geometry, foreground identity, the exact native-pixel patch around mouse targets, and a downsampled whole-image change threshold. It tolerates small unrelated animation such as a caret, but is **not a security guarantee**. Small changes or races between capture and input can escape detection. Repeated revalidation failures require stabilizing the desktop, not disabling checks. Pixel comparison runs off the UI thread.
 
-The initial policy blocks Delete, unapproved chord types, and common command/executable/URL text patterns. Allowed chords are limited to selected editing/navigation combinations. These filters are deliberately conservative and **cannot prove an arbitrary target is safe**. Enter or a mouse click could still have consequences in the wrong application. There is no semantic application allowlist or automatic physical-user activity detector yet. For this milestone, use a disposable Notepad/test desktop and inspect every proposal. Email sending, purchases, installation, credentials, administrative/destructive workflows and unattended operation are outside the supported scope.
+The initial policy blocks Delete, unapproved chord types, and common command/executable/URL text patterns. Allowed chords are limited to selected editing/navigation combinations. Ctrl+N is supported for creating a new Notepad document and always requires human review, including in automatic routine-action mode. The model must inspect the resulting document before typing; Ctrl+Home/End only move the cursor. Explicit shortcut claims in both the summary and expected result must match the proposed keys. These filters are deliberately conservative and **cannot prove an arbitrary target is safe**. Enter or a mouse click could still have consequences in the wrong application. There is no semantic application allowlist or automatic physical-user activity detector yet. For this milestone, use a disposable Notepad/test desktop and inspect every proposal. Email sending, purchases, installation, credentials, administrative/destructive workflows and unattended operation are outside the supported scope.
 
 Long approval payloads are rendered as plain selectable text inside a bounded scroll area within the same pill. Oversized requests beyond 3,500 characters cannot be approved. There is no “approve all,” generated-code execution, shell tool, app API or DOM automation. Requests still use the configured LAN Ollama adapter; no cloud fallback exists.
 
@@ -780,3 +780,35 @@ or input; its later correct Alt+F4 is no longer rejected because of missing
 Explorer recognition. All-window, unspecified Explorer, folder deletion and
 compound destructive requests do not gain this exception. Repeated close or
 ambiguous outcomes remain blocked; review is retained even in automatic mode.
+
+## Current-desktop verification and Notepad typing
+
+Ordinary Notepad text input now checks the visible editable document before
+insertion, using the same pre-input target assessment as chat drafts. If the
+application/field is wrong or cannot be identified, no text is dispatched. If
+Notepad is visible but caret focus is unclear, Monster requests human focus
+confirmation and performs a fresh scene recheck before input. Creating a document
+still uses the reviewed Ctrl+N action; Home/End only move the caret and cannot
+claim to create or clear a document.
+
+After confirmed input, an **uncertain** visual result gets at most one additional
+capture and visual assessment after the normal settling delay. This is read-only:
+no click, key or text is repeated. Both assessments compare against the original
+pre-input screenshot when geometry permits. A changed foreground window or display
+during the extra observation stops the run. Explicit visual failure is not retried.
+If text remains uncertain, the existing human result confirmation is still
+required; declining leaves the task incomplete and does not retype anything.
+
+With the mission effect journal enabled, the effect remains awaiting observation
+during the bounded additional check. Only its final result is journaled as success,
+failure or uncertainty. This cannot rewrite a finalized uncertain effect into
+success, bypass reconciliation, or establish completion from an input receipt.
+Cancellation, independent stop, review expiry and task deadlines remain active.
+
+To validate on Windows, start with an already-open disposable blank Notepad
+window, focus the editing surface, and request **“Type hello into the currently
+open Notepad document.”** Then test **“Create a new document in the currently open
+Notepad and type hello.”** Review the Ctrl+N proposal and verify the result yourself.
+A passing automated fixture is not proof of native Windows/model reliability.
+If either task fails, save the run with screenshots so the actual focus, action,
+verification frames and model evidence can be diagnosed.

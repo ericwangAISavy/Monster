@@ -46,6 +46,7 @@ ACTION_SCHEMA = {
                             ["CTRL", "A"],
                             ["CTRL", "C"],
                             ["CTRL", "Z"],
+                            ["CTRL", "N"],
                             ["CTRL", "HOME"],
                             ["CTRL", "END"],
                             ["SHIFT", "LEFT"],
