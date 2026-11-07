@@ -35,6 +35,7 @@ from monster.providers.ollama import OllamaProvider
 
 
 class SupervisedController(TaskController):
+    terminal_ready = Signal(object)  # ExecutionReport, emitted only after cleanup.
     capture_requested = Signal()
     preview_ready = Signal(object)
     worker_owned = Signal(bool)
@@ -68,6 +69,7 @@ class SupervisedController(TaskController):
         self.active = self.paused = False
         self.generation = 0
         self.phase = "idle"
+        self.mission_cancel_event = None
         self.job = self.input_job = None
         self.question_id = None
         self.observation = self.pending = None
@@ -101,6 +103,9 @@ class SupervisedController(TaskController):
             lambda: self.fail("Review expired; no additional input was authorized.")
         )
         self.terminal = None
+        self.terminal_report = None
+        self.human_result_confirmed = False
+        self.input_may_have_occurred = False
         self.instruction = ""
 
     def submit(self, instruction):
@@ -127,6 +132,7 @@ class SupervisedController(TaskController):
         )
         self.active, self.paused = True, False
         self.generation += 1
+        self.run_generation = self.generation
         self.history = []
         self.failed_actions = []
         self.inserted_text = set()
@@ -142,6 +148,9 @@ class SupervisedController(TaskController):
         self.trace = []
         self.actions = self.calls = self.stale = 0
         self.terminal = None
+        self.terminal_report = None
+        self.human_result_confirmed = False
+        self.input_may_have_occurred = False
         self.active_changed.emit(True)
         self.paused_changed.emit(False)
         self.state_changed.emit(State.THINKING)
@@ -229,6 +238,8 @@ class SupervisedController(TaskController):
         return job
 
     def _start_input(self, operation, *args):
+        if operation == "execute":
+            self.input_may_have_occurred = True
         job = self.input.submit(operation, *args)
         self._remember_diagnostic_origin(self.input_diagnostic_origins, job)
         self.timings.begin(("input", job), "startup" if operation == "open" else "dispatch")
@@ -286,6 +297,11 @@ class SupervisedController(TaskController):
                     if kind == "error"
                     else self.status
                 ).emit(text)
+            if self.terminal_report is not None:
+                from dataclasses import replace
+                report = replace(self.terminal_report, cleanup_confirmed=not self.cleanup_blocked)
+                self.terminal_report = None
+                self.terminal_ready.emit(report)
             return
         if not self.active or self.paused:
             return
@@ -452,6 +468,9 @@ class SupervisedController(TaskController):
         )
 
     def _model_result(self, job, result, error):
+        if self.mission_cancel_event is not None and self.mission_cancel_event.is_set():
+            self.cancel()
+            return
         if job != self.job or not self.active or self.paused:
             self._record("model_result_ignored", source_job=job)
             return
@@ -792,6 +811,7 @@ class SupervisedController(TaskController):
             self.phase = "observing"
             self._capture()
         elif self.phase == "confirming":
+            self.human_result_confirmed = True
             self._terminate("complete", "Completed · visible result confirmed by you")
         elif self.phase == "approval":
             self._begin_recheck(restore=True)
@@ -915,6 +935,13 @@ class SupervisedController(TaskController):
             self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
+        from monster.agent.terminal import ExecutionReport
+        self.terminal_report = ExecutionReport(
+            self.run_generation, kind, self.actions, self.input_may_have_occurred,
+            False, bool(self.last_verification and self.last_verification.status == "succeeded"),
+            self.human_result_confirmed,
+            getattr(self.observation, "id", None),
+        )
         self._record("task_terminated", status=kind, model_job=self.job, input_job=self.input_job,
                      review_id=self.question_id, scheduled_capture=self.scheduled_capture,
                      content={"reason": message})

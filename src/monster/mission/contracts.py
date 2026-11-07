@@ -108,6 +108,11 @@ class TaskResult(Contract):
         "cancelled",
         "timed_out",
     ]
+    cleanup_confirmed: bool = False
+    confirmed_input_transactions: int | None = Field(default=None, ge=0, le=10)
+    visual_verified: bool = False
+    human_confirmed: bool = False
+    observation_ref: Ref | None = None
     evidence_ref: Ref | None = None
     evidence_kind: Literal["fake", "visual", "human", "none"] = "none"
     model_id: Ref = "fake-model"
@@ -176,6 +181,7 @@ class GuiSubtaskRequest(Contract):
     effect_id: Ref
     generation: int = Field(ge=1)
     subtask: Subtask
+    authorization_expires_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 MISSION_TRANSITIONS = {

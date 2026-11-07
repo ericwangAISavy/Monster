@@ -1,3 +1,8 @@
+> **Phase 2 update:** The opt-in Qt-safe mission adapter is now implemented; native
+> Windows qualification is pending. See [integration evidence](PHASE2_GUI_INTEGRATION.md)
+> and [manual qualification](WINDOWS_PHASE2_QUALIFICATION.md). The Phase 1 section
+> below records the baseline; fake execution remains the default mission path.
+
 # Phase 1 implementation status — November 7, 2026
 
 The blueprint below is the adopted target direction, not a claim that later phases

@@ -2200,3 +2200,20 @@ def test_report_explorer_close_rejects_zero_then_executes_one_reviewed_alt_f4(qt
         assert finished
     finally:
         engine.close()
+
+
+def test_terminal_receipt_only_after_cleanup_and_requires_visual_and_human(qtbot):
+    from monster.providers.base import Verification
+    engine, _bridge, _ = controller([])
+    reports = []
+    engine.terminal_ready.connect(reports.append)
+    assert engine.submit('Type harmless test text')
+    engine.last_verification = Verification('succeeded', 'fake evidence')
+    engine.human_result_confirmed = True
+    engine._terminate('complete', 'test')
+    assert reports == []
+    qtbot.waitUntil(lambda: bool(reports))
+    assert reports[0].cleanup_confirmed
+    assert reports[0].visual_verified and reports[0].human_confirmed
+    assert reports[0].run_generation < engine.generation
+    engine.close()

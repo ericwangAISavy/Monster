@@ -48,6 +48,14 @@ class CompanionApp:
     ):
         self.app, self.controller, self.config_path = app, controller, config_path
         self.input_owns_stop = False
+        from monster.mission.workspace import WorkspaceGate, session_lock_path
+        self.workspace_gate = WorkspaceGate(session_lock_path())
+        self.manual_lease = None
+        self.manual_generation = None
+        self.mission_runtime = None
+        self.mission_review_timer = QTimer()
+        self.mission_review_timer.setSingleShot(True)
+        self.mission_review_timer.timeout.connect(self.stop)
         self.input_cleanup_blocked = False
         self.active = False
         self.paused = False
@@ -151,11 +159,20 @@ class CompanionApp:
             )
         if isinstance(controller, SupervisedController):
             bindings.append((controller.worker_owned, self._worker_ownership))
+            bindings.append((controller.terminal_ready, self._manual_terminal))
         for signal, callback in bindings:
             signal.connect(callback)
         self.controller_bindings = bindings
 
     def switch_controller(self, controller):
+        if self.workspace_gate.busy or (self.mission_runtime and self.mission_runtime.engaged):
+            if hasattr(controller, "close"):
+                controller.close()
+            self.notice("Stop the mission and confirm cleanup before changing modes.")
+            return
+        if self.mission_runtime:
+            self.mission_runtime.close()
+            self.mission_runtime = None
         self._cancel_keyboard_approval()
         previous = self.controller
         for signal, callback in self.controller_bindings:
@@ -239,6 +256,8 @@ class CompanionApp:
         self.add_action("Last action preview…", self.show_preview_details)
         self.add_action("Last failure…", self.show_failure_details)
         self.add_action("Last run report…", self.show_run_report)
+        self.add_action("Experimental Mission · two Notepad drafts…", self.start_experimental_mission)
+        self.add_action("Resume latest experimental mission…", lambda: self.start_experimental_mission(resume=True))
         if self.controller.is_mock:
             demo = self.menu.addMenu("GUI demo")
             self.demo_menu = demo
@@ -347,6 +366,9 @@ class CompanionApp:
         self.set_state(State.LISTENING)
 
     def submit(self, instruction):
+        if self.mission_runtime and self.mission_runtime.engaged:
+            self.notice("Mission owns this task · stop it before starting another.")
+            return
         if (self.isolation.busy or self.active or not instruction.strip()
                 or getattr(self.controller, "phase", None) == "closing"):
             return
@@ -356,7 +378,13 @@ class CompanionApp:
             self.failed(reason)
             return
         target = self.activation_target
+        lease = None
         if getattr(self.controller, "is_supervised", False):
+            from uuid import uuid4
+            lease = self.workspace_gate.acquire("manual-" + uuid4().hex, 1)
+            if lease is None:
+                self.notice("Desktop busy or cleanup unconfirmed · no input started.")
+                return
             from monster.computer.windows import WindowsInput
 
             self.pill.hide()
@@ -369,6 +397,7 @@ class CompanionApp:
                     "Stopped incomplete: Cannot restore the initial target window. "
                     "Focus the intended application and activate Monster again. No task was started."
                 )
+                self.workspace_gate.release(lease, cleanup_confirmed=True)
                 self.controller.record_start_failure(instruction, reason)
                 self._log_ui("initial_focus_exception", evidence=exception_evidence(exc))
                 self.failed(reason)
@@ -379,12 +408,87 @@ class CompanionApp:
                 self.controller.task_foreground = target
                 self._log_ui("initial_focus_restore", restored=True,
                              target=self.controller.run_diagnostics.focus_alias(target))
+            if lease:
+                self.manual_lease = lease
+                self.manual_generation = self.controller.run_generation
             self.activation_target = None
             self.last_task_outcome = "running"
             self.pill.input.clear()
             self.pill.hide()
+        elif lease:
+            self.workspace_gate.release(lease, cleanup_confirmed=True)
+
+    def start_experimental_mission(self, *, resume=False):
+        if (not isinstance(self.controller, SupervisedController) or self.active
+                or self.workspace_gate.busy or self.controller.phase != "idle"
+                or self.input_cleanup_blocked
+                or (self.mission_runtime and self.mission_runtime.engaged)):
+            self.notice("Mission mode requires idle supervised input with confirmed cleanup.", 5000)
+            return
+        from monster.native import IS_WINDOWS
+        if not IS_WINDOWS:
+            self.notice("Real experimental missions require Windows; offline tests remain available.")
+            return
+        if self.mission_runtime:
+            self.mission_runtime.close()
+            self.notice("Previous mission runtime is closing · retry shortly.")
+            if self.mission_runtime.thread.is_alive():
+                return
+        from monster.mission.gui_bridge import MissionGuiBridge
+        from monster.mission.gui_subtask_adapter import AsyncGuiSubtaskRunner
+        from monster.mission.runtime import EDITOR_OBJECTIVES, MissionRuntime, editor_mission
+        bridge = MissionGuiBridge(self.controller, self.workspace_gate,
+            preflight=self._mission_preflight, objective_catalog=EDITOR_OBJECTIVES, parent=self.app)
+        runner = AsyncGuiSubtaskRunner(bridge)
+        self.mission_runtime = MissionRuntime(self.config_path.parent / "missions", runner, bridge,
+                                              plan=None if resume else editor_mission(), parent=self.app)
+        runtime = self.mission_runtime
+        runtime.changed.connect(lambda update, source=runtime: self._mission_changed(update, source=source))
+        self.mission_runtime.start()
+
+    def _mission_preflight(self):
+        from monster.computer.windows import WindowsInput
+        windows = WindowsInput()
+        if not windows.desktop_ready() or self.isolation.busy:
+            raise RuntimeError("Desktop unavailable")
+        if any(w and w.isVisible() for w in (self.settings_window, self.provider_window, self.preview_window)):
+            raise RuntimeError("Close secondary windows")
+        target = windows.foreground()
+        owned = {int(self.pill.winId()), int(self.companion.winId())}
+        if not target or target in owned or (self.menu and self.menu.isVisible()):
+            raise RuntimeError("Focus disposable editor before authorizing the subtask")
+        return target
+
+    def _mission_changed(self, update, *, source=None):
+        if self.closing or (source is not None and source is not self.mission_runtime):
+            return
+        state, approval = update["state"], update.get("approval")
+        if approval and self.mission_runtime.stopped.is_set():
+            return
+        if state["status"] == "waiting_approval" and approval:
+            import time
+            index = "A" if approval.subtask_id == "editor-a" else "B"
+            self.question("mission-" + approval.approval_id,
+                "Experimental mission · " + index + "/2. Focus disposable Notepad, then Ctrl+Alt+Y. "
+                "Type the labeled test sentence without replacing text. Each action still needs approval.", True)
+            self.mission_review_timer.start(max(1, int((approval.expires_at-time.time())*1000)))
+        else:
+            self.mission_review_timer.stop()
+            if self.pending_question and self.pending_question[0].startswith("mission-"):
+                self.pending_question = None
+                self._cancel_keyboard_approval()
+                self.pill.hide()
+            self.notice("Mission · " + state["status"].replace("_", " "), 5000)
+
+    def _manual_terminal(self, report):
+        if self.manual_lease and report.run_generation == self.manual_generation:
+            self.workspace_gate.release(self.manual_lease, cleanup_confirmed=report.cleanup_confirmed)
+            self.manual_lease = None
 
     def dismiss(self):
+        if self.mission_runtime and self.mission_runtime.engaged:
+            self.stop()
+            return
         self._cancel_keyboard_approval()
         self.activation_target = None
         self.isolation.suppress_restore(self.pill)
@@ -531,6 +635,15 @@ class CompanionApp:
             self.answer(pending[1], "approve", source="keyboard")
 
     def answer(self, request_id, answer, *, source="mouse_or_text"):
+        if (self.mission_runtime and self.pending_question
+                and self.pending_question[0] == request_id and request_id.startswith("mission-")):
+            self.mission_review_timer.stop()
+            self.pending_question = None
+            self._cancel_keyboard_approval()
+            self.pill.hide()
+            self.hotkey_errors = self.register_hotkeys()
+            self.mission_runtime.answer(answer)
+            return
         if not self.pending_question or self.pending_question[0] != request_id:
             return
         self._log_ui("review_gesture_response", request_id=request_id, source=source)
@@ -541,11 +654,17 @@ class CompanionApp:
         self.controller.respond(request_id, answer)
 
     def toggle_pause(self):
+        if self.mission_runtime and self.mission_runtime.engaged:
+            self.stop()
+            return
         self.controller.toggle_pause()
         if self.active and not self.paused:
             self.pill.hide()
 
     def stop(self):
+        self.mission_review_timer.stop()
+        if self.mission_runtime:
+            self.mission_runtime.stop()
         self._cancel_keyboard_approval()
         self.activation_target = None
         # A real controller must synchronously disarm its input worker here.
@@ -576,6 +695,8 @@ class CompanionApp:
             self.notice(text, duration)
 
     def show_settings(self):
+        if self.mission_runtime and self.mission_runtime.engaged:
+            self.stop()
         if self.isolation.busy:
             return
         if self._focus_secondary_except(self.settings_window):
@@ -808,6 +929,8 @@ class CompanionApp:
         return False
 
     def show_provider_settings(self):
+        if self.mission_runtime and self.mission_runtime.engaged:
+            self.stop()
         if self.isolation.busy:
             return
         if self._focus_secondary_except(self.provider_window):
@@ -828,6 +951,9 @@ class CompanionApp:
             self.provider_window = None
 
     def save_provider_settings(self, config):
+        if self.workspace_gate.busy or (self.mission_runtime and self.mission_runtime.engaged):
+            self.provider_window.status.setText("Wait for mission stop and confirmed cleanup.")
+            return
         if config.mode == "supervised":
             if self.input_cleanup_blocked:
                 self.provider_window.status.setText(
@@ -890,6 +1016,9 @@ class CompanionApp:
         if self.closing:
             return
         self.closing = True
+        self.mission_review_timer.stop()
+        if self.mission_runtime:
+            self.mission_runtime.close()
         self.isolation.suppress_restore(self.pill)
         self.isolation.suppress_restore(self.companion)
         self.state_timer.stop()

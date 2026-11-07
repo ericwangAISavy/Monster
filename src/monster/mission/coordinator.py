@@ -35,11 +35,22 @@ def exclusive(method):
 
 class MissionCoordinator:
     def __init__(
-        self, directory: Path, runner: FakeGuiSubtaskRunner | None = None, *, clock=time.time
+        self,
+        directory: Path,
+        runner: FakeGuiSubtaskRunner | None = None,
+        *,
+        clock=time.time,
+        experimental_gui=False,
     ):
         # A future Qt adapter requires a separately reviewed Phase 2 change.
+        self.experimental_gui = experimental_gui
         if runner is not None and type(runner) is not FakeGuiSubtaskRunner:
-            raise ValueError("Phase 1 permits only the fake GUI runner")
+            if not experimental_gui:
+                raise ValueError("Real runner requires explicit experimental mode; fake is default")
+            from .gui_subtask_adapter import AsyncGuiSubtaskRunner
+
+            if type(runner) is not AsyncGuiSubtaskRunner:
+                raise ValueError("Only the reviewed experimental GUI adapter is permitted")
         self.directory, self.runner, self.clock = (
             Path(directory),
             runner or FakeGuiSubtaskRunner(),
@@ -48,6 +59,7 @@ class MissionCoordinator:
         self._active: dict[str, asyncio.Task] = {}
         self._busy: set[str] = set()
         self._stack = AsyncExitStack()
+        self._restart_review = set()
 
     async def __aenter__(self):
         try:
@@ -57,6 +69,8 @@ class MissionCoordinator:
             )
             self.nodes = MissionNodes(self.store, self.runner, self.clock)
             self.graph = build_graph(self.nodes, self.checkpointer)
+            if self.experimental_gui:
+                self._restart_review = self.store.invalidate_unstarted_authorizations()
             # Journal is authoritative, even when the last graph checkpoint is older.
             rows = self.store.connection.execute(
                 "SELECT mission_id,subtask_id FROM effects WHERE status='dispatch_started'"
@@ -128,7 +142,21 @@ class MissionCoordinator:
         if mission_id in self._active:
             raise RuntimeError("Mission already running")
         snapshot = await self.snapshot(mission_id)
-        if snapshot["status"] in TERMINAL | {"waiting_approval"}:
+        if snapshot["status"] in TERMINAL:
+            return snapshot
+        if mission_id in self._restart_review:
+            self._restart_review.remove(mission_id)
+            self.store.clear_stop(mission_id)
+            saved = await self.graph.aget_state(self.config(mission_id))
+            if not saved.values:
+                return await self._invoke(mission_id, self.initial(mission_id))
+            await self.graph.aupdate_state(
+                self.config(mission_id),
+                {"status": "running", "pending_approval_id": None, "reason": None},
+                as_node="checkpoint",
+            )
+            return await self._invoke(mission_id, None)
+        if snapshot["status"] == "waiting_approval":
             return snapshot
         self.store.clear_stop(mission_id)
         saved = await self.graph.aget_state(self.config(mission_id))
@@ -146,6 +174,8 @@ class MissionCoordinator:
     async def resume(self, mission_id, decision: ApprovalDecision):
         if mission_id in self._active:
             raise RuntimeError("Mission already running")
+        if mission_id in self._restart_review:
+            raise ValueError("Restart requires fresh mission continuation")
         decision = ApprovalDecision.model_validate(decision.model_dump())
         snapshot = await self.snapshot(mission_id)
         if snapshot["status"] != "waiting_approval":
@@ -160,6 +190,8 @@ class MissionCoordinator:
         return await self._invoke(mission_id, Command(resume=decision.model_dump(mode="json")))
 
     async def stop(self, mission_id, *, cancel=False):
+        if self.experimental_gui and hasattr(self.runner, "invalidate_all"):
+            self.runner.invalidate_all(mission_id)
         snapshot = await self.snapshot(mission_id)
         if snapshot["status"] in TERMINAL:
             return snapshot

@@ -216,6 +216,9 @@ class MissionNodes:
             effect_id=effect.effect_id,
             generation=effect.generation,
             subtask=task,
+            authorization_expires_at=approval.expires_at
+            if (task.requires_approval or task.category not in ("read_only", "local_reversible"))
+            else mission.deadline_utc,
         )
         started = time.monotonic()
         self.running[mid] = asyncio.create_task(self.runner.run(request))
@@ -227,6 +230,14 @@ class MissionNodes:
             result = TaskResult.model_validate(
                 raw.model_dump() if isinstance(raw, TaskResult) else raw
             )
+            if (
+                result.status == "verified_success"
+                and hasattr(self.runner, "bridge")
+                and not (
+                    result.cleanup_confirmed and result.visual_verified and result.human_confirmed
+                )
+            ):
+                raise ValueError("GUI success lacks required terminal evidence")
             if (result.mission_id, result.subtask_id, result.effect_id, result.generation) != (
                 mid,
                 sid,
@@ -247,7 +258,12 @@ class MissionNodes:
             self.running.pop(mid, None)
         control = self.store.control(mid)
         if control["generation"] != effect.generation or control["stop_requested"]:
-            result = self.failure(effect, "cancelled")
+            result = self.failure(effect, "cancelled").model_copy(
+                update={
+                    "cleanup_confirmed": result.cleanup_confirmed,
+                    "confirmed_input_transactions": result.confirmed_input_transactions,
+                }
+            )
         result = result.model_copy(
             update={"elapsed_ms": min(300000, max(0, int((time.monotonic() - started) * 1000)))}
         )

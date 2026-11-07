@@ -413,3 +413,41 @@ def test_repeated_passive_approval_does_not_hide_or_reconfigure_window(qtbot):
     assert not pill.windowFlags() & Qt.WindowType.WindowTransparentForInput
     assert pill.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
     assert pill.request_id == "second"
+
+
+def test_experimental_mission_requires_supervised_mode(qtbot,qapp,tmp_path):
+    ui=CompanionApp(qapp,MockTaskController(),tmp_path/'prefs.json',enable_tray=False)
+    try:
+        ui.start_experimental_mission()
+        assert ui.mission_runtime is None
+        assert ui.controller.is_mock
+    finally:
+        ui.shutdown()
+
+
+def test_mission_pending_blocks_manual_input_and_controller_switch(qtbot,qapp,tmp_path):
+    from types import SimpleNamespace
+    ui=CompanionApp(qapp,MockTaskController(),tmp_path/'prefs.json',enable_tray=False)
+    try:
+        ui.mission_runtime=SimpleNamespace(engaged=True,stop=lambda:None,close=lambda:None)
+        ui.submit('test')
+        assert not ui.controller.active
+        old=ui.controller
+        ui.switch_controller(MockTaskController())
+        assert ui.controller is old
+    finally:
+        ui.shutdown()
+
+
+def test_retired_mission_update_cannot_hide_current_review(qtbot,qapp,tmp_path):
+    from types import SimpleNamespace
+    ui=CompanionApp(qapp,MockTaskController(),tmp_path/'prefs.json',enable_tray=False)
+    try:
+        current=SimpleNamespace(engaged=True,stop=lambda:None,close=lambda:None)
+        ui.mission_runtime=current
+        ui.pending_question=('mission-new','Current review',True)
+        old=object()
+        ui._mission_changed({'state':{'status':'cancelled'},'approval':None},source=old)
+        assert ui.pending_question[0]=='mission-new'
+    finally:
+        ui.shutdown()

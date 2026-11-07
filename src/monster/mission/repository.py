@@ -257,3 +257,35 @@ class Repository:
             "uncertain": sum(e["code"] == "uncertain" for e in events),
             "runner_elapsed_ms": sum(e["elapsed_ms"] for e in events),
         }
+
+    def invalidate_unstarted_authorizations(self):
+        """Real-runtime restart revokes old grants, never resets a dispatched effect."""
+        mids = {
+            r[0]
+            for r in self.connection.execute(
+                "SELECT mission_id FROM missions WHERE terminal_at IS NULL AND cancelled=0"
+            )
+        }
+        with self.connection:
+            for mid in mids:
+                self.connection.execute(
+                    "UPDATE missions SET generation=generation+1 WHERE mission_id=?", (mid,)
+                )
+                generation = self.control(mid)["generation"]
+                self.connection.execute(
+                    "UPDATE effects SET status='prepared',generation=? "
+                    "WHERE mission_id=? AND status IN ('prepared','approved')",
+                    (generation, mid),
+                )
+                rows = self.connection.execute(
+                    "SELECT data FROM approvals WHERE mission_id=?", (mid,)
+                ).fetchall()
+                for row in rows:
+                    approval = Approval.model_validate_json(row[0])
+                    if approval.decision in ("pending", "approved"):
+                        expired = approval.model_copy(update={"decision": "expired"})
+                        self.connection.execute(
+                            "UPDATE approvals SET data=? WHERE approval_id=?",
+                            (expired.model_dump_json(), approval.approval_id),
+                        )
+        return mids

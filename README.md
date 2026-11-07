@@ -185,3 +185,13 @@ bounded subtasks, approval interruptions and crash recovery without ambiguous
 action replay. It is not wired to the companion or real-input controller.
 See [v3 architecture and offline demos](docs/LONG_HORIZON_ARCHITECTURE_V3.md)
 and [implementation evidence](docs/MISSION_PHASE1_IMPLEMENTATION.md).
+
+## Experimental mission / GUI bridge (v3 Phase 2)
+
+On Windows, the tray now offers an explicit two-subtask Notepad mission and resume
+entry while using the existing supervised controller. Each subtask, action and
+final result still requires review. The adapter runs mission coordination off the
+Qt thread, holds one desktop writer, waits for cleanup, and never replays ambiguous
+input. Default modes remain unchanged. **Native Windows qualification is pending.**
+See [integration and limits](docs/PHASE2_GUI_INTEGRATION.md) and
+[the opt-in Windows smoke procedure](docs/WINDOWS_PHASE2_QUALIFICATION.md).
