@@ -541,3 +541,18 @@ def test_draft_target_malformed_assessment_is_rejected(result):
     adapter = OllamaProvider(config(), transport([], decision=result))
     with pytest.raises(ProviderError, match="invalid draft target assessment"):
         asyncio.run(adapter.verify_draft_target("vision:small", "Write hello in Slack", {"op": "text", "text": "hello"}, b"PNG", 100, 100))
+
+
+def test_terminal_window_generation_exposes_complete_chord_but_not_modifier_taps():
+    from monster.providers.decisions import decision_schema_for_navigation
+
+    def fields(instruction):
+        variants = decision_schema_for_navigation(instruction)['oneOf'][0]['properties']['action']['oneOf']
+        return {v['properties']['op']['const']: v['properties'] for v in variants}
+
+    terminal = fields('open new fresh terminal window')
+    ordinary = fields('write a note')
+    assert ['CTRL', 'SHIFT', 'N'] in terminal['chord']['keys']['enum']
+    assert ['CTRL', 'SHIFT', 'N'] not in ordinary['chord']['keys']['enum']
+    assert not {'CTRL', 'SHIFT', 'ALT'} & set(terminal['press']['key']['enum'])
+    assert 'WIN' in terminal['press']['key']['enum']

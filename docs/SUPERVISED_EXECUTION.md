@@ -672,3 +672,62 @@ Confirm the Start menu visibly opens before any search step. Continue only with
 fresh observations and bounded reviewed inputs. Confirm the intended new terminal
 window visually; do not type or execute shell commands. Windows/model behavior
 still needs actual retesting; portable tests cover validation and input routing.
+
+## Routine keyboard input and complete shortcuts
+
+With **Ask human approval before every action** unchecked, classified routine
+letter/digit keys, Escape and the existing routine navigation/text operations run
+without a step prompt after the normal scene/foreground checks. Sensitive,
+uncertain, unclassified or potentially consequential effects retain review.
+Checking the option still reviews every valid action; final completion confirmation
+remains separate. This is an allowlist policy, not a claim all keyboard effects
+are harmless in every application.
+
+Standalone Ctrl/Alt/Shift taps are rejected in supervised mode, not sent for
+approval: they do not constitute the complete shortcut described in the supplied
+failure report. The generation schema excludes these modifier-only presses while
+retaining `WIN` for Start. Explicit shortcut descriptions must match one complete
+chord, so describing Ctrl+Shift+N cannot dispatch just N or Ctrl. Summaries should
+name the next shortcut rather than several failed/alternative chords.
+
+For a narrowly recognized explicit English request such as **open new fresh
+terminal window**, the provider schema and local policy offer Ctrl+Shift+N. A
+routine proposal can run without a step prompt in automatic mode; otherwise
+review remains. This shortcut is not globally added to the allowlist. The model
+must see the intended Windows Terminal target, and the fresh foreground binding
+is checked locally. It is an application-specific shortcut, not a way to execute
+shell commands. A new tab/plus button or Ctrl+Shift+T does not satisfy a new-window
+request and is rejected. No invalid proposal is silently rewritten into a chord.
+
+The supplied report's initial click targeted the wrong tab-bar location; its
+expected outcome was also a tab rather than the requested window. The next
+proposal described a shortcut but emitted only Ctrl. Routine approval changes
+alone would not fix either error; complete schema support and local consistency
+checks address those reproducible defects. Native/model success still needs
+actual Windows retesting.
+
+## Comfortable pointer travel
+
+The isolated worker now approaches mouse targets with a bounded, straight,
+minimum-jerk trajectory: slow departure, faster middle and gentle arrival. Planned
+approach time adapts to physical distance, about 0.18–0.8 seconds; an already reached
+target requires no travel. Native/OS overhead can add time. Drag motion uses the
+same easing with its bounded requested duration. No random jitter, overshoot or
+model-generated motion code is used.
+
+The full physical path is checked for monitor gaps before movement or button-down.
+Position is checked throughout travel; manual pointer takeover aborts instead of
+fighting the user. Arrival is checked before a click/scroll and before reporting a
+completed drag. Foreground binding now also guards pointer approach; the intended
+mouse-down may activate a different window, and its owned release still proceeds.
+Lease, geometry, watchdog and independent Ctrl+Alt+X checks remain active between
+short waits/events. Cancellation never finishes a queued click after the move.
+Failure/unknown effects disarm without automatic replay; owned-button cleanup is
+attempted even when an interrupted drag has an ambiguous visible result.
+
+Retest on disposable Windows content: compare a short and long click approach,
+stop halfway with Ctrl+Alt+X (no click should follow), move the physical pointer
+manually during travel (automation should stop), and test negative-origin/mixed-DPI
+monitors. A straight route crossing a gap is rejected; reposition manually or use
+an independently observed valid route. Portable fake-input tests establish event
+ordering and interruption logic, not Windows timing, capture fidelity or comfort.

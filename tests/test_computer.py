@@ -1,4 +1,5 @@
 import threading
+from itertools import pairwise
 
 import pytest
 
@@ -10,6 +11,7 @@ from monster.computer.windows import Input
 class FakeWindows:
     def __init__(self):
         self.events = []
+        self.cursor = (0, 0)
         self.monitors = [Bounds(-100, 0, 100, 100), Bounds(0, 0, 200, 100)]
         self.ready = True
         self.held = False
@@ -29,7 +31,11 @@ class FakeWindows:
         self.events.append(event)
         self.on_event()
 
+    def cursor_position(self):
+        return self.cursor
+
     def move(self, x, y):
+        self.cursor = (x, y)
         self.record("move", x, y)
 
     def mouse(self, button, down):
@@ -144,6 +150,7 @@ def test_watchdog_lease_hold_and_geometry_change():
     executor.watchdog()
     assert not executor.armed
     generation = executor.arm()
+    backend.cursor = (5, 5)  # This test advances only the lease clock, not motion time.
     executor.execute({"op": "down", "x": 5, "y": 5}, generation)
     now[0] += 2.1
     executor.heartbeat()
@@ -292,7 +299,12 @@ def test_mouse_receipt_observes_actual_cursor_without_changing_input_outcome():
 def test_failed_cursor_observation_does_not_reclassify_or_replay_inserted_click():
     backend, executor, generation = armed()
 
+    calls = []
+
     def unavailable():
+        calls.append(True)
+        if len(calls) <= 3:
+            return (-70, 20)
         raise RuntimeError("PRIVATE_NATIVE_ERROR")
 
     backend.cursor_position = unavailable
@@ -301,3 +313,97 @@ def test_failed_cursor_observation_does_not_reclassify_or_replay_inserted_click(
     assert result["cursor_observation_error"]["exception_class"] == "RuntimeError"
     assert "PRIVATE_NATIVE_ERROR" not in str(result)
     assert len(backend.events) == 3
+
+
+def test_pointer_travel_is_eased_bounded_and_click_occurs_only_after_arrival():
+    backend, executor, generation = armed()
+    position = [(-90, 10)]
+    backend.cursor_position = lambda: position[0]
+    original = backend.move
+
+    def move(x, y):
+        position[0] = (x, y)
+        original(x, y)
+
+    backend.move = move
+    result = executor.execute({'op': 'click', 'x': 180, 'y': 80}, generation)
+    moves = [event for event in backend.events if event[0] == 'move']
+    assert result['status'] == 'inserted'
+    assert len(moves) >= 10 and moves[-1] == ('move', 180, 80)
+    assert backend.events[-2:] == [('mouse', 'left', True), ('mouse', 'left', False)]
+    increments = [b[1] - a[1] for a, b in pairwise(moves)]
+    assert max(increments) > increments[0] and max(increments) > increments[-1]
+
+
+def test_stop_during_pointer_travel_prevents_the_click():
+    backend, executor, generation = armed()
+    backend.cursor_position = lambda: (-90, 10)
+    backend.on_event = lambda: executor.stop('test stop')
+    result = executor.execute({'op': 'click', 'x': 180, 'y': 80}, generation)
+    assert result['status'] == 'partial_or_unknown'
+    assert not any(event[0] == 'mouse' for event in backend.events)
+
+
+def test_manual_pointer_takeover_during_travel_aborts_without_clicking():
+    backend, executor, generation = armed()
+    backend.cursor = (-90, 10)
+
+    def takeover():
+        if len(backend.events) == 3:
+            backend.cursor = (150, 95)
+
+    backend.on_event = takeover
+    result = executor.execute({'op': 'click', 'x': 180, 'y': 80}, generation)
+    assert result['status'] == 'partial_or_unknown'
+    assert len(backend.events) == 3
+    assert not any(event[0] == 'mouse' for event in backend.events)
+
+
+def test_smooth_motion_rejects_monitor_gap_before_any_input():
+    backend, executor, generation = armed()
+    backend.monitors = [Bounds(-100, 0, 90, 100), Bounds(10, 0, 190, 100)]
+    backend.cursor = (-50, 20)
+    generation = executor.arm()
+    result = executor.execute({'op': 'click', 'x': 50, 'y': 20}, generation)
+    assert result['status'] == 'rejected' and backend.events == []
+
+
+def test_focus_loss_during_pointer_approach_stops_before_click():
+    backend, executor, generation = armed()
+    backend.cursor = (-90, 10)
+    focus = [77]
+    backend.foreground = lambda: focus[0]
+    backend.on_event = lambda: focus.__setitem__(0, 88)
+    result = executor.execute({'op': 'click', 'x': 180, 'y': 80}, generation, expected_focus=77)
+    assert result['status'] == 'partial_or_unknown'
+    assert not any(event[0] == 'mouse' for event in backend.events)
+
+
+def test_click_may_change_focus_but_still_releases_the_owned_button():
+    backend, executor, generation = armed()
+    focus = [77]
+    backend.foreground = lambda: focus[0]
+
+    def clicked():
+        if backend.events[-1] == ('mouse', 'left', True):
+            focus[0] = 88
+
+    backend.on_event = clicked
+    result = executor.execute({'op': 'click', 'x': 0, 'y': 0}, generation, expected_focus=77)
+    assert result['status'] == 'inserted' and not executor.owned
+    assert backend.events[-1] == ('mouse', 'left', False)
+
+
+def test_drag_final_pointer_takeover_is_partial_and_releases_owned_button():
+    backend, executor, generation = armed()
+
+    def takeover():
+        if backend.events[-1] == ('move', 100, 50):
+            backend.cursor = (80, 70)
+
+    backend.on_event = takeover
+    result = executor.execute({'op': 'drag', 'x': 0, 'y': 0,
+                               'end_x': 100, 'end_y': 50, 'duration': .05}, generation)
+    assert result['status'] == 'partial_or_unknown'
+    assert backend.events[-1] == ('mouse', 'left', False)
+    assert not executor.owned and not executor.armed

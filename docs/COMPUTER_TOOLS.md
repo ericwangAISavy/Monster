@@ -141,3 +141,15 @@ desktop capture gate. They activate the companion’s thinking pose. Task stages
 accessibility descriptions and reports without visible status text. These are
 execution stages, not model reasoning. Passive approval updates apply
 final focus/input flags once, avoiding an intermediate native window recreation.
+
+### Smooth pointer motion
+
+Coordinate operations now ease from the observed physical cursor to the target
+before pressing a button or scrolling. The planned approach is distance-adaptive
+(about 0.18–0.8s), and drags ease over their existing bounded duration. Actual cursor
+position is required; there is no teleport fallback if it cannot be observed.
+Routes crossing monitor gaps fail before input. Pointer takeover, geometry/focus
+changes where bound, stop or lease expiry abort the transaction. See
+[Supervised execution](SUPERVISED_EXECUTION.md#comfortable-pointer-travel) for native
+retest steps and limits. Keep inspecting receipts/visible effects; more move events
+still constitute one transaction, and accepted insertion is not visual success.

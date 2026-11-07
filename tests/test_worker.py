@@ -131,3 +131,30 @@ def test_explicit_disarm_has_one_ack_and_allows_rearm(monkeypatch):
     finally:
         connection.close()
         thread.join(timeout=2)
+
+
+def test_worker_hotkey_interrupts_smooth_approach_before_click(monkeypatch):
+    backend, hotkey, connection, thread = worker_fixture(monkeypatch)
+    backend.cursor = (-90, 10)
+    try:
+        wait_event(connection, {'ready'})
+        send(connection, {'op': 'arm'})
+        generation = wait_event(connection, {'armed'})['generation']
+        started = threading.Event()
+        backend.on_event = started.set
+        send(connection, {'op': 'execute', 'id': 1, 'generation': generation,
+                          'action': {'op': 'click', 'x': 180, 'y': 80}})
+        assert started.wait(1)
+        hotkey.set()
+        assert wait_event(connection, {'stopped'})['cleanup_ok']
+        count = len(backend.events)
+        receipt = wait_event(connection, {'receipt'})
+        assert receipt['status'] == 'partial_or_unknown'
+        assert len(backend.events) == count
+        assert not any(event[0] == 'mouse' for event in backend.events)
+        send(connection, {'op': 'shutdown'})
+        assert wait_event(connection, {'closed'})['cleanup_ok']
+    finally:
+        connection.close()
+        thread.join(timeout=2)
+    assert not thread.is_alive()

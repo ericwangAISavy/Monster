@@ -11,6 +11,7 @@ from PySide6.QtCore import QTimer, Signal
 
 from monster.agent.diagnostics import RunDiagnostics
 from monster.agent.input_bridge import InputBridge
+from monster.agent.keyboard import terminal_window_requested
 from monster.agent.metrics import OperationTimings
 from monster.agent.progress import (
     action_description,
@@ -639,10 +640,9 @@ class SupervisedController(TaskController):
             self.phase = "executing"
             self.state_changed.emit(State.WORKING)
             self.stage_changed.emit("Acting")
-            keyboard = action["op"] in {"text", "press", "chord"}
             self._record("dispatch_requested", transaction=self.actions + 1,
                          observation=self.log_frame, planned_observation=self.planned_frame,
-                         expected_foreground=self.run_diagnostics.focus_alias(self.observation.foreground) if keyboard else None,
+                         expected_foreground=self.run_diagnostics.focus_alias(self.observation.foreground),
                          observed_foreground=self.run_diagnostics.focus_alias(self.observation.foreground),
                          expected_geometry=[asdict(bounds) for bounds in self.observation.displays],
                          observation_age_s=time.monotonic() - self.observation.captured_at,
@@ -650,7 +650,7 @@ class SupervisedController(TaskController):
             self.input_job = self._start_input(
                 "execute",
                 action,
-                self.observation.foreground if keyboard else None,
+                self.observation.foreground,
                 list(self.observation.displays),
             )
         elif self.phase == "deciding":
@@ -699,7 +699,7 @@ class SupervisedController(TaskController):
                     if window_close_requested(self.instruction) else
                     "Per-step approval is enabled."
                     if self.config.approve_each_step
-                    else approval_reason(result)
+                    else approval_reason(result, self.instruction)
                 )
                 text = (
                     "REAL INPUT · "
@@ -812,7 +812,8 @@ class SupervisedController(TaskController):
             raise ValueError(
                 "Current-window closing supports one reviewed Alt+F4 only; no guessed clicks or retry."
             )
-        return prepare_action(action, observation, allow_window_close=closing)
+        return prepare_action(action, observation, allow_window_close=closing,
+                              allow_terminal_window=terminal_window_requested(self.instruction))
 
     def _reviewed_proposal_matches(self):
         if self.reviewed_proposal is None or self.pending != self.reviewed_proposal:

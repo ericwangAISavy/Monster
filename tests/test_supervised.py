@@ -2030,3 +2030,79 @@ def test_unrelated_click_in_compound_task_does_not_authorize_guessed_start_click
                         expected_result='The Start menu opens.')
     with pytest.raises(ValueError, match='WIN'):
         validate_proposal_intent(decision, 'Open a fresh terminal window, then click Settings')
+
+
+@pytest.mark.parametrize('key', ['A', '7', 'ESC'])
+def test_classified_routine_keys_do_not_prompt_in_automatic_mode(key):
+    from monster.agent.validation import approval_reason
+    decision = Decision('action', 'Routine keyboard input', {'op': 'press', 'key': key}, risk='routine')
+    assert approval_reason(decision) is None
+    assert approval_reason(replace(decision, risk='uncertain')) is not None
+
+
+def test_modifier_tap_and_tab_window_mismatch_are_rejected_before_review():
+    from monster.agent.validation import validate_proposal_intent
+    with pytest.raises(ValueError, match='chord'):
+        validate_proposal_intent(Decision('action', 'Use Ctrl+Shift+N',
+                                {'op': 'press', 'key': 'CTRL'}), 'open new fresh terminal window')
+    with pytest.raises(ValueError, match='tab'):
+        validate_proposal_intent(Decision('action', 'Click plus to open a new tab',
+                                {'op': 'click', 'x': 50, 'y': 30},
+                                expected_result='A new empty PowerShell tab opens.'),
+                                'open new fresh terminal window')
+
+
+def test_terminal_new_window_shortcut_is_task_scoped_and_routine():
+    from monster.agent.validation import approval_reason, validate_proposal_intent
+    decision = Decision('action', 'Open a new Windows Terminal window',
+                        {'op': 'chord', 'keys': ['CTRL', 'SHIFT', 'N']}, risk='routine',
+                        expected_result='A new terminal window opens.')
+    engine, _, _ = controller([])
+    engine.instruction = 'open new fresh terminal window'
+    engine.pending = decision
+    assert engine._prepare_action(decision.action, observation()) == decision.action
+    assert approval_reason(decision, engine.instruction) is None
+    assert approval_reason(decision, 'write a note') is not None
+    engine.instruction = 'write a note'
+    with pytest.raises(ValueError):
+        engine._prepare_action(decision.action, observation())
+    validate_proposal_intent(decision, 'open new fresh terminal window')
+    engine.close()
+
+
+def test_normal_letter_must_not_masquerade_as_a_complete_shortcut():
+    from monster.agent.validation import validate_proposal_intent
+    decision = Decision('action', 'Use Ctrl+Shift+N to open a new window',
+                        {'op': 'press', 'key': 'N'}, risk='routine')
+    with pytest.raises(ValueError, match='chord'):
+        validate_proposal_intent(decision, 'open new fresh terminal window')
+
+
+@pytest.mark.parametrize('approve_each_step', [False, True])
+def test_report_terminal_window_sequence_runs_complete_chord_with_correct_review_policy(qtbot, approve_each_step):
+    decisions = [
+        Decision('action', 'Click plus to open a new tab', {'op': 'click', 'x': 40, 'y': 10},
+                 risk='routine', expected_result='A new empty PowerShell tab opens.'),
+        Decision('action', 'Use Ctrl+Shift+T', {'op': 'press', 'key': 'CTRL'},
+                 risk='routine', expected_result='A new terminal tab opens.'),
+        Decision('action', 'Use Ctrl+Shift+N', {'op': 'chord', 'keys': ['CTRL', 'SHIFT', 'N']},
+                 risk='routine', expected_result='A new terminal window opens.'),
+        Decision('unable', 'This simulated test verifies routing only'),
+    ]
+    engine, bridge, _ = controller(decisions)
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    reviews = []
+
+    def review(rid, text):
+        reviews.append(text)
+        QTimer.singleShot(0, lambda: engine.respond(rid, 'approve'))
+
+    engine.approval_requested.connect(review)
+    try:
+        engine.submit('open new fresh terminal window')
+        qtbot.waitUntil(lambda: not engine.active and engine.phase == 'idle', timeout=6000)
+        assert [entry[0] for entry in bridge.executed] == [{'op': 'chord', 'keys': ['CTRL', 'SHIFT', 'N']}]
+        assert len(reviews) == int(approve_each_step)
+    finally:
+        engine.close()

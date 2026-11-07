@@ -5,7 +5,13 @@ import re
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QImage
 
-from monster.computer.contracts import Bounds, validate_action
+from monster.agent.keyboard import (
+    NEW_TERMINAL_WINDOW,
+    ROUTINE_CHARACTER_KEYS,
+    terminal_window_requested,
+    validate_shortcut_description,
+)
+from monster.computer.contracts import MODIFIERS, Bounds, validate_action
 
 
 def single_click_requested(instruction):
@@ -39,7 +45,19 @@ def validate_proposal_intent(decision, instruction):
     if decision is None or decision.kind != "action":
         return
     action = decision.action or {}
+    if action.get("op") == "press" and action.get("key") in MODIFIERS - {"WIN"}:
+        raise ValueError("A modifier alone is not a shortcut. Propose one complete chord with all keys.")
+    validate_shortcut_description(action, decision.summary)
     expected = decision.expected_result or ""
+    if terminal_window_requested(instruction) and (
+        re.search(r"\bnew\b[^.!?\n]{0,60}\btab\b", expected, re.IGNORECASE)
+        or action == {"op": "chord", "keys": ["CTRL", "SHIFT", "T"]}
+    ):
+        raise ValueError(
+            "A new tab is not the requested new terminal window. When Windows Terminal is "
+            "visibly the intended app, propose the complete CTRL+SHIFT+N chord for a new window, "
+            "or locate its New Window menu. Do not run shell commands."
+        )
     summary = decision.summary
     opens_start = bool(re.search(
         r"\bstart\s+menu\s+(?:(?:will|should|must)\s+)?(?:now\s+)?(?:opens?|appears?)\b"
@@ -70,7 +88,7 @@ def validate_proposal_intent(decision, instruction):
         )
 
 
-def approval_reason(decision):
+def approval_reason(decision, instruction=""):
     """User-authorized automatic mode still escalates sensitive/uncertain effects.
 
     Model classification is fallible. Deterministic escalation and blocked-action
@@ -110,9 +128,12 @@ def approval_reason(decision):
             "BACKSPACE",
         }:
             return None
-        if action.get("key") in {"ENTER", "SPACE", "WIN"} and decision.risk == "routine":
+        if action.get("key") in {"ENTER", "SPACE", "WIN"} | ROUTINE_CHARACTER_KEYS and decision.risk == "routine":
             return None
         return "This key's effect needs review."
+    if (action == {"op": "chord", "keys": NEW_TERMINAL_WINDOW}
+            and terminal_window_requested(instruction) and decision.risk == "routine"):
+        return None
     if action.get("op") == "chord" and action.get("keys") in (
         ["CTRL", "A"],
         ["CTRL", "C"],
@@ -126,11 +147,11 @@ def approval_reason(decision):
     return "This operation needs review."
 
 
-def needs_human_approval(decision):
-    return approval_reason(decision) is not None
+def needs_human_approval(decision, instruction=""):
+    return approval_reason(decision, instruction) is not None
 
 
-def prepare_action(action, observation, *, allow_window_close=False):
+def prepare_action(action, observation, *, allow_window_close=False, allow_terminal_window=False):
     action = validate_action(
         action, [Bounds(0, 0, observation.bounds.width, observation.bounds.height)]
     )
@@ -145,11 +166,14 @@ def prepare_action(action, observation, *, allow_window_close=False):
             raise ValueError(
                 "Commands, executables and URLs are outside this supervised text demo."
             )
+    if action.get("op") == "press" and action.get("key") in MODIFIERS - {"WIN"}:
+        raise ValueError("A modifier alone is not a shortcut; provide a complete chord.")
     if action.get("op") == "press" and action.get("key") == "DELETE":
         raise ValueError("Delete is outside the supervised demo.")
     if action.get("op") == "chord":
         keys = action.get("keys", [])
-        if not (allow_window_close and keys == ["ALT", "F4"]) and keys not in (
+        if not ((allow_window_close and keys == ["ALT", "F4"])
+                or (allow_terminal_window and keys == NEW_TERMINAL_WINDOW)) and keys not in (
             ["CTRL", "A"],
             ["CTRL", "C"],
             ["CTRL", "Z"],

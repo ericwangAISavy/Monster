@@ -5,6 +5,7 @@ import time
 
 from monster.agent.diagnostics import exception_evidence
 from monster.computer.contracts import validate_action
+from monster.computer.motion import motion_plan
 
 
 class Disarmed(RuntimeError):
@@ -130,11 +131,41 @@ class InputExecutor:
                 self.event(generation, kind, value, down)
                 events += 1
 
+            def travel(plan, previous):
+                started = self.clock()
+                for at, point in plan:
+                    self.wait(generation, max(0, started + at - self.clock()))
+                    actual = self.backend.cursor_position()
+                    if abs(actual[0] - previous[0]) > 2 or abs(actual[1] - previous[1]) > 2:
+                        raise Disarmed("Pointer takeover detected during travel.")
+                    emit("move", point)
+                    previous = point
+
+            def confirm_arrival(target):
+                actual = self.backend.cursor_position()
+                if abs(actual[0] - target[0]) > 2 or abs(actual[1] - target[1]) > 2:
+                    raise Disarmed("Pointer did not arrive at the authorized target.")
+
+            def button_down():
+                with self.lock:
+                    emit("mouse", button, True)
+                    # The intended click can itself activate a different window.
+                    self.expected_focus = None
+
+            drag = None
             if "x" in action:
-                emit("move", (action["x"], action["y"]))
+                start = self.backend.cursor_position()
+                target = (action["x"], action["y"])
+                approach = motion_plan(start, target, self.geometry)
+                if op == "drag":
+                    drag = motion_plan(target, (action["end_x"], action["end_y"]),
+                                       self.geometry, action.get("duration", .4))
+                travel(approach, start)
+                # Do not click/scroll/drag if the cursor failed to arrive or was taken over.
+                confirm_arrival(target)
             if op == "click":
                 for i in range(action.get("count", 1)):
-                    emit("mouse", button, True)
+                    button_down()
                     emit("mouse", button, False)
                     if i == 0 and action.get("count") == 2:
                         self.wait(generation, 0.08)
@@ -143,17 +174,9 @@ class InputExecutor:
             elif op == "scroll":
                 emit("scroll", (action["delta"], action.get("horizontal", False)))
             elif op == "drag":
-                emit("mouse", button, True)
-                duration = action.get("duration", 0.4)
-                steps = max(2, round(duration / 0.02))
-                for index in range(1, steps + 1):
-                    self.wait(generation, duration / steps)
-                    x = round(action["x"] + (action["end_x"] - action["x"]) * index / steps)
-                    y = round(action["y"] + (action["end_y"] - action["y"]) * index / steps)
-                    # Reject paths crossing a physical gap between monitors.
-                    if not any(b.contains(x, y) for b in self.geometry):
-                        raise ValueError("Drag path crosses a monitor gap.")
-                    emit("move", (x, y))
+                button_down()
+                travel(drag, target)
+                confirm_arrival((action["end_x"], action["end_y"]))
                 emit("mouse", button, False)
             elif op == "text":
                 for character in action["text"]:

@@ -2,7 +2,8 @@
 
 from copy import deepcopy
 
-from monster.computer.contracts import KEYS, Bounds, validate_action
+from monster.agent.keyboard import NEW_TERMINAL_WINDOW, terminal_window_requested
+from monster.computer.contracts import KEYS, MODIFIERS, Bounds, validate_action
 from monster.providers.base import Decision, ProviderError
 
 # Flatten provider schema variants into exactly the same three categories as local tools.
@@ -36,7 +37,7 @@ ACTION_SCHEMA = {
                 },
             ),
             ("text", {"text": {"type": "string", "minLength": 1, "maxLength": 2000}}),
-            ("press", {"key": {"enum": [key for key in KEYS if key != "DELETE"]}}),
+            ("press", {"key": {"enum": [key for key in KEYS if key != "DELETE" and key not in MODIFIERS - {"WIN"}]}}),
             (
                 "chord",
                 {
@@ -99,6 +100,15 @@ def decision_schema_for_draft():
             )
         elif op == "chord":
             variant["properties"]["keys"]["enum"] = [["SHIFT", "ENTER"]]
+    return schema
+
+
+def decision_schema_for_navigation(instruction):
+    schema = deepcopy(DECISION_SCHEMA)
+    if terminal_window_requested(instruction):
+        for variant in schema["oneOf"][0]["properties"]["action"]["oneOf"]:
+            if variant["properties"]["op"]["const"] == "chord":
+                variant["properties"]["keys"]["enum"].append(list(NEW_TERMINAL_WINDOW))
     return schema
 
 
