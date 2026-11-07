@@ -256,7 +256,7 @@ class SupervisedController(TaskController):
         stage = {
             "probing": "probe", "deciding": "planning",
             "comparing": "recheck", "verifying": "verification",
-            "checking_target": "target_check",
+            "checking_target": "target_check", "checking_completion": "verification",
         }[self.phase]
         job = self.jobs.start(operation)
         self._remember_diagnostic_origin(self.model_diagnostic_origins, job)
@@ -400,9 +400,13 @@ class SupervisedController(TaskController):
         if expected == (self.generation, self.phase):
             self._capture()
 
+    @property
+    def hands_free(self):
+        return self.config.hands_free and not self.action_gate
+
     def _capture(self):
         if self.active and not self.paused and self.phase in {
-            "observing", "rechecking", "verifying_capture"
+            "observing", "rechecking", "verifying_capture", "completion_capture"
         }:
             self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
@@ -430,6 +434,18 @@ class SupervisedController(TaskController):
                     "and start a new task; no close shortcut was redirected."
                 )
                 return
+        if self.phase == "completion_capture":
+            self.observation = observation
+            self.phase = "checking_completion"
+            diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+            instruction = self.instruction
+            self.job = self._start_model(
+                lambda: self._provider(diagnostics, "checking_completion", call, step).verify_completion(
+                    self.config.model, instruction, observation.png,
+                    observation.bounds.width, observation.bounds.height,
+                )
+            )
+            return
         if self.phase == "rechecking":
             before, action = self.observation, dict(self.pending.action)
             self.observation = observation
@@ -551,12 +567,21 @@ class SupervisedController(TaskController):
                 "deciding": "Model decision",
                 "verifying": "Visual action verification",
                 "checking_target": "Draft target check",
+                "checking_completion": "Whole-task visual check",
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
         elif self.phase == "probing":
             self._record("model_compatibility", metadata=asdict(result) if is_dataclass(result) else {})
             self.phase = "observing"
             self._capture()
+        elif self.phase == "checking_completion":
+            self._record("completion_verification", observation=self.log_frame,
+                         content={"status": result.status, "evidence": result.evidence})
+            if result.status != "succeeded":
+                self.fail("Task completion could not be verified: " + result.evidence)
+                return
+            self.last_verification = result
+            self._terminate("complete", "Completed · visual task check passed")
         elif self.phase == "checking_target":
             if not self._reviewed_proposal_matches():
                 return
@@ -576,6 +601,9 @@ class SupervisedController(TaskController):
                     "Focus the intended app/composer manually and start a new task. "
                     "No draft input was dispatched. Inspect Last action preview/report for evidence."
                 )
+                return
+            if status == "needs_focus" and self.hands_free:
+                self.fail("Keyboard focus is unclear; automatic mode stopped without dispatching input.")
                 return
             if status == "needs_focus":
                 self.phase = "target_focus_review"
@@ -629,6 +657,9 @@ class SupervisedController(TaskController):
                     "The requested one-click input was dispatched, but its visible result "
                     "was not verified. Inspect the desktop; no second input will be attempted."
                 )
+                return
+            if result.status != "succeeded" and self.hands_free:
+                self.fail("Visual verification " + result.status + ": " + result.evidence)
                 return
             if result.status != "succeeded":
                 self.failed_actions.append(dict(self.pending.action))
@@ -772,6 +803,9 @@ class SupervisedController(TaskController):
             if result.kind == "unable":
                 self.fail("Model could not continue. Open Last action preview for its explanation.")
                 return
+            if result.kind == "clarify" and self.hands_free:
+                self.fail("Task needs clarification: " + result.summary)
+                return
             if result.kind == "clarify":
                 self.phase = "clarifying"
                 self.question_id = uuid.uuid4().hex
@@ -804,7 +838,7 @@ class SupervisedController(TaskController):
                     "is the current foreground target."
                     if window_close_requested(self.instruction) else
                     "Per-step approval is enabled."
-                    if self.config.approve_each_step
+                    if self.config.approve_each_step and not self.hands_free
                     else approval_reason(result, self.instruction)
                 )
                 text = (
@@ -818,7 +852,10 @@ class SupervisedController(TaskController):
                 )
                 self.reviewed_proposal = deepcopy(result)
                 self.phase = "approval"
-                if not self.config.approve_each_step and reason is None:
+                if self.hands_free and reason is not None:
+                    self.fail("Automatic mode stopped because this action requires review: " + reason)
+                    return
+                if (self.hands_free or not self.config.approve_each_step) and reason is None:
                     self._begin_recheck(restore=False)
                     return
             else:
@@ -833,6 +870,10 @@ class SupervisedController(TaskController):
                     self._reject_proposal(
                         "Completion is unsupported: the last action failed visual verification.", "completion"
                     )
+                    return
+                if self.hands_free:
+                    self.phase = "completion_capture"
+                    self._capture()
                     return
                 text = (
                     "Confirm the visible result meets your task:\n"

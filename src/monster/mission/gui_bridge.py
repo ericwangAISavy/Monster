@@ -151,7 +151,7 @@ class MissionGuiBridge(QObject):
             self.resolved.emit(self.result(req))
             return
         old = self.controller.config
-        self.controller.config = replace(old, approve_each_step=True)
+        self.controller.config = replace(old, approve_each_step=True, hands_free=False)
         # Install binding before submit emits any signals. Generation is assigned by submit.
         self.current = {
             "handoff": handoff,
