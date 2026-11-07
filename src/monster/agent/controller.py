@@ -390,6 +390,9 @@ class SupervisedController(TaskController):
             self.job = self._start_model(compare)
             return
         if self.phase == "verifying_capture":
+            before = self.observation
+            before_image = before.png if (before is not None and before.bounds == observation.bounds
+                                          and before.displays == observation.displays) else None
             self.observation = observation
             self.phase = "verifying"
             action = dict(self.pending.action)
@@ -397,6 +400,8 @@ class SupervisedController(TaskController):
             instruction = self._task_context()
             self.verification_calls += 1
             self._record("verification_requested", observation=self.log_frame,
+                         before=previous_frame if before_image is not None else None,
+                         comparison_scope="before_after" if before_image is not None else "after_only_geometry_changed",
                          content={"action": action, "expected_result": expected,
                                   "task_context": instruction})
             self.state_changed.emit(State.THINKING)
@@ -411,6 +416,7 @@ class SupervisedController(TaskController):
                     observation.png,
                     observation.bounds.width,
                     observation.bounds.height,
+                    before_image,
                 )
             )
             return

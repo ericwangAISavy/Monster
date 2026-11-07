@@ -731,3 +731,40 @@ manually during travel (automation should stop), and test negative-origin/mixed-
 monitors. A straight route crossing a gap is rejected; reposition manually or use
 an independently observed valid route. Portable fake-input tests establish event
 ordering and interruption logic, not Windows timing, capture fidelity or comfort.
+
+## Verify intermediate steps with before/after evidence
+
+A supplied Notepad-launch report showed Start visibly opening while verification
+called it a failure because Notepad was not open yet. That compared an
+intermediate action against the whole task. Later verification requested causal
+before-state evidence that the provider had never received.
+
+The controller now binds verification to the actual last pre-input/recheck PNG
+and the post-input PNG. Native Ollama requests carry two images in order: BEFORE,
+then AFTER. The verifier is explicitly asked about **one step's expected visible
+postcondition**, while retaining the user's intended app, target and draft-only
+constraints. Step success is not overall task completion. Negative/uncertain
+results remain negative/uncertain; the controller does not reinterpret prose to
+force success, enlarge retry limits or equate an input receipt with progress.
+
+If capture bounds/display topology change, the old image is omitted instead of
+being compared in the wrong coordinate context. The request records an
+`after_only_geometry_changed` scope; visual uncertainty stays honest. Combined
+before/after PNG bytes are bounded to 32 MiB before transmission. Images remain
+in memory under existing diagnostic retention/export rules. The exact serving
+model must support multiple images in native `/api/chat`; no model switch,
+one-image silent fallback or automatic retry is introduced if the server fails.
+
+Unambiguous descriptions such as `Type 'Notepad'` must use one full text payload,
+not just `press N`. The consistency guard preserves apostrophes inside words and
+skips ambiguous/nested quote prose rather than guessing its intended literal.
+Existing task/draft and action-policy validation remain authoritative. Planning
+also directs word/search entry through whole-string text actions. Final task
+completion still requires its own visible result and human confirmation.
+
+Retest on Windows: close Start/search, start “open new notepad document”, and
+inspect the exported trace. Opening Start should be assessed as an intermediate
+step; the next search entry should be a whole `text` payload. Confirm Notepad
+actually opens a new blank document before approving final completion. Portable
+request/logic tests do not establish live model visual accuracy or multi-image
+serving compatibility.

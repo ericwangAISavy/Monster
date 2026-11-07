@@ -2106,3 +2106,45 @@ def test_report_terminal_window_sequence_runs_complete_chord_with_correct_review
         assert len(reviews) == int(approve_each_step)
     finally:
         engine.close()
+
+
+def test_word_typing_claim_cannot_emit_only_its_first_key():
+    from monster.agent.validation import validate_proposal_intent
+    bad = Decision('action', "Type 'Notepad' into the search box", {'op': 'press', 'key': 'N'}, risk='routine')
+    with pytest.raises(ValueError, match='text'):
+        validate_proposal_intent(bad, 'open new notepad document')
+    validate_proposal_intent(replace(bad, action={'op': 'text', 'text': 'Notepad'}), 'open new notepad document')
+
+
+@pytest.mark.parametrize("geometry_changed", [False, True])
+def test_verification_receives_the_actual_pre_input_frame(qtbot, geometry_changed):
+    engine, _bridge, model = controller([
+        Decision('action', 'Open Start', {'op': 'press', 'key': 'WIN'}, risk='routine',
+                 expected_result='The Start menu opens.'), Decision('unable', 'End simulated test')])
+    engine.config = replace(engine.config, approve_each_step=False)
+    before, after = observation('#ffffff'), observation('#dddddd')
+    if geometry_changed:
+        after = replace(after, bounds=Bounds(0, 0, 100, 100), displays=(Bounds(0, 0, 100, 100),))
+    checks = []
+
+    async def verify(*args):
+        checks.append(args)
+        return Verification('succeeded', 'Intermediate result verified, not overall task completion')
+
+    model.verify_action = verify
+    engine.capture_requested.connect(lambda: engine.observation_ready(
+        after if engine.phase == 'verifying_capture' else before, engine.generation))
+    try:
+        engine.submit('open new notepad document')
+        qtbot.waitUntil(lambda: not engine.active and engine.phase == 'idle', timeout=5000)
+        assert checks[0][4] == after.png
+        assert checks[0][7] == (None if geometry_changed else before.png)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize('text', ["don't forget", "John's notes", "l'été"])
+def test_quoted_typing_guard_preserves_apostrophes_inside_words(text):
+    from monster.agent.validation import validate_proposal_intent
+    validate_proposal_intent(Decision('action', f"Type '{text}' into the document",
+                            {'op': 'text', 'text': text}), 'Write the requested text')

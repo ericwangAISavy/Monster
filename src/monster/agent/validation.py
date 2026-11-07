@@ -9,6 +9,7 @@ from monster.agent.keyboard import (
     NEW_TERMINAL_WINDOW,
     ROUTINE_CHARACTER_KEYS,
     terminal_window_requested,
+    validate_quoted_typing,
     validate_shortcut_description,
 )
 from monster.computer.contracts import MODIFIERS, Bounds, validate_action
@@ -48,6 +49,7 @@ def validate_proposal_intent(decision, instruction):
     if action.get("op") == "press" and action.get("key") in MODIFIERS - {"WIN"}:
         raise ValueError("A modifier alone is not a shortcut. Propose one complete chord with all keys.")
     validate_shortcut_description(action, decision.summary)
+    validate_quoted_typing(action, decision.summary)
     expected = decision.expected_result or ""
     if terminal_window_requested(instruction) and (
         re.search(r"\bnew\b[^.!?\n]{0,60}\btab\b", expected, re.IGNORECASE)

@@ -69,6 +69,7 @@ class Provider(Protocol):
         image: bytes,
         width: int,
         height: int,
+        before_image: bytes | None = None,
     ) -> Verification: ...
     async def decide(
         self,

@@ -109,3 +109,28 @@ Record OS build, Qt version, monitor/DPI layout and result for each row. These c
 ## Scope and known limits
 
 The default mode implements the GUI with a mock lifecycle. Subsequent milestones add standalone Windows tools and opt-in Ollama inference previews; see [Computer tools](COMPUTER_TOOLS.md) and [LAN Ollama](OLLAMA.md). Preview remains disconnected from real input; the separate opt-in [supervised mode](SUPERVISED_EXECUTION.md) executes only individually reviewed actions. The vector character is an original temporary asset inspired by the supplied reference and can be replaced independently. No wallpaper/taskbar/reference background is copied. No native Windows behavior, GPU/CPU performance target or screenshot-backend compatibility is claimed as verified by the offscreen tests.
+
+## Visibility around Windows shell surfaces
+
+The enabled companion reasserts ordinary topmost z-order about every 250 ms and
+on show, using native `SetWindowPos` without activation, resize, movement or
+`SHOWWINDOW`. It remains click-through and does not take the Start/search
+keyboard focus. Hidden/disabled widgets skip maintenance; screenshot isolation
+still hides both overlays, so brief capture disappearance remains intentional.
+
+Windows Start/search and some shell surfaces may occupy compositor bands above
+ordinary topmost application windows. Monster does not use undocumented band
+bypasses, elevation or UIAccess impersonation. For recognized shell window classes,
+it reads only the foreground surface's rectangle/monitor identity as overlay
+infrastructure, maps physical geometry to the matching Qt screen's origin/DPI,
+and parks the character beside that panel while continuing status animation.
+It does not read target titles, controls, contents or accessibility trees for this.
+When a shell host exposes an unusable full-screen rectangle, a stable screen
+corner is a best-effort fallback. Normal cursor following returns after it closes.
+
+This cannot guarantee visibility above protected/secure desktops or every shell
+implementation. On actual Windows, test opening Start, search and the taskbar at
+100/125/150/200% scaling on each monitor, confirm search retains keyboard focus,
+and verify both Monster surfaces stay absent from `monster --capture-test` PNGs.
+Linux tests mock native calls and geometry; they do not prove real shell z-order
+or visibility. No visible text panel or spinning indicator is added.

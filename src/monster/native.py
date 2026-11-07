@@ -128,3 +128,76 @@ class GlobalHotkeys(QAbstractNativeEventFilter):
     def close(self):
         self.clear()
         self.app.removeNativeEventFilter(self)
+
+
+def keep_companion_topmost(window):
+    """Reassert ordinary topmost z-order without focus, resizing or hidden revival."""
+    if not window.isVisible():
+        return False
+    api = user32()
+    if not api:
+        return False
+    api.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    api.SetWindowPos.restype = wintypes.BOOL
+    # NOACTIVATE | NOMOVE | NOSIZE | NOOWNERZORDER; deliberately no SHOWWINDOW.
+    return bool(api.SetWindowPos(int(window.winId()), -1, 0, 0, 0, 0, 0x213))
+
+
+def shell_occlusion(screen):
+    """Overlay geometry only; never read app titles, controls or accessibility data.
+
+    Windows can place shell surfaces in bands above ordinary topmost windows.
+    Return their rectangle in this Qt screen's coordinates so the passive mascot
+    can stay beside them. Never elevate, use UIAccess or impersonate shell bands.
+    """
+    from PySide6.QtCore import QRect
+
+    api = user32()
+    if not api:
+        return None
+    api.GetForegroundWindow.restype = wintypes.HWND
+    handle = api.GetForegroundWindow()
+    if not handle:
+        return None
+    api.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    api.GetClassNameW.restype = ctypes.c_int
+    name = ctypes.create_unicode_buffer(256)
+    if not api.GetClassNameW(handle, name, len(name)):
+        return None
+    if name.value not in {
+        'Windows.UI.Core.CoreWindow', 'XamlExplorerHostIslandWindow',
+        'Windows.UI.Composition.DesktopWindowContentBridge',
+        'Shell_TrayWnd', 'Shell_SecondaryTrayWnd',
+    }:
+        return None
+
+    class MonitorInfoEx(ctypes.Structure):
+        _fields_ = [('size', wintypes.DWORD), ('monitor', wintypes.RECT),
+                    ('work', wintypes.RECT), ('flags', wintypes.DWORD),
+                    ('device', wintypes.WCHAR * 32)]
+
+    api.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    api.GetWindowRect.restype = wintypes.BOOL
+    api.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    api.MonitorFromWindow.restype = wintypes.HANDLE
+    api.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfoEx)]
+    api.GetMonitorInfoW.restype = wintypes.BOOL
+    rect = wintypes.RECT()
+    info = MonitorInfoEx()
+    info.size = ctypes.sizeof(info)
+    monitor = api.MonitorFromWindow(handle, 2)
+    if not monitor or not api.GetWindowRect(handle, ctypes.byref(rect)) or not api.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return None
+    # Device identity prevents applying one monitor's scaling/origin to another.
+    if screen.name().rsplit("\\", 1)[-1].casefold() != info.device.rsplit("\\", 1)[-1].casefold():
+        return None
+    ratio = screen.devicePixelRatio()
+    if ratio <= 0:
+        return None
+    geometry = screen.geometry()
+    result = QRect(round(geometry.x() + (rect.left - info.monitor.left) / ratio),
+                   round(geometry.y() + (rect.top - info.monitor.top) / ratio),
+                   round((rect.right - rect.left) / ratio),
+                   round((rect.bottom - rect.top) / ratio)).intersected(geometry)
+    return result if result.isValid() else None

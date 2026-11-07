@@ -262,3 +262,32 @@ def test_character_picker_previews_without_saving_and_stops_when_hidden(qtbot):
     settings.reject()
     assert not settings.character_preview.timer.isActive()
     assert prefs.companion_character == 'monster'
+
+
+def test_topmost_maintenance_never_resurrects_hidden_capture_overlay(qtbot, monkeypatch):
+    from monster.ui import companion as module
+    calls = []
+    monkeypatch.setattr(module, 'keep_companion_topmost', lambda window: calls.append(window.isVisible()))
+    widget = Companion(Preferences())
+    qtbot.addWidget(widget)
+    widget.show()
+    widget.tick()
+    assert calls and all(calls)
+    widget.hide()
+    calls.clear()
+    widget.tick()
+    assert calls == [] and not widget.isVisible()
+
+
+def test_companion_avoids_shell_panel_without_stealing_focus(qtbot, monkeypatch):
+    from PySide6.QtCore import QRect
+
+    from monster.ui import companion as module
+    monkeypatch.setattr(module, 'shell_occlusion', lambda screen: QRect(100, 50, 400, 500))
+    monkeypatch.setattr(module.QCursor, 'pos', lambda: QPoint(250, 250))
+    widget = Companion(Preferences(reduced_motion=True))
+    qtbot.addWidget(widget)
+    widget.show()
+    widget.tick()
+    assert not widget.geometry().intersects(QRect(100, 50, 400, 500))
+    assert not widget.hasFocus()

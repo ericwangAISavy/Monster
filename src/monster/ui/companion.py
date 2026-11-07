@@ -6,8 +6,9 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QCursor, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
 
-from monster.geometry import beside_cursor, clamp_position, smooth
+from monster.geometry import beside_cursor, beside_occlusion, clamp_position, smooth
 from monster.lifecycle import State
+from monster.native import keep_companion_topmost, shell_occlusion
 from monster.ui.character import STATE_STYLE, draw_monster
 
 
@@ -35,6 +36,9 @@ class Companion(QWidget):
         self._position = None
         self._last = time.monotonic()
         self._phase = 0.0
+        self._zorder_at = 0.0
+        self._shell_cover = None
+        self._shell_screen = None
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.tick)
@@ -92,6 +96,11 @@ class Companion(QWidget):
         )
         if screen is None:
             return
+        if now - self._zorder_at >= .25 or self._shell_screen is not screen:
+            self._zorder_at = now
+            keep_companion_topmost(self)
+            self._shell_cover = shell_occlusion(screen)
+            self._shell_screen = screen
         area = screen.availableGeometry()
         target = beside_cursor(
             cursor,
@@ -102,11 +111,16 @@ class Companion(QWidget):
         if fixed:
             target = area.topRight() if self.preferences.companion_position == "top_right" else area.bottomRight()
             target = clamp_position(target, self.size(), area)
+        target = beside_occlusion(target, self.size(), area, self._shell_cover)
         if fixed or self._position is None or self.preferences.reduced_motion:
             self._position = QPointF(target)
         else:
             self._position = smooth(self._position, target, elapsed)
         self._position = QPointF(clamp_position(self._position.toPoint(), self.size(), area))
+        unobscured = beside_occlusion(self._position.toPoint(), self.size(), area, self._shell_cover)
+        if unobscured != self._position.toPoint():
+            # Do not animate through a protected panel or stick at its opposite edge.
+            self._position = QPointF(target)
         self.move(self._position.toPoint())
         self._phase += elapsed
         self.update()
@@ -114,6 +128,11 @@ class Companion(QWidget):
         animated = not self.preferences.reduced_motion and not (self._paused and not self._activity)
         self.timer.setInterval(16 if moving and animated else
                                33 if animated and self.visual_state != State.IDLE else 66)
+
+    def showEvent(self, event):
+        self._zorder_at = 0.0
+        self.tick()
+        super().showEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)

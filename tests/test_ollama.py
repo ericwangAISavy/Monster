@@ -556,3 +556,39 @@ def test_terminal_window_generation_exposes_complete_chord_but_not_modifier_taps
     assert ['CTRL', 'SHIFT', 'N'] not in ordinary['chord']['keys']['enum']
     assert not {'CTRL', 'SHIFT', 'ALT'} & set(terminal['press']['key']['enum'])
     assert 'WIN' in terminal['press']['key']['enum']
+
+
+def test_step_verification_sends_before_and_after_and_keeps_task_goal_separate():
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'done': True, 'message': {'content': json.dumps({
+            'status': 'succeeded', 'evidence': 'Start is visible after the action; Notepad is a later step.'})}})
+
+    adapter = OllamaProvider(config(), transport=httpx.MockTransport(handle))
+    result = asyncio.run(adapter.verify_action('vision:small', 'open new notepad document',
+        {'op': 'press', 'key': 'WIN'}, 'The Windows Start menu opens.', b'AFTER', 100, 100, b'BEFORE'))
+    assert result.status == 'succeeded'
+    user = requests[0]['messages'][1]
+    assert [base64.b64decode(data) for data in user['images']] == [b'BEFORE', b'AFTER']
+    assert 'STEP POSTCONDITION' in user['content']
+    assert 'not task completion' in user['content']
+    assert 'BEFORE' in user['content'] and 'AFTER' in user['content']
+
+
+def test_step_verification_does_not_override_negative_model_evidence():
+    adapter = OllamaProvider(config(), transport([], decision={
+        'status': 'failed', 'evidence': 'The intended application is absent.'}))
+    assert asyncio.run(adapter.verify_action('vision:small', 'open app', {'op': 'press', 'key': 'WIN'},
+        'The Start menu opens.', b'PNG', 100, 100)).status == 'failed'
+
+
+@pytest.mark.parametrize('before', [b'', 'not bytes'])
+def test_invalid_before_image_is_rejected_without_transmission(before):
+    requests = []
+    adapter = OllamaProvider(config(), transport(requests))
+    with pytest.raises(ProviderError, match='before/after'):
+        asyncio.run(adapter.verify_action('vision:small', 'open Notepad',
+                    {'op': 'press', 'key': 'WIN'}, 'Start opens.', b'AFTER', 100, 100, before))
+    assert requests == []
