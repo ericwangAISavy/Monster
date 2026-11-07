@@ -86,6 +86,22 @@ DECISION_SCHEMA = {
 }
 
 
+def decision_schema_for_draft():
+    """Constrain generation as well as enforcing draft policy at dispatch."""
+    schema = deepcopy(DECISION_SCHEMA)
+    variants = schema["oneOf"][0]["properties"]["action"]["oneOf"]
+    variants[:] = [v for v in variants if v["properties"]["op"]["const"] != "press"]
+    for variant in variants:
+        op = variant["properties"]["op"]["const"]
+        if op == "text":
+            variant["properties"]["text"]["description"] = (
+                "The entire requested draft. Typing this whole Unicode string is ONE action."
+            )
+        elif op == "chord":
+            variant["properties"]["keys"]["enum"] = [["SHIFT", "ENTER"]]
+    return schema
+
+
 def parse_decision(value, width: int, height: int, *, coordinate_space="image_pixels") -> Decision:
     if coordinate_space not in {"image_pixels", "normalized_1000"}:
         raise ProviderError("Model action failed validation: unknown coordinate space.")

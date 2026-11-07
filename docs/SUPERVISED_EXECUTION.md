@@ -610,3 +610,31 @@ verification stops incomplete immediately, without another target guess. A
 successful visual check still requires final user confirmation. Compound tasks
 such as “click once, then type hello” use the ordinary supervised workflow.
 This budget does not establish that the model located the right target.
+
+### Draft target and whole-text checks
+
+Draft tasks expose a complete Unicode `text` action to the model; character
+`press` actions and editing shortcuts are rejected before approval and again
+before dispatch. One `text` action carries the whole requested draft. Monster
+does not guess a replacement string or convert a rejected key press into typing.
+
+Before draft input, an independent screenshot assessment checks the requested
+application and editable composer. A browser displaying Slack is valid; another
+application's composer is not interchangeable. Wrong or uncertain target identity
+stops incomplete with no draft input. When the correct composer is visible but
+keyboard focus is unclear, explicit focus confirmation is required even with
+routine automatic steps. This confirms readiness only, not insertion/completion.
+
+The target assessment is bound to the exact reviewed proposal. Monster recaptures
+and compares the checked scene after the model wait; changed targets discard the
+assessment and require new planning/checking. A previous target check is not
+reused for a new proposal. Cancellation or a changed proposal cannot dispatch.
+The report records `draft_target_requested` / `draft_target_result` and separate
+Draft target check timing; post-input visual checks still assess the result and
+final completion requires user confirmation. This adds one visual assessment and
+fresh capture per accepted draft proposal. Pixel/model checks remain fallible and
+are not deterministic application-identity or keyboard-focus guarantees.
+
+For current-composer tasks, bring the requested application to the foreground and
+focus its empty composer before activating Monster. If it is not visible on the
+captured foreground display, the task stops rather than typing into another app.

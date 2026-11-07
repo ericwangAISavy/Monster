@@ -77,6 +77,7 @@ class SupervisedController(TaskController):
         self.last_verification = None
         self.last_verified_proposal = None
         self.reviewed_proposal = None
+        self.draft_target_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
@@ -130,6 +131,7 @@ class SupervisedController(TaskController):
         self.last_verification = None
         self.last_verified_proposal = None
         self.reviewed_proposal = None
+        self.draft_target_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
@@ -216,6 +218,7 @@ class SupervisedController(TaskController):
         stage = {
             "probing": "probe", "deciding": "planning",
             "comparing": "recheck", "verifying": "verification",
+            "checking_target": "target_check",
         }[self.phase]
         job = self.jobs.start(operation)
         self._remember_diagnostic_origin(self.model_diagnostic_origins, job)
@@ -466,12 +469,50 @@ class SupervisedController(TaskController):
                 "comparing": "Screen recheck after approval",
                 "deciding": "Model decision",
                 "verifying": "Visual action verification",
+                "checking_target": "Draft target check",
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
         elif self.phase == "probing":
             self._record("model_compatibility", metadata=asdict(result) if is_dataclass(result) else {})
             self.phase = "observing"
             self._capture()
+        elif self.phase == "checking_target":
+            if not self._reviewed_proposal_matches():
+                return
+            status, evidence = getattr(result, "status", None), getattr(result, "evidence", None)
+            self._record("draft_target_result", observation=self.log_frame,
+                         human_focus_confirmed=self.human_confirmed_focus,
+                         content={"status": status, "evidence": evidence})
+            if (
+                type(status) is not str or status not in {"ready", "needs_focus", "wrong_target", "uncertain"}
+                or type(evidence) is not str or not 1 <= len(evidence.strip()) <= 300
+            ):
+                self.fail("Invalid draft target assessment; no input was dispatched.")
+                return
+            if status in {"wrong_target", "uncertain"}:
+                self.fail(
+                    "Requested application's composer was not established in the captured target. "
+                    "Focus the intended app/composer manually and start a new task. "
+                    "No draft input was dispatched. Inspect Last action preview/report for evidence."
+                )
+                return
+            if status == "needs_focus":
+                self.phase = "target_focus_review"
+                self.question_id = uuid.uuid4().hex
+                self.state_changed.emit(State.WAITING)
+                self.approval_requested.emit(
+                    self.question_id,
+                    "The requested app and composer are visible, but keyboard focus is unclear. "
+                    "Confirm ONLY if the intended editable composer is focused and ready for "
+                    "the requested draft. Otherwise Decline, focus it manually and start again. "
+                    "This confirms focus only, not typing or task completion. No input was dispatched.",
+                )
+                self.approval_timer.start(60000)
+                return
+            self.draft_target_proposal = deepcopy(self.pending)
+            # The vision call can take seconds. Bind its result to this exact
+            # proposal and checked scene, then obtain a fresh matching capture.
+            self._begin_recheck(restore=False)
         elif self.phase == "verifying":
             self.last_verification = result
             self.last_verified_proposal = deepcopy(self.pending)
@@ -562,6 +603,8 @@ class SupervisedController(TaskController):
             if not self._reviewed_proposal_matches():
                 return
             if not result or age > 2:
+                self.draft_target_proposal = None
+                self.human_confirmed_focus = False
                 self.stale += 1
                 if self.stale > 2:
                     self.fail("Screen changed repeatedly. Stop and stabilize the test desktop.")
@@ -574,6 +617,23 @@ class SupervisedController(TaskController):
                 self._validate_draft_proposal()
             except (ValueError, TypeError):
                 self.fail("Action is outside the supervised demo policy.")
+                return
+            if draft_only(self.instruction) and self.draft_target_proposal != self.pending:
+                self.phase = "checking_target"
+                self.state_changed.emit(State.THINKING)
+                self.stage_changed.emit("Target check")
+                self._record("draft_target_requested", observation=self.log_frame,
+                             content={"action": self.pending.action})
+                diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+                instruction, checked_action, checked_observation = (
+                    self._task_context(), deepcopy(self.pending.action), self.observation,
+                )
+                self.job = self._start_model(
+                    lambda: self._provider(diagnostics, "checking_target", call, step).verify_draft_target(
+                        self.config.model, instruction, checked_action, checked_observation.png,
+                        checked_observation.bounds.width, checked_observation.bounds.height,
+                    )
+                )
                 return
             self.phase = "executing"
             self.state_changed.emit(State.WORKING)
@@ -593,6 +653,7 @@ class SupervisedController(TaskController):
                 list(self.observation.displays),
             )
         elif self.phase == "deciding":
+            self.draft_target_proposal = None
             self.pending = result
             self._record("proposal", observation=self.planned_frame,
                          content={"proposal": asdict(result)})
@@ -703,6 +764,13 @@ class SupervisedController(TaskController):
                 )
             else:
                 self.cancel()
+        elif self.phase == "target_focus_review":
+            if not self._reviewed_proposal_matches():
+                return
+            self.human_confirmed_focus = True
+            self.draft_target_proposal = deepcopy(self.pending)
+            self.trace.append("User confirmed draft target focus before input; result remains unverified.")
+            self._begin_recheck(restore=True)
         elif self.phase == "focus_review":
             self.human_confirmed_focus = True
             self.history.append(
@@ -765,7 +833,9 @@ class SupervisedController(TaskController):
                 "\nTrusted task boundary: draft/typing only in the currently open composer. "
                 "Do not send, submit, switch applications or press Enter. Stop when the "
                 "requested text is visibly present in that editable composer, not in chat history. "
-                "Type the complete requested draft in one text transaction. After text insertion, "
+                "Type the complete requested draft in one text transaction: "
+                'use {"op":"text","text":"hello"} for the whole draft, never press-per-letter. '
+                "After text insertion, "
                 "only observe and report completion or ask for help; do not append, edit or send."
             )
         if self.single_click_policy:
@@ -863,6 +933,7 @@ class SupervisedController(TaskController):
         self.instruction = ""
         self.observation = self.pending = None
         self.reviewed_proposal = None
+        self.draft_target_proposal = None
 
     def cancel(self):
         if self.phase != "closing" and self.active:

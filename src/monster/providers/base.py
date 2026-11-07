@@ -46,11 +46,20 @@ class Verification:
     evidence: str
 
 
+@dataclass(frozen=True)
+class DraftTargetCheck:
+    status: str
+    evidence: str
+
+
 class Provider(Protocol):
     async def health(self) -> str: ...
     async def models(self) -> list[Model]: ...
     async def capabilities(self, model: str) -> Capabilities: ...
     async def probe(self, model: str) -> ProbeResult: ...
+    async def verify_draft_target(
+        self, model: str, instruction: str, action: dict, image: bytes, width: int, height: int,
+    ) -> DraftTargetCheck: ...
     async def verify_action(
         self,
         model: str,

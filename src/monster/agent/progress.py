@@ -46,6 +46,11 @@ def validate_draft_action(decision, instruction, text_inserted=False):
         )
     if action.get("op") in {"text", "move", "scroll"} or action.get("keys") == ["SHIFT", "ENTER"]:
         return
+    if action.get("op") in {"press", "chord"}:
+        raise ValueError(
+            'Draft typing requires one complete {"op": "text", "text": "hello"} action, '
+            "not character key presses or editing shortcuts. Sending/Enter remains blocked."
+        )
     summary = decision.summary.casefold()
     for phrase in ("do not send", "don't send", "not send", "without sending"):
         summary = summary.replace(phrase, "")

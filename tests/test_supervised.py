@@ -78,6 +78,10 @@ class FakeModel:
     async def probe(self, model):
         return ProbeResult(model, "abc", "test", True, True)
 
+    async def verify_draft_target(self, *args):
+        from monster.providers.base import DraftTargetCheck
+        return DraftTargetCheck("ready", "Simulated requested app and composer are ready")
+
     async def verify_action(self, *args):
         return Verification("succeeded", "Simulated expected visual result is present")
 
@@ -894,7 +898,8 @@ def test_task_timings_survive_completion_without_private_payloads(qtbot):
         assert "Visual verification: completed 1" in report
         assert "Input dispatch: completed 1" in report
         assert "Input startup: completed 1" in report
-        assert "Screenshot capture: completed 4" in report
+        assert "Screenshot capture: completed 5" in report
+        assert "Draft target check: completed 1" in report
         assert "Input cleanup: completed 1" in report
         assert content not in report and "Simulated expected" not in report
         assert len(bridge.executed) == 1
@@ -1726,5 +1731,200 @@ def test_supervised_activity_distinguishes_capture_thinking_acting_and_verificat
             assert label in stages
         assert stages.index("Capturing") < stages.index("Thinking") < stages.index("Acting")
         assert stages.index("Acting") < stages.index("Verifying")
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("approve_each_step", [False, True])
+def test_draft_rejects_character_press_before_any_input_or_review(qtbot, approve_each_step):
+    engine, bridge, _ = controller([
+        Decision("action", "Type hello into composer", {"op": "press", "key": "H"},
+                 risk="routine", expected_result="H appears"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    failures, questions = [], []
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.approval_requested.connect(lambda *args: questions.append(args))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("now write the hello msg on current slack msg panel")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed and not questions
+        assert any('"op": "text"' in item for item in engine.history)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("approve_each_step", [False, True])
+def test_draft_wrong_application_check_prevents_typing(qtbot, approve_each_step):
+    from types import SimpleNamespace
+
+    engine, bridge, model = controller([
+        Decision("action", "Type hello", {"op": "text", "text": "hello"}, risk="routine"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    failures = []
+
+    async def check(*args):
+        return SimpleNamespace(status="wrong_target", evidence="Visible app is ChatGPT, not Slack")
+
+    model.verify_draft_target = check
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.approval_requested.connect(
+        lambda rid, text: QTimer.singleShot(0, lambda: engine.respond(rid, "approve")))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Write hello in the current Slack message composer")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+        assert "target" in failures[0].lower()
+        assert any(event["event"] == "draft_target_result"
+                   for event in engine.run_diagnostics.snapshot().data["events"])
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("approve_each_step", [False, True])
+def test_draft_target_focus_confirmation_is_bound_and_not_completion(qtbot, approve_each_step):
+    from monster.providers.base import DraftTargetCheck
+    engine, bridge, model = controller([
+        Decision("action", "Type hello", {"op": "text", "text": "hello"}, risk="routine"),
+        Decision("complete", "Draft visible"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    checks, finished, focus_questions = [], [], []
+
+    async def check(*args):
+        checks.append(args)
+        return DraftTargetCheck("needs_focus", "Slack composer visible; caret unclear")
+
+    def approve(rid, text):
+        if engine.phase == "target_focus_review":
+            assert not bridge.executed and not finished
+            focus_questions.append(rid)
+        if engine.phase != "confirming":
+            QTimer.singleShot(0, lambda: engine.respond(rid, "approve"))
+
+    model.verify_draft_target = check
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.approval_requested.connect(approve)
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("Write hello in the current Slack composer")
+        qtbot.waitUntil(lambda: engine.phase == "confirming")
+        assert len(focus_questions) == len(checks) == len(bridge.executed) == 1
+        assert not finished and engine.last_verification.status == "succeeded"
+        engine.respond(engine.question_id, "approve")
+        qtbot.waitUntil(lambda: bool(finished))
+    finally:
+        engine.close()
+
+
+def test_draft_target_change_after_vision_wait_invalidates_ready_proof(qtbot):
+    from monster.providers.base import DraftTargetCheck
+    engine, bridge, model = controller([
+        Decision("action", "Type hello", {"op": "text", "text": "hello"}, risk="routine"),
+        Decision("action", "Type hello", {"op": "text", "text": "hello"}, risk="routine"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    checks, failures = [], []
+
+    async def check(*args):
+        checks.append(args)
+        return DraftTargetCheck("ready" if len(checks) == 1 else "wrong_target", "Changed application contents")
+
+    model.verify_draft_target = check
+    engine.capture_requested.connect(lambda: engine.observation_ready(
+        observation("#000000" if checks else "#ffffff"), engine.generation))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Write hello in the current Slack composer")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert len(checks) == 2
+        assert not bridge.executed
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("intervention", ["cancel", "mutate"])
+def test_draft_target_result_cannot_survive_cancel_or_proposal_mutation(qtbot, intervention):
+    import asyncio
+
+    from monster.providers.base import DraftTargetCheck
+    engine, bridge, model = controller([
+        Decision("action", "Type hello", {"op": "text", "text": "hello"}, risk="routine"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    started, failures = [], []
+
+    async def check(*args):
+        started.append(True)
+        await asyncio.sleep(.08)
+        return DraftTargetCheck("ready", "Simulated target")
+
+    model.verify_draft_target = check
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Write hello in the current Slack composer")
+        qtbot.waitUntil(lambda: bool(started))
+        if intervention == "cancel":
+            engine.cancel()
+            qtbot.wait(150)
+        else:
+            engine.pending = Decision("action", "Type changed", {"op": "text", "text": "different"}, risk="routine")
+            qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+    finally:
+        engine.close()
+
+
+def test_invalid_target_status_fails_closed_without_input(qtbot):
+    from monster.providers.base import DraftTargetCheck
+    engine, bridge, model = controller([
+        Decision("action", "Type hello", {"op": "text", "text": "hello"}, risk="routine"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+
+    async def check(*args):
+        return DraftTargetCheck(["ready"], "Invalid status type")
+
+    model.verify_draft_target = check
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Write hello in Slack")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert not bridge.executed
+    finally:
+        engine.close()
+
+
+def test_slow_draft_target_check_uses_fresh_capture_before_dispatch(qtbot):
+    import asyncio
+
+    engine, bridge, model = controller([
+        Decision("action", "Type hello", {"op": "text", "text": "hello"}, risk="routine"),
+        Decision("complete", "Draft visible"),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    from monster.providers.base import DraftTargetCheck
+
+    async def check(*args):
+        await asyncio.sleep(2.1)
+        return DraftTargetCheck("ready", "Simulated requested composer")
+
+    model.verify_draft_target = check
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    try:
+        engine.submit("Write hello in the current Slack composer")
+        qtbot.waitUntil(lambda: engine.phase == "confirming", timeout=5000)
+        events = engine.diagnostic_snapshot().data["events"]
+        checked = next(e for e in events if e["event"] == "draft_target_requested")
+        dispatched = next(e for e in events if e["event"] == "dispatch_requested")
+        assert checked["details"]["observation"] != dispatched["details"]["observation"]
+        assert dispatched["details"]["observation_age_s"] < 2
+        assert len(bridge.executed) == 1
     finally:
         engine.close()

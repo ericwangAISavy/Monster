@@ -505,3 +505,39 @@ def test_synthetic_probe_png_decodes_with_independent_image_reader(colors):
     assert (image.width(), image.height()) == (96, 32)
     rgb = {"red": "#ff0000", "green": "#00ff00", "blue": "#0000ff"}
     assert [image.pixelColor(x, 16).name() for x in (16, 48, 80)] == [rgb[c] for c in colors]
+
+
+def test_draft_schema_exposes_full_text_without_physical_character_keys():
+    requests = []
+    proposal = {"kind": "action", "summary": "Type hello", "risk": "routine",
+                "expected_result": "hello is visible", "action": {"op": "text", "text": "hello"}}
+    adapter = OllamaProvider(config(), transport(requests, decision=proposal))
+    result = asyncio.run(adapter.decide("vision:small", "Write hello in the current Slack msg panel", b"PNG", 100, 100))
+    assert result.action == {"op": "text", "text": "hello"}
+    body = json.loads(requests[-1].content)
+    variants = body["format"]["oneOf"][0]["properties"]["action"]["oneOf"]
+    assert "press" not in [v["properties"]["op"]["const"] for v in variants]
+    assert '{"op":"text","text":"hello"}' in body["messages"][1]["content"]
+
+
+@pytest.mark.parametrize("status", ["ready", "needs_focus", "wrong_target", "uncertain"])
+def test_draft_target_verification_uses_pixels_and_requested_application(status):
+    requests = []
+    adapter = OllamaProvider(config(), transport(requests, decision={"status": status, "evidence": "Visible target evidence"}))
+    result = asyncio.run(adapter.verify_draft_target("vision:small", "Write hello in Slack", {"op": "text", "text": "hello"}, b"PNG", 100, 100))
+    assert result.status == status
+    prompt = json.loads(requests[-1].content)["messages"][1]["content"]
+    assert "ChatGPT" in prompt and "Slack" in prompt
+    assert "before" in prompt.lower()
+
+
+@pytest.mark.parametrize("result", [
+    {"status": "ready", "evidence": ""},
+    {"status": "succeeded", "evidence": "Not a valid target status"},
+    {"status": ["ready"], "evidence": "Wrong type"},
+    {"status": "ready", "evidence": "x", "approved": True},
+])
+def test_draft_target_malformed_assessment_is_rejected(result):
+    adapter = OllamaProvider(config(), transport([], decision=result))
+    with pytest.raises(ProviderError, match="invalid draft target assessment"):
+        asyncio.run(adapter.verify_draft_target("vision:small", "Write hello in Slack", {"op": "text", "text": "hello"}, b"PNG", 100, 100))

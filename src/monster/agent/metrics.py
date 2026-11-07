@@ -10,6 +10,7 @@ class OperationTimings:
         "capture": "Screenshot capture",
         "planning": "Planning",
         "recheck": "Scene recheck",
+        "target_check": "Draft target check",
         "verification": "Visual verification",
         "startup": "Input startup",
         "dispatch": "Input dispatch",
