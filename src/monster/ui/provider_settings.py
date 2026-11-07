@@ -73,6 +73,7 @@ class ProviderSettings(QDialog):
         outer = QVBoxLayout(self)
         content = QWidget()
         layout = QVBoxLayout(content)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.setContentsMargins(0, 0, 6, 0)
         self.form_scroll = QScrollArea()
         self.form_scroll.setWidgetResizable(True)
@@ -81,13 +82,6 @@ class ProviderSettings(QDialog):
         self.form_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget {background:#12172c;}")
         self.form_scroll.setWidget(content)
         outer.addWidget(self.form_scroll, 1)
-        note = QLabel(
-            "Connect to your own local/LAN Ollama server. Preview mode sends one "
-            "desktop screenshot to this server. Real control follows your step approval setting. "
-            "Use a disposable test desktop. Ctrl+Alt+X stops."
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
         form = QFormLayout()
         self.url = QLineEdit(config.url)
         self.url.setAccessibleName("Ollama server URL")
