@@ -97,7 +97,9 @@ class DecisionRequest:
     def __post_init__(self):
         if (type(self.task_id) is not str or not 1 <= len(self.task_id) <= 128
                 or type(self.generation) is not int or not 0 <= self.generation < 2**31
-                or type(self.instruction) is not str or not 1 <= len(self.instruction.strip()) <= 4000
+                or type(self.instruction) is not str or not 1 <= len(self.instruction) <= 4000
+                or not self.instruction.strip()
+                or any(0xD800 <= ord(c) <= 0xDFFF for c in self.instruction)
                 or not isinstance(self.frame, FrameBinding)):
             raise UIVenusActionError("decision_request")
         validate_png(self.image_png, self.frame.bounds.width, self.frame.bounds.height)
@@ -226,7 +228,7 @@ class UIVenusComputerAdapter:
             raise ProviderError("UI-Venus preview timed out; no retry or candidate accepted.") from None
         except httpx.HTTPError:
             raise ProviderError("UI-Venus endpoint unavailable; check server, proxy and TLS.") from None
-        except (ValueError, UnicodeError):
+        except (ValueError, UnicodeError, RecursionError):
             raise ProviderError("UI-Venus endpoint returned malformed JSON.") from None
         if type(value) is not dict or value.get("model") != cfg.model:
             raise ProviderError("UI-Venus response model identity missing or mismatched.")

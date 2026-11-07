@@ -32,7 +32,9 @@ bundled or downloaded here.
 
 `DecisionRequest` snapshots task ID, generation, objective, PNG and immutable
 `FrameBinding`: observation ID, hash, physical bounds, display topology, timestamp
-and opaque foreground guard. PNG dimensions/hash are validated independently.
+and opaque foreground guard. PNG dimensions/hash are validated independently. Objectives are bounded to
+1–4000 total characters (including surrounding whitespace); blank objectives and
+unpaired Unicode surrogates are rejected before any request is sent.
 `PreviewDecision` is immutable and versioned (`schema_version=1`); action mappings
 are read-only. It carries image-relative and desktop-physical actions separately,
 plus coordinate provenance. Every result has `execution_allowed=false` and
@@ -113,6 +115,9 @@ generic JSON/action schema. It requires exactly one assistant choice, matching
 served model identity and `finish_reason=stop`; missing/length/tool/error endings
 are rejected. This is stricter than upstream's acceptance of missing finish flags.
 Requests have total deadlines and bounded responses, no redirects or retries.
+Malformed or excessively nested JSON is reported as a safe provider failure; the
+offline CLI also stops cleanly on excessively nested fixture JSON. Neither path
+accepts a candidate or prints the response body when parsing fails.
 
 Only localhost/private IP origins are supported initially. Plain LAN HTTP needs
 explicit confirmation; screenshot transmission needs local-only confirmation.

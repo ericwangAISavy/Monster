@@ -145,7 +145,7 @@ def main():
             passed = True
         print(json.dumps(report, ensure_ascii=True, indent=2))
         return 0 if passed else 1
-    except (ProviderError, ValueError, TypeError, OSError, UnicodeError) as exc:
+    except (ProviderError, ValueError, TypeError, OSError, UnicodeError, RecursionError) as exc:
         # Provider errors contain fixed safe categories; never emit file contents,
         # arbitrary OS exception strings, HTTP bodies, or raw model responses.
         detail = str(exc) if isinstance(exc, ProviderError) else type(exc).__name__

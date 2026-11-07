@@ -533,3 +533,43 @@ def test_venus_oversized_response_is_rejected_without_body_disclosure():
         asyncio.run(adapter.next_decision(request()))
     assert "PRIVATE" not in str(error.value)
     assert adapter.history_metadata() == ()
+
+
+def test_venus_deep_json_is_a_safe_provider_failure():
+    import asyncio
+
+    import httpx
+
+    from monster.providers.base import ProviderError
+    from monster.providers.ui_venus import UIVenusComputerAdapter
+
+    body = b'[' * 10000 + b'"PRIVATE_BODY"' + b']' * 10000
+    adapter = UIVenusComputerAdapter(config(), transport=httpx.MockTransport(
+        lambda req: httpx.Response(200, content=body)))
+    with pytest.raises(ProviderError, match="malformed JSON") as error:
+        asyncio.run(adapter.next_decision(request()))
+    assert "PRIVATE_BODY" not in str(error.value)
+    assert adapter.history_metadata() == ()
+
+
+@pytest.mark.parametrize("instruction", [" " * 5000 + "Click", "PRIVATE_TASK\ud800"])
+def test_venus_request_rejects_oversized_or_unencodable_instruction(instruction):
+    from dataclasses import replace
+
+    from monster.providers.venus_actions import UIVenusActionError
+
+    with pytest.raises(UIVenusActionError):
+        replace(request(), instruction=instruction)
+
+
+def test_venus_deep_fixture_cli_stops_without_traceback(tmp_path):
+    import subprocess
+    import sys
+
+    manifest = tmp_path / "deep.json"
+    manifest.write_bytes(b'[' * 10000 + b'"PRIVATE_BODY"' + b']' * 10000)
+    run = subprocess.run([sys.executable, "-m", "monster.providers.ui_venus_preview",
+                          "--fixture", str(manifest)], check=False, capture_output=True, text=True, timeout=10)
+    assert run.returncode == 1
+    assert "Traceback" not in run.stderr and "PRIVATE_BODY" not in run.stderr
+    assert run.stdout == ""
