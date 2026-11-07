@@ -638,3 +638,37 @@ are not deterministic application-identity or keyboard-focus guarantees.
 For current-composer tasks, bring the requested application to the foreground and
 focus its empty composer before activating Monster. If it is not visible on the
 captured foreground display, the task stops rather than typing into another app.
+
+## Windows Start navigation consistency
+
+A supplied Windows 11 report showed a model describing the Start button while
+pointing at the weather/Widgets tile. The worker receipt matched the proposed
+physical coordinates; logical-to-physical DPI conversion did not explain the
+wrong target. A subsequent proposal described the Windows key but emitted the
+letter `L`. Human approval allowed the inconsistent key to reach the executor.
+Post-action verification and duplicate prevention correctly reported failure and
+blocked later repeated clicks; those checks are retained.
+
+For recognized English proposals that open Windows Start as an intermediate
+navigation step, the controller now requires a newly proposed atomic
+`{"op":"press","key":"WIN"}`. It rejects guessed launcher clicks, letters and
+chords before approval and again before dispatch. It never rewrites a proposal or
+reuses approval for a substituted action. Planning guidance distinguishes `WIN`
+from `L` and the Windows 11 Widgets tile from centered Start. Existing scene,
+foreground, approval, input cleanup and visual-result checks still apply.
+
+An explicit user pointer request targeting Start retains its pointer contract;
+an unrelated later click in a compound task does not permit a guessed launcher
+click. Clicking an app *inside* an already-open Start menu, searching there, and
+unrelated app controls called Start are not treated as opening Windows Start.
+This is a narrow consistency/strategy guard, not a general visual-grounding
+solution or proof of model reliability. Unsupported or repeated model proposals
+still stop incomplete without input; limits have not increased.
+
+Native retest: use a disposable desktop, run “now open fresh terminal window”
+with each approval setting, and inspect Last action preview. Recognized Start
+navigation must propose `press WIN`, never a weather-tile coordinate or `press L`.
+Confirm the Start menu visibly opens before any search step. Continue only with
+fresh observations and bounded reviewed inputs. Confirm the intended new terminal
+window visually; do not type or execute shell commands. Windows/model behavior
+still needs actual retesting; portable tests cover validation and input routing.

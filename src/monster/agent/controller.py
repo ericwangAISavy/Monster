@@ -25,6 +25,7 @@ from monster.agent.validation import (
     prepare_action,
     scene_matches,
     single_click_requested,
+    validate_proposal_intent,
     window_close_requested,
 )
 from monster.lifecycle import State, TaskController
@@ -798,6 +799,7 @@ class SupervisedController(TaskController):
             )
 
     def _prepare_action(self, action, observation):
+        validate_proposal_intent(self.pending, self.instruction)
         if self.single_click_policy:
             if self.single_click_dispatched:
                 raise ValueError("The requested one-click input was already dispatched; no further input.")

@@ -1928,3 +1928,105 @@ def test_slow_draft_target_check_uses_fresh_capture_before_dispatch(qtbot):
         assert len(bridge.executed) == 1
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize('action', [
+    {'op': 'click', 'x': 29, 'y': 1041},
+    {'op': 'press', 'key': 'L'},
+    {'op': 'chord', 'keys': ['WIN', 'L']},
+])
+def test_start_menu_navigation_rejects_guessed_clicks_and_wrong_key(action):
+    from monster.agent.validation import validate_proposal_intent
+    proposal = Decision('action', 'Open the Windows Start menu', action, risk='routine',
+                        expected_result='The Windows Start menu should open.')
+    with pytest.raises(ValueError, match='WIN'):
+        validate_proposal_intent(proposal, 'now open fresh terminal window')
+
+
+def test_windows_key_claim_cannot_dispatch_letter_even_after_human_review(qtbot):
+    bad = Decision('action', 'Use the Windows key to open the Start menu',
+                   {'op': 'press', 'key': 'L'}, risk='routine',
+                   expected_result='The Start menu should open.')
+    engine, bridge, model = controller([bad, Decision('unable', 'Need a valid launcher action')])
+    approvals = []
+    engine.approval_requested.connect(lambda *args: approvals.append(args))
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.submit('now open fresh terminal window')
+    qtbot.waitUntil(lambda: not engine.active and engine.phase == 'idle', timeout=5000)
+    assert bridge.executed == [] and approvals == []
+    assert any('WIN' in entry for history in model.history for entry in history)
+
+
+@pytest.mark.parametrize('instruction,proposal', [
+    ('open fresh terminal window', Decision('action', 'Open the Start menu',
+        {'op': 'press', 'key': 'WIN'}, expected_result='The Start menu opens.')),
+    ('Click the Windows Start button once', Decision('action', 'Click Start',
+        {'op': 'click', 'x': 20, 'y': 20}, expected_result='The Start menu opens.')),
+    ('Type L', Decision('action', 'Type the letter L', {'op': 'press', 'key': 'L'},
+        expected_result='L is visible in the editor.')),
+    ('Dismiss Start menu', Decision('action', 'Close the Start menu',
+        {'op': 'press', 'key': 'ESC'}, expected_result='The Start menu closes.')),
+])
+def test_launcher_guard_preserves_correct_key_explicit_pointer_and_unrelated_actions(instruction, proposal):
+    from monster.agent.validation import validate_proposal_intent
+    validate_proposal_intent(proposal, instruction)
+
+
+def test_typing_in_already_open_start_menu_is_not_mistaken_for_launching_it():
+    from monster.agent.validation import validate_proposal_intent
+    decision = Decision('action', 'Type Terminal into the visible search field',
+                        {'op': 'text', 'text': 'Terminal'}, risk='routine',
+                        expected_result='The Start menu remains open and shows Terminal search results.')
+    validate_proposal_intent(decision, 'now open fresh terminal window')
+
+
+@pytest.mark.parametrize('approve_each_step', [True, False])
+def test_report_launcher_sequence_dispatches_only_a_fresh_valid_win_proposal(qtbot, approve_each_step):
+    proposals = [
+        Decision('action', 'Click the Windows Start button', {'op': 'click', 'x': 29, 'y': 90},
+                 risk='routine', expected_result='The Start menu will open.'),
+        Decision('action', 'Use the Windows key', {'op': 'press', 'key': 'L'},
+                 risk='routine', expected_result='The Start menu should open.'),
+        Decision('action', 'Open Start with the Windows key', {'op': 'press', 'key': 'WIN'},
+                 risk='routine', expected_result='The Start menu opens.'),
+        Decision('unable', 'Further work is outside this simulated launcher test'),
+    ]
+    engine, bridge, _model = controller(proposals)
+    engine.config = replace(engine.config, approve_each_step=approve_each_step)
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    reviews = []
+
+    def review(rid, text):
+        reviews.append(text)
+        QTimer.singleShot(0, lambda: engine.respond(rid, 'approve'))
+
+    engine.approval_requested.connect(review)
+    try:
+        engine.submit('now open fresh terminal window')
+        qtbot.waitUntil(lambda: not engine.active and engine.phase == 'idle', timeout=6000)
+        assert [entry[0] for entry in bridge.executed] == [{'op': 'press', 'key': 'WIN'}]
+        assert bridge.executed[0][1] == 77
+        assert len(reviews) == int(approve_each_step)
+        assert engine.verification_calls == 1
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize('summary,action', [
+    ('Click Terminal in the Start menu', {'op': 'click', 'x': 50, 'y': 50}),
+    ('Open Terminal from the Start menu', {'op': 'click', 'x': 50, 'y': 50}),
+    ('Click the Start button', {'op': 'click', 'x': 50, 'y': 50}),
+])
+def test_launcher_guard_does_not_confuse_menu_contents_or_generic_app_buttons(summary, action):
+    from monster.agent.validation import validate_proposal_intent
+    validate_proposal_intent(Decision('action', summary, action,
+                            expected_result='The selected application opens.'), 'Open the application')
+
+
+def test_unrelated_click_in_compound_task_does_not_authorize_guessed_start_click():
+    from monster.agent.validation import validate_proposal_intent
+    decision = Decision('action', 'Click the Windows Start button',
+                        {'op': 'click', 'x': 29, 'y': 1041},
+                        expected_result='The Start menu opens.')
+    with pytest.raises(ValueError, match='WIN'):
+        validate_proposal_intent(decision, 'Open a fresh terminal window, then click Settings')

@@ -29,6 +29,47 @@ def window_close_requested(instruction):
     ))
 
 
+def validate_proposal_intent(decision, instruction):
+    """Narrow OS-launcher consistency check, not general semantic grounding.
+
+    Implicit Start navigation has a layout-independent keyboard representation.
+    Reject a contradictory proposal rather than rewriting reviewed input. Explicit
+    pointer tasks keep their original contract and still need visual grounding.
+    """
+    if decision is None or decision.kind != "action":
+        return
+    action = decision.action or {}
+    expected = decision.expected_result or ""
+    summary = decision.summary
+    opens_start = bool(re.search(
+        r"\bstart\s+menu\s+(?:(?:will|should|must)\s+)?(?:now\s+)?(?:opens?|appears?)\b"
+        r"|\b(?:open|show|display)\s+(?:the\s+)?(?:windows\s+)?start\s+menu\b",
+        expected, re.IGNORECASE,
+    ))
+    claims_launcher = bool(re.search(
+        r"\b(?:press|use|using)\s+(?:the\s+)?(?:windows(?:\s+logo)?|win)\s+key\b"
+        r"|\bshortcut\s+(?:the\s+)?(?:windows|win)\s+key\b"
+        r"|\b(?:click|open|press)\s+(?:on\s+)?(?:the\s+)?"
+        r"(?:windows\s+start\s+(?:button|menu)|start\s+menu)\b",
+        summary, re.IGNORECASE,
+    ))
+    if not (opens_start or claims_launcher):
+        return
+    explicit_pointer = bool(re.search(
+        r"\b(?:click|tap)\s+(?:once\s+)?(?:on\s+)?(?:the\s+)?"
+        r"(?:windows\s+)?start(?:\s+(?:button|icon|menu))?\b",
+        instruction, re.IGNORECASE,
+    ))
+    if explicit_pointer and action.get("op") in {"click", "move"}:
+        return
+    if action != {"op": "press", "key": "WIN"}:
+        raise ValueError(
+            "Opening Windows Start for navigation requires press WIN (the Windows logo key), "
+            "not a letter, chord or guessed taskbar click. Propose the correct atomic key "
+            "action, or ask for help. No input was authorized or silently substituted."
+        )
+
+
 def approval_reason(decision):
     """User-authorized automatic mode still escalates sensitive/uncertain effects.
 

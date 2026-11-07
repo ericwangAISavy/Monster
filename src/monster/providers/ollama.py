@@ -485,6 +485,13 @@ class OllamaProvider:
             "Action history below contains already-converted native image pixels; do not "
             "reuse those historical pixel values as normalized coordinates. "
             "Inspect this screenshot and the action-result history before deciding. "
+            'For Windows Start navigation, use {"op":"press","key":"WIN"}; WIN is '
+            "the Windows logo key, while L is an ordinary letter. Never describe one key "
+            "while emitting another. Do not guess Start coordinates: Windows 11 can center "
+            "Start, while the bottom-left weather tile opens Widgets. Prefer the atomic "
+            "WIN key for navigation unless the user explicitly requested a pointer action. "
+            "For an explicit click task, locate the real visible target or ask for help; "
+            "do not replace the user's click with a shortcut. "
         )
         if draft_only(instruction):
             prompt += (
