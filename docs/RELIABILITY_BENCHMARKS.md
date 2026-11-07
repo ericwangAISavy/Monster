@@ -48,3 +48,10 @@ For each selected checkpoint/runtime/quantization, fill in:
 
 Stop on any unintended consequential action. Completion claims remain hypotheses
 until independent visual and human verification supports the original criteria.
+
+## Reproducible collection tools
+
+See [QUALIFICATION.md](QUALIFICATION.md) for executable native preflight, operator
+acceptance records, read-only grounding benchmarks and advisory readiness checks.
+The bundled three-case recorded replay exercises the harness only. It is not
+live model accuracy, tool reliability, latency or a release qualification result.

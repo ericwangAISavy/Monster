@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "split": "synthetic",
+  "cases": [
+    {
+      "id": "center-negative",
+      "screenshot": "desktop_1080.png",
+      "image_sha256": "df97021b91c6513b92e0c12b24bc7cde29f1ad3f32a92ddd87526f2bd336e6f5",
+      "origin_px": [
+        -1920,
+        0
+      ],
+      "dpi_percent": 100,
+      "instruction": "Click the center of the test canvas.",
+      "oracle": {
+        "kind": "action",
+        "op": "click",
+        "region_px": [
+          900,
+          500,
+          150,
+          100
+        ],
+        "button": "left",
+        "count": 1
+      },
+      "recorded_response": "Click(box=(500,500))"
+    },
+    {
+      "id": "center-1440",
+      "screenshot": "desktop_1440.png",
+      "image_sha256": "66f6e5ae38b7a94d7f6ef6cfcb6c5ee32884ee7a60f81a82b21cf4ac2a2c044c",
+      "origin_px": [
+        0,
+        0
+      ],
+      "dpi_percent": 150,
+      "instruction": "Click the center of the test canvas.",
+      "oracle": {
+        "kind": "action",
+        "op": "click",
+        "region_px": [
+          1200,
+          650,
+          200,
+          150
+        ],
+        "button": "left",
+        "count": 1
+      },
+      "recorded_response": "Click(box=(500,500))"
+    },
+    {
+      "id": "whole-text",
+      "screenshot": "desktop_1080.png",
+      "image_sha256": "df97021b91c6513b92e0c12b24bc7cde29f1ad3f32a92ddd87526f2bd336e6f5",
+      "origin_px": [
+        0,
+        0
+      ],
+      "dpi_percent": 125,
+      "instruction": "Type 'Hello from Monster' in the focused test editor. Do not send.",
+      "oracle": {
+        "kind": "action",
+        "op": "text",
+        "text_sha256": "78a653831bb890add69ce52879ddc01ebf87ca4c560a553996fead76f911c465"
+      },
+      "recorded_response": "Type(content='Hello from Monster')"
+    }
+  ]
+}

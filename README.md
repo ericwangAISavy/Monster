@@ -168,3 +168,8 @@ offline synthetic fixture command and no real-input integration or automatic mod
 switch. Native Windows and exact model/runtime qualification remain required;
 [benchmark records](docs/RELIABILITY_BENCHMARKS.md) distinguish tests from evidence
 of real task reliability.
+
+For reproducible v2 evidence collection, see the [qualification workflow](docs/QUALIFICATION.md):
+native preflight and acceptance records, read-only grounding trials, metadata-only
+metrics and an advisory readiness inventory. These tools do not enable UI-Venus
+input or change the selected model.
