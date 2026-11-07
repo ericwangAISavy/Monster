@@ -177,3 +177,11 @@ input or change the selected model.
 Above Windows Start/Search requires the optional [signed UIAccess visual renderer](docs/WINDOWS_UIACCESS.md),
 configured explicitly with `--overlay-helper`. The agent/input worker remain ordinary
 processes. The signed Windows build and above-menu behavior still require native qualification.
+
+## Durable mission orchestration (v3 Phase 1)
+
+An additive, **fake-only** LangGraph mission layer now supports SQLite checkpoints,
+bounded subtasks, approval interruptions and crash recovery without ambiguous
+action replay. It is not wired to the companion or real-input controller.
+See [v3 architecture and offline demos](docs/LONG_HORIZON_ARCHITECTURE_V3.md)
+and [implementation evidence](docs/MISSION_PHASE1_IMPLEMENTATION.md).

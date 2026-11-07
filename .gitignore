@@ -13,3 +13,6 @@ artifacts/
 *.pfx
 *.p12
 *.key
+
+# Explicit local mission demo state (SQLite/WAL; never commit runtime metadata).
+.monster-missions/
