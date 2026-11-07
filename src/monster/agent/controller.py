@@ -16,6 +16,7 @@ from monster.agent.metrics import OperationTimings
 from monster.agent.progress import (
     action_description,
     action_signature,
+    application_search_query,
     draft_only,
     equivalent_action,
     history_window,
@@ -86,6 +87,9 @@ class SupervisedController(TaskController):
         self.cleanup_blocked = False
         self.failed_actions = []
         self.inserted_text = set()
+        self.launch_query_pending = None
+        self.verification_launch_activation = False
+        self.verification_expected = None
         self.last_verification = None
         self.verification_retakes = 0
         self.verification_before = self.verification_before_frame = None
@@ -149,6 +153,9 @@ class SupervisedController(TaskController):
         self.history = []
         self.failed_actions = []
         self.inserted_text = set()
+        self.launch_query_pending = None
+        self.verification_launch_activation = False
+        self.verification_expected = None
         self.last_verification = None
         self.verification_retakes = 0
         self.verification_before = self.verification_before_frame = None
@@ -249,7 +256,7 @@ class SupervisedController(TaskController):
         stage = {
             "probing": "probe", "deciding": "planning",
             "comparing": "recheck", "verifying": "verification",
-            "checking_target": "target_check",
+            "checking_target": "target_check", "checking_completion": "verification",
         }[self.phase]
         job = self.jobs.start(operation)
         self._remember_diagnostic_origin(self.model_diagnostic_origins, job)
@@ -344,6 +351,13 @@ class SupervisedController(TaskController):
             self.verification_before_frame = self.log_frame
             self.verification_retry_scene = None
             action = dict(self.pending.action)
+            query = application_search_query(self.instruction, action)
+            if query:
+                self.launch_query_pending = query
+                self._record('app_launch_stage', stage_name='query_inserted')
+            self.verification_launch_activation = bool(self.launch_query_pending and (
+                action == {'op': 'press', 'key': 'ENTER'} or action.get('op') == 'click'
+            ))
             if action == {"op": "chord", "keys": ["ALT", "F4"]}:
                 self.close_dispatched = True
             if action["op"] == "click":
@@ -386,9 +400,13 @@ class SupervisedController(TaskController):
         if expected == (self.generation, self.phase):
             self._capture()
 
+    @property
+    def hands_free(self):
+        return self.config.hands_free and not self.action_gate
+
     def _capture(self):
         if self.active and not self.paused and self.phase in {
-            "observing", "rechecking", "verifying_capture"
+            "observing", "rechecking", "verifying_capture", "completion_capture"
         }:
             self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
@@ -416,6 +434,18 @@ class SupervisedController(TaskController):
                     "and start a new task; no close shortcut was redirected."
                 )
                 return
+        if self.phase == "completion_capture":
+            self.observation = observation
+            self.phase = "checking_completion"
+            diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+            instruction = self.instruction
+            self.job = self._start_model(
+                lambda: self._provider(diagnostics, "checking_completion", call, step).verify_completion(
+                    self.config.model, instruction, observation.png,
+                    observation.bounds.width, observation.bounds.height,
+                )
+            )
+            return
         if self.phase == "rechecking":
             before, action = self.observation, dict(self.pending.action)
             self.observation = observation
@@ -448,6 +478,16 @@ class SupervisedController(TaskController):
             self.phase = "verifying"
             action = dict(self.pending.action)
             expected = self.pending.expected_result or self.pending.summary
+            query = application_search_query(self.instruction, action)
+            if query:
+                expected = (f'Windows Start/Search visibly contains the app query {query!r} '
+                            'and shows a matching application result. This is search readiness '
+                            'only; the application does not need to be open yet.')
+            if self.verification_launch_activation:
+                expected = (f'The requested application {self.launch_query_pending} is visibly open '
+                            'in its own usable foreground window, not merely a Start/Search result '
+                            'or app-details panel.')
+            self.verification_expected = expected
             instruction = self._task_context()
             self.verification_calls += 1
             self._record("verification_requested", observation=self.log_frame,
@@ -532,12 +572,21 @@ class SupervisedController(TaskController):
                 "deciding": "Model decision",
                 "verifying": "Visual action verification",
                 "checking_target": "Draft target check",
+                "checking_completion": "Whole-task visual check",
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
         elif self.phase == "probing":
             self._record("model_compatibility", metadata=asdict(result) if is_dataclass(result) else {})
             self.phase = "observing"
             self._capture()
+        elif self.phase == "checking_completion":
+            self._record("completion_verification", observation=self.log_frame,
+                         content={"status": result.status, "evidence": result.evidence})
+            if result.status != "succeeded":
+                self.fail("Task completion could not be verified: " + result.evidence)
+                return
+            self.last_verification = result
+            self._terminate("complete", "Completed · visual task check passed")
         elif self.phase == "checking_target":
             if not self._reviewed_proposal_matches():
                 return
@@ -557,6 +606,9 @@ class SupervisedController(TaskController):
                     "Focus the intended app/composer manually and start a new task. "
                     "No draft input was dispatched. Inspect Last action preview/report for evidence."
                 )
+                return
+            if status == "needs_focus" and self.hands_free:
+                self.fail("Keyboard focus is unclear; automatic mode stopped without dispatching input.")
                 return
             if status == "needs_focus":
                 self.phase = "target_focus_review"
@@ -579,7 +631,7 @@ class SupervisedController(TaskController):
             self.last_verification = result
             self.last_verified_proposal = deepcopy(self.pending)
             self._record("verification_result", observation=self.log_frame, content={
-                "action": self.pending.action, "expected_result": self.pending.expected_result or self.pending.summary,
+                "action": self.pending.action, "expected_result": self.verification_expected or self.pending.expected_result or self.pending.summary,
                 "status": result.status, "evidence": result.evidence,
             })
             self.trace.append(f"Step {self.actions}: visual verification {result.status}.")
@@ -611,6 +663,9 @@ class SupervisedController(TaskController):
                     "was not verified. Inspect the desktop; no second input will be attempted."
                 )
                 return
+            if result.status != "succeeded" and self.hands_free:
+                self.fail("Visual verification " + result.status + ": " + result.evidence)
+                return
             if result.status != "succeeded":
                 self.failed_actions.append(dict(self.pending.action))
                 self.recovery_attempts += 1
@@ -640,6 +695,30 @@ class SupervisedController(TaskController):
                     self.approval_timer.start(60000)
                     return
                 if self.pending.action["op"] == "text" and result.status == "uncertain":
+                    if application_search_query(self.instruction, self.pending.action):
+                        if self.action_gate:
+                            self.fail('App-search input remains uncertain. Reconcile its effect before continuing.')
+                            return
+                        self.phase = 'launch_query_review'
+                        self.question_id = uuid.uuid4().hex
+                        self.state_changed.emit(State.WAITING)
+                        self.approval_requested.emit(
+                            self.question_id,
+                            'App search is an intermediate step, not task completion. '
+                            'Confirm ONLY that the intended app name is present in Windows Start/Search. '
+                            'Approve continues planning from a fresh screenshot so Monster can launch '
+                            'the matching app with Enter or its visible Open control. '
+                            'This does not confirm the app is open or your task is complete. '
+                            'No search text will be retyped. Decline if the query or target is wrong.',
+                        )
+                        self.approval_timer.start(60000)
+                        return
+                    if not draft_only(self.instruction):
+                        self.fail(
+                            "Text location remains uncertain. Task is incomplete; no text was "
+                            "retyped and no Enter was dispatched to an unverified target."
+                        )
+                        return
                     self.phase = "confirming"
                     self.question_id = uuid.uuid4().hex
                     self.state_changed.emit(State.WAITING)
@@ -668,6 +747,9 @@ class SupervisedController(TaskController):
                     return
             else:
                 self.recovery_attempts = self.rejected_proposals = 0
+                if self.verification_launch_activation:
+                    self.launch_query_pending = None
+                    self._record('app_launch_stage', stage_name='window_verified')
             self.phase = "observing"
             # Verification can take seconds. Plan from a fresh frame rather than
             # the now-stale image that was submitted to the verifier.
@@ -732,6 +814,9 @@ class SupervisedController(TaskController):
             if result.kind == "unable":
                 self.fail("Model could not continue. Open Last action preview for its explanation.")
                 return
+            if result.kind == "clarify" and self.hands_free:
+                self.fail("Task needs clarification: " + result.summary)
+                return
             if result.kind == "clarify":
                 self.phase = "clarifying"
                 self.question_id = uuid.uuid4().hex
@@ -764,7 +849,7 @@ class SupervisedController(TaskController):
                     "is the current foreground target."
                     if window_close_requested(self.instruction) else
                     "Per-step approval is enabled."
-                    if self.config.approve_each_step
+                    if self.config.approve_each_step and not self.hands_free
                     else approval_reason(result, self.instruction)
                 )
                 text = (
@@ -778,14 +863,28 @@ class SupervisedController(TaskController):
                 )
                 self.reviewed_proposal = deepcopy(result)
                 self.phase = "approval"
-                if not self.config.approve_each_step and reason is None:
+                if self.hands_free and reason is not None:
+                    self.fail("Automatic mode stopped because this action requires review: " + reason)
+                    return
+                if (self.hands_free or not self.config.approve_each_step) and reason is None:
                     self._begin_recheck(restore=False)
                     return
             else:
+                if self.launch_query_pending:
+                    self._reject_proposal(
+                        'App search is not completion. Launch the matching app using a grounded '
+                        'Enter/Open action, then verify its actual window before reporting completion.',
+                        'completion',
+                    )
+                    return
                 if self.last_verification and self.last_verification.status != "succeeded":
                     self._reject_proposal(
                         "Completion is unsupported: the last action failed visual verification.", "completion"
                     )
+                    return
+                if self.hands_free:
+                    self.phase = "completion_capture"
+                    self._capture()
                     return
                 text = (
                     "Confirm the visible result meets your task:\n"
@@ -928,6 +1027,18 @@ class SupervisedController(TaskController):
             self.draft_target_proposal = deepcopy(self.pending)
             self.trace.append("User confirmed draft target focus before input; result remains unverified.")
             self._begin_recheck(restore=True)
+        elif self.phase == 'launch_query_review':
+            self.history.append(
+                'The user confirmed the app-name query is visible in Windows Start/Search. '
+                'This is intermediate human search evidence, NOT app launch or task completion. '
+                'Do not type the query again. Inspect the fresh screenshot and propose Enter '
+                'or the grounded matching app Open control; verify its actual window next.'
+            )
+            self._record('launch_query_confirmed', task_complete=False)
+            self.recovery_attempts = self.rejected_proposals = 0
+            self.restore_focus = self.observation.foreground
+            self.phase = 'observing'
+            self._capture()
         elif self.phase == "focus_review":
             self.human_confirmed_focus = True
             self.history.append(
@@ -988,6 +1099,15 @@ class SupervisedController(TaskController):
 
     def _task_context(self):
         text = self.instruction
+        if self.launch_query_pending:
+            text += (
+                f'\nTrusted launch stage: the app-name query {self.launch_query_pending!r} was inserted '
+                'once. A Start/Search match is not an open app and does not complete the task. '
+                'Inspect the current screenshot, then propose a complete Enter key action or '
+                'a grounded click on the matching app result/Open control. Do not retype the '
+                'query, run a shell command, install anything or use Run as administrator. '
+                'Verify the actual app window before proceeding with the rest of the original task.'
+            )
         if draft_only(text):
             text += (
                 "\nTrusted task boundary: draft/typing only in the currently open composer. "

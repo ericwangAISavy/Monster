@@ -71,6 +71,9 @@ class Provider(Protocol):
         height: int,
         before_image: bytes | None = None,
     ) -> Verification: ...
+    async def verify_completion(
+        self, model: str, instruction: str, image: bytes, width: int, height: int,
+    ) -> Verification: ...
     async def decide(
         self,
         model: str,

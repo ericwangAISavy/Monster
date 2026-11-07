@@ -114,11 +114,24 @@ class ProviderSettings(QDialog):
         self.approve_each_step.setChecked(config.approve_each_step)
         self.approve_each_step.setEnabled(config.mode == "supervised")
         self.mode.currentIndexChanged.connect(
-            lambda _: self.approve_each_step.setEnabled(self.mode.currentData() == "supervised")
+            lambda _: self.approve_each_step.setEnabled(
+                self.mode.currentData() == "supervised" and not self.hands_free.isChecked()
+            )
         )
         form.addRow(self.approve_each_step)
+        self.hands_free = QCheckBox("Hands-free: no approval prompts")
+        self.hands_free.setChecked(config.hands_free)
+        self.hands_free.setToolTip("Runs routine actions and verifies completion automatically. Stops if review or clarification is required.")
+        form.addRow(self.hands_free)
+        self.hands_free.toggled.connect(
+            lambda enabled: self.approve_each_step.setEnabled(
+                self.mode.currentData() == "supervised" and not enabled
+            )
+        )
+        self.approve_each_step.setEnabled(config.mode == "supervised" and not config.hands_free)
         approval_hint = QLabel(
-            "Unchecked: routine actions, including clearly benign clicks and Enter, run "
+            "With hands-free disabled, unchecking per-step approval lets routine actions, "
+            "including clearly benign clicks and Enter, run "
             "automatically after a screen recheck. Sensitive, uncertain or unclassified actions "
             "still ask and explain why. Final completion confirmation stays on."
         )
@@ -219,7 +232,8 @@ class ProviderSettings(QDialog):
             self.http.isChecked(),
             self.local.isChecked(),
             self.mode.currentData(),
-            approve_each_step=self.approve_each_step.isChecked(),
+            approve_each_step=self.approve_each_step.isChecked() and not self.hands_free.isChecked(),
+            hands_free=self.hands_free.isChecked(),
             **self.inference_values(),
         )
         config.validate()

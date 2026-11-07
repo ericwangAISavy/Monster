@@ -812,3 +812,27 @@ Notepad and type hello.”** Review the Ctrl+N proposal and verify the result yo
 A passing automated fixture is not proof of native Windows/model reliability.
 If either task fails, save the run with screenshots so the actual focus, action,
 verification frames and model evidence can be diagnosed.
+
+## Launching an app after Start search
+
+Entering an app name is an intermediate navigation step. It does not prove the
+app is open and cannot complete an app-launch task. For an explicit launch goal,
+Monster retains the pending launch after typing the matching app name. It asks
+its planner to propose Enter when the intended result is selected, or a grounded
+click on the result/Open control, then verifies the app's actual usable window.
+Start results and the app-details panel do not satisfy that launch condition.
+No Enter or click is synthesized without the existing proposal, policy and fresh
+scene checks.
+
+If the model cannot verify the query after its bounded observations, standalone
+mode shows **Confirm query**, not a whole-task completion review. This confirms
+only that the intended query is visible; accepting it resumes planning from a
+fresh screenshot without retyping or claiming the app launched. Decline/expiry/
+Stop still cancel. Journal-gated uncertainty remains reconciliation-blocked.
+
+Navigation readiness may already be present: a visibly open Start menu or an exact
+query with its matching result is a valid current navigation state, even when the
+model cannot attribute it to the latest keystroke. Verifier instructions now make
+that distinction explicit. Model uncertainty is still retained verbatim rather
+than being converted to success by interpreting its prose. Whole-task completion
+still requires the original goal and separate human review.

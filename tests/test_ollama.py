@@ -607,3 +607,17 @@ def test_new_document_shortcut_is_available_except_in_draft_only_schema():
 
     assert ['CTRL', 'N'] in chords(decision_schema_for_navigation('create a new Notepad document'))
     assert ['CTRL', 'N'] not in chords(decision_schema_for_draft())
+
+
+def test_navigation_readiness_prompt_separates_visible_state_from_causality_and_launch():
+    requests = []
+    adapter = OllamaProvider(config(), transport(requests, decision={
+        'status': 'uncertain', 'evidence': 'Paint result is visible; causality is unclear'}))
+    result = asyncio.run(adapter.verify_action(
+        'vision:small', 'Open painter and draw a line', {'op': 'text', 'text': 'Paint'},
+        'Paint is the matching search result', b'PNG', 100, 100))
+    prompt = json.loads(requests[0].content)['messages'][1]['content']
+    assert 'even if it was already present or causality is unclear' in prompt
+    assert 'readiness only' in prompt
+    assert 'NOT a launched app' in prompt
+    assert result.status == 'uncertain'  # no parsing prose into manufactured success

@@ -65,9 +65,9 @@ def test_late_visible_text_reobserves_once_without_retyping_and_preserves_before
         engine.close()
 
 
-def test_persistent_uncertainty_has_two_observations_then_human_handoff_without_replay(qtbot):
+def test_persistent_uncertainty_stops_without_completion_review_or_replay(qtbot):
     engine, bridge, model = typing_controller()
-    checks = []
+    checks, failures, questions = [], [], []
 
     async def verify(*args):
         checks.append(args)
@@ -77,17 +77,16 @@ def test_persistent_uncertainty_has_two_observations_then_human_handoff_without_
     engine.capture_requested.connect(
         lambda: engine.observation_ready(observation(), engine.generation)
     )
+    engine.failed.connect(failures.append)
+    engine.approval_requested.connect(lambda *args: questions.append(args))
     try:
         engine.submit("Type hello into the currently open Notepad document")
-        qtbot.waitUntil(lambda: engine.phase == "confirming", timeout=5000)
+        qtbot.waitUntil(lambda: bool(failures), timeout=5000)
         assert len(checks) == 2 and len(bridge.executed) == 1
         assert engine.last_verification.status == "uncertain"
         assert engine.calls == 1
-        assert not engine.human_result_confirmed
-        engine.respond(engine.question_id, "reject")
-        qtbot.waitUntil(lambda: engine.phase == "idle")
-        assert not engine.human_result_confirmed
-        assert len(bridge.executed) == 1
+        assert not engine.human_result_confirmed and not questions
+        assert "Text location remains uncertain" in failures[0]
     finally:
         engine.close()
 

@@ -21,6 +21,7 @@ class OllamaConfig:
     keep_alive: str = "5m"
     thinking: bool = False
     approve_each_step: bool = True
+    hands_free: bool = False
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -70,6 +71,8 @@ class OllamaConfig:
             raise ValueError("Choose a supported keep-loaded duration.")
         if type(self.thinking) is not bool:
             raise ValueError("Thinking must be enabled or disabled explicitly.")
+        if type(self.hands_free) is not bool:
+            raise ValueError("Hands-free mode must be enabled or disabled explicitly.")
         if type(self.approve_each_step) is not bool:
             raise ValueError("Per-step approval must be enabled or disabled explicitly.")
         if (

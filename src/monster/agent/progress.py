@@ -45,6 +45,34 @@ def needs_text_target_check(instruction, action):
     )
 
 
+def application_search_query(instruction, action):
+    """Identify an app-name query from an explicit launch goal, never authorize input.
+
+    This only distinguishes intermediate navigation from a final text deliverable.
+    It does not infer screen focus, app availability or successful launch.
+    """
+    if draft_only(instruction) or action.get('op') != 'text':
+        return None
+    match = re.match(
+        r'^\s*(?:(?:please|now)\s+){0,2}(?:(?:can|could|would)\s+you\s+)?'
+        r'(?:please\s+)?(?:open|launch|start|run)\s+(?:the\s+)?'
+        r'([\w .-]{1,80}?)(?=\s+(?:and|then)\b|[,;!?\n]|\.(?:\s|$)|$)',
+        instruction, re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    target = re.sub(r'\s+(?:app|application|program)$', '', match.group(1).strip(), flags=re.IGNORECASE)
+    normalize = lambda text: ' '.join(unicodedata.normalize('NFC', text).casefold().split())
+    aliases = {'painter': 'paint', 'notepade': 'notepad'}
+    wanted = normalize(target)
+    query = action.get('text', '')
+    if type(query) is not str or not 1 <= len(query) <= 80:
+        return None
+    if aliases.get(wanted, wanted) == aliases.get(normalize(query), normalize(query)):
+        return query
+    return None
+
+
 def validate_draft_action(decision, instruction, text_inserted=False):
     if not draft_only(instruction):
         return
