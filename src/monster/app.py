@@ -481,6 +481,7 @@ class CompanionApp:
             self.pill.input.setFocus()
 
     def _log_ui(self, event, **details):
+        details["overlay_visibility"] = self.companion.visibility_status()
         diagnostics = getattr(self.controller, "run_diagnostics", None)
         if diagnostics is None:
             return
@@ -920,6 +921,8 @@ def main():
         type=Path,
         help="Windows diagnostic: save an isolated PNG, then keep the GUI open",
     )
+    parser.add_argument("--overlay-helper", type=Path,
+                        help="Explicit signed UIAccess MonsterOverlay.exe installed in Program Files")
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Monster")
@@ -928,6 +931,15 @@ def main():
     app.setWindowIcon(monster_icon())
     path = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation))
     ui = CompanionApp(app, MockTaskController(), path / "companion.json")
+    if args.overlay_helper:
+        from monster.ui.overlay_client import OverlayClient
+        try:
+            renderer = OverlayClient(args.overlay_helper)
+        except (RuntimeError, OSError, ValueError):
+            print("UIAccess renderer unavailable; ordinary companion remains active.", file=sys.stderr)
+        else:
+            ui.companion.attach_renderer(renderer)
+            app.aboutToQuit.connect(renderer.close)
     if args.capture_test:
         from monster.computer.screenshot import capture_display
 

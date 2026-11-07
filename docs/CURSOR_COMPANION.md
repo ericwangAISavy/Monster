@@ -134,3 +134,8 @@ implementation. On actual Windows, test opening Start, search and the taskbar at
 and verify both Monster surfaces stay absent from `monster --capture-test` PNGs.
 Linux tests mock native calls and geometry; they do not prove real shell z-order
 or visibility. No visible text panel or spinning indicator is added.
+
+For a genuine above-Start mode rather than beside-panel fallback, see the
+[separate signed UIAccess renderer](WINDOWS_UIACCESS.md). It requires explicit
+Windows build/signing/trusted installation and token/visibility qualification;
+normal `uv run monster` does not activate it automatically.

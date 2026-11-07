@@ -173,3 +173,7 @@ For reproducible v2 evidence collection, see the [qualification workflow](docs/Q
 native preflight and acceptance records, read-only grounding trials, metadata-only
 metrics and an advisory readiness inventory. These tools do not enable UI-Venus
 input or change the selected model.
+
+Above Windows Start/Search requires the optional [signed UIAccess visual renderer](docs/WINDOWS_UIACCESS.md),
+configured explicitly with `--overlay-helper`. The agent/input worker remain ordinary
+processes. The signed Windows build and above-menu behavior still require native qualification.

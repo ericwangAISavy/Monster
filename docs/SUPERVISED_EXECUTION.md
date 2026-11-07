@@ -768,3 +768,15 @@ step; the next search entry should be a whole `text` payload. Confirm Notepad
 actually opens a new blank document before approving final completion. Portable
 request/logic tests do not establish live model visual accuracy or multi-image
 serving compatibility.
+
+## Foreground File Explorer closing
+
+Explicit foreground wording now includes “close current upfront explorer window”,
+“close the current File Explorer window” and “close the frontmost explorer window”.
+These enter the existing close policy: pin the original foreground, accept only
+one reviewed Alt+F4, recheck before dispatch, release owned modifiers and verify
+the visible result. The report's incorrect `press 0` is rejected before approval
+or input; its later correct Alt+F4 is no longer rejected because of missing
+Explorer recognition. All-window, unspecified Explorer, folder deletion and
+compound destructive requests do not gain this exception. Repeated close or
+ambiguous outcomes remain blocked; review is retained even in automatic mode.

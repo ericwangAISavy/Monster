@@ -30,8 +30,10 @@ def single_click_requested(instruction):
 def window_close_requested(instruction):
     """Narrow explicit English intent, never inferred from model output."""
     return bool(re.fullmatch(
-        r"\s*(?:please\s+)?close\s+(?:the\s+)?(?:current|active|foreground)\s+"
-        r"(?:chrome(?:\s+browser)?(?:\s+window)?|browser(?:\s+window)?|window)\s*[.!]?\s*",
+        r"\s*(?:please\s+)?close\s+(?:the\s+)?"
+        r"(?:(?:current|active|foreground|upfront|frontmost)\s+){1,2}"
+        r"(?:chrome(?:\s+browser)?(?:\s+window)?|browser(?:\s+window)?|"
+        r"(?:(?:file|windows)\s+)?explorer(?:\s+window)?|window)\s*[.!]?\s*",
         instruction, flags=re.IGNORECASE,
     ))
 

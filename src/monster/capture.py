@@ -58,6 +58,9 @@ class CaptureIsolation(QObject):
             try:
                 if any(window.isVisible() for window in self.windows):
                     raise RuntimeError("Overlay became visible during capture; discard this frame.")
+                if any(callable(getattr(window, "capture_isolation_ready", None))
+                       and not window.capture_isolation_ready() for window in self.windows):
+                    raise RuntimeError("External overlay did not confirm hidden; discard this frame.")
                 self.diagnostic.emit({"event": "overlay_isolation_capture", "overlays_hidden": True,
                                       "elapsed_since_hide_s": time.monotonic() - started_at})
                 result = backend()

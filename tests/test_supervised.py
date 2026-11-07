@@ -2148,3 +2148,55 @@ def test_quoted_typing_guard_preserves_apostrophes_inside_words(text):
     from monster.agent.validation import validate_proposal_intent
     validate_proposal_intent(Decision('action', f"Type '{text}' into the document",
                             {'op': 'text', 'text': text}), 'Write the requested text')
+
+
+@pytest.mark.parametrize('instruction', [
+    'close current upfront explorer window', 'close the current File Explorer window',
+    'please close the frontmost explorer window', 'close current Windows Explorer window',
+])
+def test_explicit_foreground_explorer_close_is_recognized_and_rejects_digit(instruction):
+    from monster.agent.validation import window_close_requested
+    assert window_close_requested(instruction)
+    engine, _, _ = controller([])
+    engine.instruction = instruction
+    engine.pending = Decision('action', 'Close current File Explorer window', {'op': 'press', 'key': '0'})
+    with pytest.raises(ValueError, match='Alt\\+F4'):
+        engine._prepare_action(engine.pending.action, observation())
+    engine.pending = replace(engine.pending, action={'op': 'chord', 'keys': ['ALT', 'F4']})
+    assert engine._prepare_action(engine.pending.action, observation()) == engine.pending.action
+    engine.close()
+
+
+@pytest.mark.parametrize('instruction', ['close all explorer windows', 'close explorer',
+                                       'close current folder and delete it', 'close current upfront file'])
+def test_explorer_close_recognition_does_not_expand_to_ambiguous_or_destructive_requests(instruction):
+    from monster.agent.validation import window_close_requested
+    assert not window_close_requested(instruction)
+
+
+def test_report_explorer_close_rejects_zero_then_executes_one_reviewed_alt_f4(qtbot):
+    engine, bridge, _ = controller([
+        Decision('action', 'Close the current File Explorer window', {'op': 'press', 'key': '0'}, risk='sensitive'),
+        Decision('action', 'Close the current File Explorer window using Alt+F4',
+                 {'op': 'chord', 'keys': ['ALT', 'F4']}, risk='sensitive', expected_result='Explorer closes.'),
+        Decision('complete', 'The original foreground window is closed'),
+    ])
+    engine.config = replace(engine.config, approve_each_step=False)
+    reviews, finished = [], []
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+
+    def review(rid, text):
+        reviews.append(text)
+        QTimer.singleShot(0, lambda: engine.respond(rid, 'approve'))
+
+    engine.approval_requested.connect(review)
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit('close current upfront explorer window')
+        qtbot.waitUntil(lambda: engine.phase == 'idle' and not engine.active, timeout=6000)
+        assert [item[0] for item in bridge.executed] == [{'op': 'chord', 'keys': ['ALT', 'F4']}]
+        assert bridge.executed[0][1] == 77
+        assert len(reviews) == 2 and 'discard' in reviews[0]
+        assert finished
+    finally:
+        engine.close()

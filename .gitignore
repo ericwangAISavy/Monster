@@ -6,3 +6,10 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Local UIAccess renderer build products; never commit signed binaries or certificates.
+.overlay-build-venv/
+artifacts/
+*.pfx
+*.p12
+*.key
