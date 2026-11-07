@@ -1,6 +1,7 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -55,6 +56,19 @@ class Settings(QDialog):
         self.reduced = QCheckBox("Reduce character motion")
         self.reduced.setChecked(preferences.reduced_motion)
         form.addRow(self.reduced)
+        self.companion_scale = QSpinBox()
+        self.companion_scale.setRange(75, 150)
+        self.companion_scale.setSuffix("%")
+        self.companion_scale.setValue(preferences.companion_scale)
+        form.addRow("Companion size", self.companion_scale)
+        self.companion_position = QComboBox()
+        self.companion_position.addItem("Follow cursor", "cursor")
+        self.companion_position.addItem("Top right · primary display", "top_right")
+        self.companion_position.addItem("Bottom right · primary display", "bottom_right")
+        self.companion_position.setCurrentIndex(
+            self.companion_position.findData(preferences.companion_position)
+        )
+        form.addRow("Companion position", self.companion_position)
         layout.addLayout(form)
         self.error = QLabel()
         self.error.setTextFormat(Qt.TextFormat.PlainText)
@@ -81,6 +95,8 @@ class Settings(QDialog):
                 if isinstance(field, QSpinBox)
             },
             reduced_motion=self.reduced.isChecked(),
+            companion_scale=self.companion_scale.value(),
+            companion_position=self.companion_position.currentData(),
         )
         try:
             prefs.validate()

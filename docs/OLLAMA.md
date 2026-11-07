@@ -27,7 +27,7 @@ Open the tray → **AI model settings…**.
 2. For private LAN HTTP, select **Allow unencrypted HTTP on my trusted LAN**. That means screenshots will be unencrypted in transit on that LAN. URL credentials, query parameters and API paths are rejected; enter the origin only.
 3. Click **Test connection / discover**. Monster reads `/api/version` and `/api/tags`. No images are sent during this operation.
 4. Select an installed model. Confirm that you have checked local-only server operation and disabled cloud routing.
-5. Click **Test vision + JSON**. Monster reads model metadata and sends a tiny generated image containing three colored panels. It asks the model to identify the randomized left-to-right colors in strict JSON. No desktop screenshot is used for the probe. Cold loading can take time; the request timeout is configurable from 5–300 seconds, with a separate 5-second connection timeout.
+5. Click **Test vision + JSON**. Monster reads model metadata and sends a tiny generated image containing three colored panels. It asks the model to identify the randomized left-to-right colors in strict JSON. No desktop screenshot is used for the probe. Cold loading can take time. The settings check displays elapsed/remaining time and applies the configured 5–300 second timeout to the whole check, including metadata and inference, with a separate 5-second connection timeout. A timeout cancels the local wait and restores the controls; it does not confirm compatibility or automatically retry. Ollama may continue a cancelled generation server-side. Retesting invalidates the previous compatibility result until the new check passes.
 6. When the probe passes, select **Ollama screenshot/action preview · no input**, then Save. Save requires a successful probe for these exact endpoint/model/timeout/privacy settings. Editing any relevant setting invalidates the result.
 
 Model metadata that explicitly lacks vision support blocks the probe; absent capability metadata requires the synthetic probe. Known cloud-backed models/remote model metadata are rejected in local-only mode. A passing color/JSON probe is a compatibility signal, **not** proof of accurate click coordinates, robust task understanding, or trustworthy server internals. The server operator's local-only confirmation remains necessary.
@@ -42,7 +42,9 @@ Only one secondary Monster surface is opened at a time. Model settings stay out 
 4. When inference finishes, the pill says **Preview ready · no computer actions performed**.
 5. Open tray → **Last action preview…** to inspect the decision kind, summary and complete proposed action. There is intentionally no Execute button. A model `complete` response is displayed as an unverified hypothesis, never as actual task completion.
 
-Coordinates in a preview are **image-relative physical pixels** in the selected target display's native-resolution screenshot. They are not Qt device-independent coordinates or directly executable virtual-desktop coordinates. A future engine must retain the observation's monitor origin and transforms, check freshness/focus/policy, then map coordinates before dispatch. The preview does not export or arm an InputSession.
+Ollama emits explicit `x_1000`/`y_1000` coordinates normalized to the full screenshot.
+The adapter converts them once; source values and mapping appear in action details.
+Coordinates in the canonical preview action are **image-relative physical pixels** in the selected target display's native-resolution screenshot. They are not Qt device-independent coordinates or directly executable virtual-desktop coordinates. A future engine must retain the observation's monitor origin and transforms, check freshness/focus/policy, then map coordinates before dispatch. The preview does not export or arm an InputSession.
 
 **Ctrl+Alt+P** pauses/cancels pending inference. Resuming restarts compatibility checking and obtains a fresh screenshot; it does not replay a cached proposal. **Ctrl+Alt+X** cancels the preview and invalidates pending observation/result generations. Because no real input is connected, these GUI controls only cancel capture/inference. The separate real-input worker's independent stop mechanism is unchanged.
 
@@ -128,3 +130,78 @@ do not blindly rerun a task that could duplicate its earlier action. Use a fresh
 disposable Notepad document for the next test. Live Gemma/Ollama behavior still
 requires testing against your server; simulated-response tests do not establish
 that every incomplete response is caused by a token cap.
+
+### Diagnosing a vision-check timeout
+
+“Connected” proves discovery worked; a loaded model still may not finish an image
+request. “Compatibility was not confirmed” after a timeout is inconclusive, not a
+failed color-recognition score or proof of model incompatibility.
+
+The settings check now shows its exact stage: server version, installed model
+list, model metadata, image inference + JSON, or image answer validation. The same
+whole-check timeout still applies; model, context, output budget and thinking
+configuration are not silently changed.
+
+Open **Advanced inference settings → Last check report** after a failure. Select
+and copy the report. It contains the application/Python/runtime versions, selected
+model and digest, endpoint/settings, elapsed stage/HTTP timings, generated PNG
+size/hash/colors, safe response metrics and any internal exception class/project
+stack. It stays in memory; no file or upload is created automatically. It includes
+no desktop image, raw response body or model reasoning. A new check replaces it;
+late events from a cancelled check are ignored.
+
+| Evidence | Interpretation |
+| --- | --- |
+| Timeout before image inference | Server connection, discovery or metadata stalled; vision has not been assessed. |
+| Timeout at image inference + JSON | No complete usable response arrived before the deadline. Loading/inference, server capacity, network/proxy, and request compatibility remain possible; it does not prove the model is incompatible. |
+| Completed response, invalid JSON/schema | Structured response/protocol failure; not a color-recognition result. |
+| Valid schema, wrong colors | Model/server visual path returned the wrong synthetic-image answer. The report shows expected versus received colors. |
+| Internal exception evidence | Unexpected client/runtime path; inspect the recorded class and project stack. |
+
+All six randomized PNG orders are independently decoded in portable tests. This
+verifies test-image generation and encoding, not a real model's vision capability.
+
+### Independent check when image inference never finishes
+
+A supplied Gemma4 26B / Ollama 0.22.1 report completed version/list/metadata in
+0.179s, then reached the 60s deadline at `/api/chat`, before response headers. This
+rules out color-answer/JSON validation as the failing stage. It does not prove
+that Ollama never started computing: with `stream: false`, Ollama buffers the
+response until generation ends ([0.22.1 handler source](https://github.com/ollama/ollama/blob/v0.22.1/server/routes.go#L2622)).
+Gemma4's processor also scales tiny images toward its configured maximum patch
+budget; a 140-byte PNG is not necessarily cheap to infer
+([0.22.1 preprocessor](https://github.com/ollama/ollama/blob/v0.22.1/model/models/gemma4/process_image.go#L60)).
+These facts narrow the failure; they do not establish memory exhaustion or a
+specific model defect. Increasing the PNG size or timeout is not a demonstrated fix.
+
+Fully quit Monster first, then run from the repository on the same Windows PC:
+
+```powershell
+uv run python -m monster.providers.diagnose --case image_schema
+uv run python -m monster.providers.diagnose --case text
+```
+
+The first command reproduces the image/structured request outside Qt jobs, using
+saved `ollama.json`, the same model/options and the reported blue/green/red image
+content. The second removes the image and schema. The selected configuration is
+printed before sending. `--config PATH` selects an explicit saved file if needed;
+settings are never written. PNG compression bytes may vary between Python/zlib
+builds; decoded pixel content is checked independently.
+
+For a sequential comparison, omit `--case`. Cases are text, text/schema,
+image without schema, and image/schema; each has the unchanged saved request
+timeout and execution stops on the first failure. There are no retries, desktop
+screenshots or input actions. Reports contain status, header/total latency and
+safe server metrics (native durations are nanoseconds), never answers/reasoning.
+“Completed” measures the response envelope finishing, not answer/schema accuracy.
+The tool never qualifies a model for control. Server routing relies on the saved
+local-only confirmation plus rejection of known cloud model names; remotely
+routed aliases are not independently attested by this comparison tool.
+
+If the standalone image case also times out, Qt/pill handling is not required to
+produce the stall. If text also times out, investigate general inference,
+queueing/resources or transport. If only image input stalls, investigate the
+visual path; if image works without schema but stalls with schema, investigate
+that combination. These are candidate paths, not proof of a particular defect.
+Earlier cases may warm the server, so all completing does not by itself prove a
+GUI bug. Copy console output for analysis; no report file is created automatically.

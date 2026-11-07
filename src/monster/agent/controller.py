@@ -24,6 +24,7 @@ from monster.agent.validation import (
     approval_reason,
     prepare_action,
     scene_matches,
+    single_click_requested,
     window_close_requested,
 )
 from monster.lifecycle import State, TaskController
@@ -79,6 +80,8 @@ class SupervisedController(TaskController):
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
+        self.single_click_policy = False
+        self.single_click_dispatched = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.restore_focus = None
@@ -107,6 +110,7 @@ class SupervisedController(TaskController):
             return False
         self.timings.reset()
         self.instruction = instruction.strip()[:2000]
+        self.single_click_policy = single_click_requested(self.instruction)
         self.run_diagnostics = RunDiagnostics(instruction.strip(), self.config)
         self.log_frame = self.planned_frame = None
         self.run_diagnostics.add(
@@ -114,6 +118,7 @@ class SupervisedController(TaskController):
             content={"effective_instruction": self.instruction},
             instruction_truncated_for_execution=instruction.strip() != self.instruction,
             close_policy=window_close_requested(self.instruction),
+            single_click_policy=self.single_click_policy,
             limits={"input_transactions": 10, "planning_calls": 20, "task_seconds": 300,
                     "review_seconds": 60, "invalid_proposals": 3},
         )
@@ -128,6 +133,7 @@ class SupervisedController(TaskController):
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
+        self.single_click_dispatched = False
         self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
         self.trace = []
         self.actions = self.calls = self.stale = 0
@@ -135,6 +141,7 @@ class SupervisedController(TaskController):
         self.active_changed.emit(True)
         self.paused_changed.emit(False)
         self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Starting")
         self.deadline.start(300000)
         self.phase = "opening"
         # GUI releases its stop registration before the child registers it. No
@@ -291,6 +298,8 @@ class SupervisedController(TaskController):
             action = dict(self.pending.action)
             if action == {"op": "chord", "keys": ["ALT", "F4"]}:
                 self.close_dispatched = True
+            if action["op"] == "click":
+                self.single_click_dispatched = True
             if action["op"] == "text":
                 self.inserted_text.add(action_signature(action))
             self.history.append(
@@ -312,6 +321,8 @@ class SupervisedController(TaskController):
 
     def _probe(self):
         self.phase = "probing"
+        self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Model check")
         diagnostics = self.run_diagnostics
         self.job = self._start_model(
             lambda: self._provider(diagnostics, "probing").probe(self.config.model)
@@ -333,6 +344,7 @@ class SupervisedController(TaskController):
         }:
             self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
+            self.stage_changed.emit("Capturing")
             self.capture_requested.emit()
 
     def observation_ready(self, observation, generation):
@@ -360,6 +372,7 @@ class SupervisedController(TaskController):
             before, action = self.observation, dict(self.pending.action)
             self.observation = observation
             self.phase = "comparing"
+            self.stage_changed.emit("Rechecking")
             details = {}
             self.scene_details = details
             self._record("scene_recheck_requested", before=previous_frame, after=self.log_frame)
@@ -382,6 +395,7 @@ class SupervisedController(TaskController):
                          content={"action": action, "expected_result": expected,
                                   "task_context": instruction})
             self.state_changed.emit(State.THINKING)
+            self.stage_changed.emit("Verifying")
             diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
             self.job = self._start_model(
                 lambda: self._provider(diagnostics, "verifying", call, step).verify_action(
@@ -410,8 +424,10 @@ class SupervisedController(TaskController):
         self._record("planning_requested", observation=self.log_frame,
                      draft_policy=draft_only(self.instruction),
                      close_policy=window_close_requested(self.instruction),
+                     single_click_policy=self.single_click_policy,
                      content={"task_context": instruction, "history": history})
         self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Thinking")
         diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
         self.job = self._start_model(
             lambda: self._provider(diagnostics, "deciding", call, step).decide(
@@ -468,13 +484,23 @@ class SupervisedController(TaskController):
                 f"Step {self.actions} visual verification: {result.status}. "
                 f"Evidence: {result.evidence}"
             )
+            if (
+                result.status != "succeeded"
+                and self.single_click_policy
+                and self.single_click_dispatched
+            ):
+                self.fail(
+                    "The requested one-click input was dispatched, but its visible result "
+                    "was not verified. Inspect the desktop; no second input will be attempted."
+                )
+                return
             if result.status != "succeeded":
                 self.failed_actions.append(dict(self.pending.action))
                 self.recovery_attempts += 1
                 self.history.append(
                     "The last action did not achieve a verified result. Do not "
                     "repeat it or jitter its coordinates. Choose a materially "
-                    "different strategy or ask the user to focus the composer."
+                    "different strategy or ask the user to identify the intended target."
                 )
                 if (
                     self.pending.action["op"] == "click"
@@ -516,10 +542,12 @@ class SupervisedController(TaskController):
                     )
                     return
                 if self.recovery_attempts >= 3:
-                    self.fail(
-                        "No verified progress after three attempts. Focus the intended "
-                        "field manually and start a new task."
+                    advice = (
+                        "Focus the intended composer manually and start a new task."
+                        if draft_only(self.instruction) else
+                        "Inspect or focus the intended application manually before starting a new task."
                     )
+                    self.fail("No verified progress after three attempts. " + advice)
                     return
             else:
                 self.recovery_attempts = self.rejected_proposals = 0
@@ -549,6 +577,7 @@ class SupervisedController(TaskController):
                 return
             self.phase = "executing"
             self.state_changed.emit(State.WORKING)
+            self.stage_changed.emit("Acting")
             keyboard = action["op"] in {"text", "press", "chord"}
             self._record("dispatch_requested", transaction=self.actions + 1,
                          observation=self.log_frame, planned_observation=self.planned_frame,
@@ -701,6 +730,13 @@ class SupervisedController(TaskController):
             )
 
     def _prepare_action(self, action, observation):
+        if self.single_click_policy:
+            if self.single_click_dispatched:
+                raise ValueError("The requested one-click input was already dispatched; no further input.")
+            if action.get("op") not in {"move", "click"}:
+                raise ValueError("A one-click request permits pointer movement and one click only; no substitutes.")
+            if action.get("op") == "click" and action.get("count", 1) != 1:
+                raise ValueError("The request permits one click only, not a double click.")
         closing = window_close_requested(self.instruction)
         if closing and (self.close_dispatched or action != {"op": "chord", "keys": ["ALT", "F4"]}):
             raise ValueError(
@@ -731,6 +767,12 @@ class SupervisedController(TaskController):
                 "requested text is visibly present in that editable composer, not in chat history. "
                 "Type the complete requested draft in one text transaction. After text insertion, "
                 "only observe and report completion or ask for help; do not append, edit or send."
+            )
+        if self.single_click_policy:
+            text += (
+                "\nTrusted task boundary: at most one single click. Locate the target from "
+                "the screenshot, never assume a taskbar layout. After the click, only observe "
+                "and report completion or ask for help; do not click again or substitute keys."
             )
         if window_close_requested(self.instruction):
             text += (
