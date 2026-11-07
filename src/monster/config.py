@@ -15,8 +15,10 @@ class Preferences:
     reduced_motion: bool = False
     companion_scale: int = 100
     companion_position: str = "cursor"
+    companion_character: str = "monster"
 
     def validate(self):
+        from monster.characters import CHARACTERS
         from monster.native import parse_hotkey
 
         keys = [parse_hotkey(value) for value in (self.activate, self.pause, self.stop)]
@@ -26,6 +28,8 @@ class Preferences:
             raise ValueError("Cursor offsets must stay between 16–80 and 12–80 pixels.")
         if type(self.companion_scale) is not int or not 75 <= self.companion_scale <= 150:
             raise ValueError("Companion size must be between 75% and 150%.")
+        if type(self.companion_character) is not str or self.companion_character not in CHARACTERS:
+            raise ValueError("Choose a built-in companion character.")
         if self.companion_position not in {"cursor", "top_right", "bottom_right"}:
             raise ValueError("Choose cursor following or a primary-display corner.")
 

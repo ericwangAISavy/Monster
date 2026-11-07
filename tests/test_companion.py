@@ -195,3 +195,70 @@ def test_working_animation_moves_whole_body_instead_of_only_small_details():
         return sum(y for _, y in pixels) / len(pixels)
 
     assert abs(center(0) - center(.35)) > .8
+
+
+@pytest.mark.parametrize("character", ["monster", "monkey", "rabbit", "tiger", "cat", "pigeon", "ox"])
+def test_character_choice_roundtrips_and_reaches_settings(qtbot, tmp_path, character):
+    prefs = Preferences(companion_character=character)
+    path = tmp_path / 'prefs.json'
+    save(path, prefs)
+    assert load(path).companion_character == character
+    settings = Settings(prefs)
+    qtbot.addWidget(settings)
+    assert settings.companion_character.currentData() == character
+    saved = []
+    settings.saved.connect(saved.append)
+    settings.apply()
+    assert saved[0].companion_character == character
+
+
+def test_legacy_preferences_keep_original_character_and_reject_unknown(tmp_path):
+    path = tmp_path / 'prefs.json'
+    path.write_text('{}')
+    assert load(path).companion_character == 'monster'
+    with pytest.raises(ValueError):
+        Preferences(companion_character='unknown').validate()
+
+
+def test_animal_characters_are_distinct_animated_and_respect_reduced_motion():
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter
+
+    from monster.ui.character import draw_monster
+
+    def render(character, state, phase, reduced=False):
+        image = QImage(80, 80, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        try:
+            draw_monster(painter, QRectF(0, 0, 80, 80), state, phase,
+                         reduced=reduced, character=character)
+        finally:
+            painter.end()
+        return image
+
+    characters = ['monster', 'monkey', 'rabbit', 'tiger', 'cat', 'pigeon', 'ox']
+    images = [render(name, State.LISTENING, 0) for name in characters]
+    assert all(images[i] != images[j] for i in range(7) for j in range(i))
+    for name in characters:
+        for state in State:
+            assert render(name, state, 0) != render(name, state, .7)
+            assert render(name, state, 0, True) == render(name, state, .7, True)
+
+
+def test_character_picker_previews_without_saving_and_stops_when_hidden(qtbot):
+    prefs = Preferences()
+    settings = Settings(prefs)
+    qtbot.addWidget(settings)
+    settings.show()
+    settings.companion_character.setCurrentIndex(settings.companion_character.findData('rabbit'))
+    assert settings.character_preview.character == 'rabbit'
+    assert prefs.companion_character == 'monster'
+    assert settings.character_preview.timer.isActive()
+    settings.reduced.setChecked(True)
+    assert not settings.character_preview.timer.isActive()
+    settings.reduced.setChecked(False)
+    assert settings.character_preview.timer.isActive()
+    settings.reject()
+    assert not settings.character_preview.timer.isActive()
+    assert prefs.companion_character == 'monster'

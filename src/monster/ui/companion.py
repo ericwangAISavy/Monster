@@ -121,5 +121,6 @@ class Companion(QWidget):
         draw_monster(
             painter, QRectF((self.width() - body_size) / 2, 0, body_size, body_size),
             self.visual_state, self._phase,
-            self.preferences.reduced_motion or (self._paused and not self._activity)
+            self.preferences.reduced_motion or (self._paused and not self._activity),
+            character=self.preferences.companion_character,
         )

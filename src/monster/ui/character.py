@@ -1,11 +1,14 @@
 """Animated pastel pocket monster; body language carries state without labels."""
 
 import math
+from functools import partial
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
 
+from monster.characters import CHARACTERS
 from monster.lifecycle import State
+from monster.ui.character_details import draw_markings, draw_silhouette
 
 STATE_STYLE = {
     State.IDLE: ("Idle", "#a5bfd5"),
@@ -36,21 +39,23 @@ def _glint(p, x, y, radius, color):
     p.drawPath(path)
 
 
-def _paw(p, x, y, tilt=0):
+def _paw(p, x, y, tilt=0, *, colors=("#f7f0ff", "#a692d5")):
     p.save()
     p.translate(x, y)
     p.rotate(tilt)
     gradient = QLinearGradient(-3, -4, 3, 4)
-    gradient.setColorAt(0, QColor("#f7f0ff"))
-    gradient.setColorAt(1, QColor("#a692d5"))
+    gradient.setColorAt(0, QColor(colors[0]))
+    gradient.setColorAt(1, QColor(colors[1]))
     p.setBrush(gradient)
     p.setPen(QPen(QColor("#dfd5f6"), .65))
     p.drawRoundedRect(QRectF(-4.5, -3.8, 9, 7.6), 3.8, 3.8)
     p.restore()
 
 
-def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=False):
+def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=False, character="monster"):
     """Draw a complete pose in a 64-unit canvas, with bounded, non-flashing motion."""
+    style = CHARACTERS[character]
+    paw = partial(_paw, colors=(style.shell[1], style.shell[3]))
     state = State(state)
     t = 0 if reduced else phase
     asleep = state == State.IDLE
@@ -89,37 +94,21 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
     p.scale((1.06 if asleep else 1) + squash, (.88 if asleep else 1) - squash)
     p.translate(-32, -36)
 
-    # Rounded horns retain Monster's identity, with soft rather than sharp tips.
-    for mirror in (False, True):
-        p.save()
-        if mirror:
-            p.translate(64, 0)
-            p.scale(-1, 1)
-        horn = QPainterPath(QPointF(17, 23))
-        horn.cubicTo(9, 18, 12, 8, 18, 9)
-        horn.cubicTo(16, 14, 23, 12, 25, 20)
-        horn.closeSubpath()
-        horn_fill = QLinearGradient(14, 9, 25, 23)
-        horn_fill.setColorAt(0, QColor("#ffe6ec"))
-        horn_fill.setColorAt(1, QColor("#d4aff2"))
-        p.setBrush(horn_fill)
-        p.setPen(QPen(QColor("#d7fffb"), .7))
-        p.drawPath(horn)
-        p.restore()
+    draw_silhouette(p, character, style, t)
 
     for x in (24, 40):
         step = math.sin(t * 7 + (0 if x < 32 else math.pi)) * (1.5 if working else .35)
-        _paw(p, x, 52.5 + step, (-12 if x < 32 else 12) + step * 4)
+        paw(p, x, 52.5 + step, (-12 if x < 32 else 12) + step * 4)
     body = QPainterPath(QPointF(12, 34))
     body.cubicTo(11, 21, 19, 16, 32, 16)
     body.cubicTo(45, 16, 53, 23, 52, 36)
     body.cubicTo(54, 49, 46, 54, 32, 54)
     body.cubicTo(18, 54, 10, 48, 12, 34)
     shell = QRadialGradient(QPointF(24, 21), 39)
-    shell.setColorAt(0, QColor("#fff4f5"))
-    shell.setColorAt(.42, QColor("#f1dff6"))
-    shell.setColorAt(.78, QColor("#d5b5ed"))
-    shell.setColorAt(1, QColor("#a78bcb"))
+    shell.setColorAt(0, QColor(style.shell[0]))
+    shell.setColorAt(.42, QColor(style.shell[1]))
+    shell.setColorAt(.78, QColor(style.shell[2]))
+    shell.setColorAt(1, QColor(style.shell[3]))
     p.setBrush(shell)
     p.setPen(QPen(QColor("#efe7ff"), .9))
     p.drawPath(body)
@@ -134,9 +123,9 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
     visor = QPainterPath()
     visor.addRoundedRect(QRectF(15, 25, 34, 23), 10, 10)
     glass = QLinearGradient(18, 26, 43, 47)
-    glass.setColorAt(0, QColor("#fff6fb"))
-    glass.setColorAt(.6, QColor("#f5e9fa"))
-    glass.setColorAt(1, QColor("#e9d4f4"))
+    glass.setColorAt(0, QColor(style.face[0]))
+    glass.setColorAt(.6, QColor(style.face[1]))
+    glass.setColorAt(1, QColor(style.face[2]))
     p.setBrush(glass)
     p.setPen(QPen(QColor("#f0eaff"), .85))
     p.drawPath(visor)
@@ -195,20 +184,22 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
             p.drawRoundedRect(QRectF(28 + i * 3, 43, 1.7, 1.2), .6, .6)
     p.restore()
 
+    draw_markings(p, character, style, t)
+
     if asleep:
-        _paw(p, 24, 47 + rhythm * .3, 15)
-        _paw(p, 40, 47 + rhythm * .3, -15)
+        paw(p, 24, 47 + rhythm * .3, 15)
+        paw(p, 40, 47 + rhythm * .3, -15)
     elif thinking:
-        _paw(p, 12.5, 43, -25)
-        _paw(p, 49, 29 + .9 * math.sin(t * 3), -32 + 9 * math.sin(t * 3))
+        paw(p, 12.5, 43, -25)
+        paw(p, 49, 29 + .9 * math.sin(t * 3), -32 + 9 * math.sin(t * 3))
         for i, (x, y, r) in enumerate(((48, 12, 2.4), (54, 17, 1.6))):
             color = QColor("#d9c6ff")
             color.setAlpha(int(175 + 25 * math.sin(t * 2 + i)))
             _glint(p, x, y + .5 * math.sin(t * 2 + i), r, color)
     elif working:
         tap = math.sin(t * 7) * 1.8
-        _paw(p, 24, 48 + tap, -18 + tap * 6)
-        _paw(p, 41, 48 - tap, 18 - tap * 6)
+        paw(p, 24, 48 + tap, -18 + tap * 6)
+        paw(p, 41, 48 - tap, 18 - tap * 6)
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(3):
             color = QColor("#9ef9ec")
@@ -216,13 +207,13 @@ def draw_monster(p: QPainter, bounds: QRectF, state: str, phase: float, reduced=
             p.setBrush(color)
             p.drawRoundedRect(QRectF(3 + i * 1.5, 35 + i * 4, 5 - i, 1.4), .7, .7)
     elif happy:
-        _paw(p, 10, 30 + sway, -40 + 16 * math.sin(t * 7))
-        _paw(p, 54, 30 - sway, 40 - 16 * math.sin(t * 7))
+        paw(p, 10, 30 + sway, -40 + 16 * math.sin(t * 7))
+        paw(p, 54, 30 - sway, 40 - 16 * math.sin(t * 7))
         _glint(p, 50, 12, 3, QColor("#b8ffe0"))
     elif stopped:
-        _paw(p, 12, 44, -10)
-        _paw(p, 51, 34 + .5 * sway, -65 + 4 * sway)
+        paw(p, 12, 44, -10)
+        paw(p, 51, 34 + .5 * sway, -65 + 4 * sway)
     else:
-        _paw(p, 11.5, (39 if waiting else 42) + .8 * sway, -25 + 8 * sway)
-        _paw(p, 52.5, (39 if waiting else 42) - .8 * sway, 25 - 8 * sway)
+        paw(p, 11.5, (39 if waiting else 42) + .8 * sway, -25 + 8 * sway)
+        paw(p, 52.5, (39 if waiting else 42) - .8 * sway, 25 - 8 * sway)
     p.restore()

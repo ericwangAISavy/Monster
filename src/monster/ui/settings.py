@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,7 +11,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from monster.characters import CHARACTERS
 from monster.config import Preferences
+from monster.ui.character_picker import CharacterPreview, character_icon
 
 
 class Settings(QDialog):
@@ -24,17 +26,24 @@ class Settings(QDialog):
         self.setStyleSheet(
             "QDialog { background: #12172c; color: #eeeaff; }"
             "QLabel, QCheckBox { color: #eeeaff; }"
-            "QLineEdit, QSpinBox { background: #242b46; color: white;"
+            "QLineEdit, QSpinBox, QComboBox { background: #242b46; color: white;"
             "border: 1px solid #615c91; border-radius: 5px; padding: 6px; }"
         )
         layout = QVBoxLayout(self)
-        info = QLabel(
-            "Companion appearance and shortcut settings.\n"
-            "Choose demo or Ollama preview in AI model settings."
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
         form = QFormLayout()
+        self.companion_character = QComboBox()
+        self.companion_character.setAccessibleName("Companion character")
+        self.companion_character.setIconSize(QSize(40, 40))
+        for key, style in CHARACTERS.items():
+            self.companion_character.addItem(character_icon(key), style.label, key)
+        self.companion_character.setCurrentIndex(
+            self.companion_character.findData(preferences.companion_character))
+        form.addRow("Character", self.companion_character)
+        self.character_preview = CharacterPreview(preferences.companion_character,
+                                                   preferences.reduced_motion)
+        self.companion_character.currentIndexChanged.connect(
+            lambda _: self.character_preview.set_character(self.companion_character.currentData()))
+        form.addRow(self.character_preview)
         self.fields = {}
         for name, label in (
             ("activate", "Activate"),
@@ -55,6 +64,7 @@ class Settings(QDialog):
             self.fields[name] = field
         self.reduced = QCheckBox("Reduce character motion")
         self.reduced.setChecked(preferences.reduced_motion)
+        self.reduced.toggled.connect(self.character_preview.set_reduced)
         form.addRow(self.reduced)
         self.companion_scale = QSpinBox()
         self.companion_scale.setRange(75, 150)
@@ -96,6 +106,7 @@ class Settings(QDialog):
             },
             reduced_motion=self.reduced.isChecked(),
             companion_scale=self.companion_scale.value(),
+            companion_character=self.companion_character.currentData(),
             companion_position=self.companion_position.currentData(),
         )
         try:

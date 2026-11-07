@@ -144,6 +144,12 @@ and stopped have their own gentle movements. There are no visible status labels,
 spinning circles. Screen-reader state descriptions remain available. The existing
 command/approval pill retains the information required to review actions.
 
+In **Settings → Character**, choose Pearl monster, Cocoa monkey, Rose rabbit,
+Peach tiger, Lavender cat, Cloud pigeon or Matcha ox. Thumbnails and a small live
+preview show the chosen character before saving. All seven use the same state
+language with species-specific ears, tails and details; no assets are downloaded.
+Old preference files retain the original monster.
+
 In **Settings → Companion size / position**, choose 75–150% size and cursor
 following (default) or a primary-display corner. Reduced motion freezes animation while
 preserving each pose. Model settings scroll independently of their request controls, and
