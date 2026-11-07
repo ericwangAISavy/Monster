@@ -467,3 +467,35 @@ def test_effect_review_has_exact_scope_and_edit_pause_controls(qtbot):
     pill.show_question('normal','Normal approval',True)
     assert pill.approve.text()=='Approve'
     assert not pill.effect_controls.isVisible()
+
+
+def test_phase4_pilot_is_disabled_without_qualification(qtbot,qapp,tmp_path):
+    ui=CompanionApp(qapp,MockTaskController(),tmp_path/'prefs.json',enable_tray=False)
+    try:
+        ui.start_phase4('supervised_pilot')
+        assert ui.mission_runtime is None
+        assert ui.controller.is_mock
+    finally:ui.shutdown()
+
+
+def test_phase4_consent_shows_the_bound_resource_envelope(qtbot,qapp,tmp_path):
+    import threading
+    from types import SimpleNamespace
+
+    from monster.mission.plan_templates import editor_plan
+    from monster.mission.scheduling import MissionConsent
+    ui=CompanionApp(qapp,MockTaskController(),tmp_path/'prefs.json',enable_tray=False)
+    plan=editor_plan()
+    consent=MissionConsent(mission_id=plan.mission.mission_id,plan_digest=plan.digest(),generation=1,
+        workspace_id=plan.mission.workspace_id,mode='simulation',provider_ref='simulation',
+        model_ref='fake-model',configuration_digest='0'*64,egress_ref='no_egress',
+        expires_at=plan.mission.deadline_utc)
+    runtime=SimpleNamespace(engaged=True,stopped=threading.Event(),stop=lambda:None,close=lambda:None)
+    ui.mission_runtime=runtime
+    try:
+        ui._mission_changed({'state':{'status':'waiting_approval'},'approval':None,'consent':consent,
+                             'report':{'budget':plan.budget.model_dump()}},source=runtime)
+        text=ui.pill.message.text()
+        assert '1200' in text and '40' in text and '80' in text
+        assert 'no desktop input' in text
+    finally:ui.shutdown()

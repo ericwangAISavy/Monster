@@ -108,6 +108,9 @@ class TaskResult(Contract):
         "cancelled",
         "timed_out",
     ]
+    proven_not_started: bool = False
+    model_planning_calls: int | None = Field(default=None, ge=0, le=20)
+    review_count: int | None = Field(default=None, ge=0, le=1024)
     cleanup_confirmed: bool = False
     confirmed_input_transactions: int | None = Field(default=None, ge=0, le=10)
     visual_verified: bool = False
@@ -256,6 +259,8 @@ class GuiSubtaskRequest(Contract):
     effect_id: Ref
     generation: int = Field(ge=1)
     subtask: Subtask
+    schedule_ref: Ref | None = None
+    configuration_digest: Ref | None = None
     authorization_expires_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 

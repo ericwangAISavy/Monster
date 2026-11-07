@@ -57,13 +57,24 @@ class MissionRuntime(QObject):
         plan=None,
         resume_id=None,
         reconciliation_only=False,
+        scheduled_plan=None,
+        native_qualification=None,
+        scheduled_resume_mode=None,
         parent=None,
     ):
         super().__init__(parent)
         self.directory, self.runner, self.bridge = directory, runner, bridge
         self.plan, self.resume_id = plan, resume_id
+        self.scheduled_plan = scheduled_plan
+        self.native_qualification = native_qualification
+        self.scheduled_resume_mode = scheduled_resume_mode
+        self.last_report = None
         self.reconciliation_only = reconciliation_only
-        self.mission_id = plan.mission_id if plan else resume_id
+        self.mission_id = (
+            scheduled_plan.mission.mission_id
+            if scheduled_plan
+            else (plan.mission_id if plan else resume_id)
+        )
         self.loop = None
         self.coordinator = None
         self.engaged = True
@@ -79,7 +90,10 @@ class MissionRuntime(QObject):
         self.thread.start()
 
     def _observe(self, update):
-        self.pending = update.get("approval")
+        if not update.get("requested_progress"):
+            self.pending = update.get("consent") or update.get("approval")
+        if update.get("report"):
+            self.last_report = update["report"]
         self.engaged = update["state"]["status"] in ("running", "waiting_approval", "created")
 
     def _run(self):
@@ -90,8 +104,24 @@ class MissionRuntime(QObject):
         self._exit = asyncio.Event()
         self.loop = loop
         try:
-            async with MissionCoordinator(self.directory, self.runner, experimental_gui=True) as c:
+            async with MissionCoordinator(
+                self.directory,
+                self.runner,
+                experimental_gui=hasattr(self.runner, "bridge"),
+                native_qualification=self.native_qualification,
+            ) as c:
                 self.coordinator = c
+                c.scheduler.observer = lambda progress: self.changed.emit(
+                    {
+                        "state": {
+                            "mission_id": progress.mission_id,
+                            "status": "running",
+                            "reason": progress.reason_code,
+                        },
+                        "approval": None,
+                        "progress": progress.model_dump(),
+                    }
+                )
                 if self.closed:
                     return
                 if self.reconciliation_only:
@@ -102,23 +132,36 @@ class MissionRuntime(QObject):
                     self.reconciliation_ready.emit(records)
                     await self._exit.wait()
                     return
-                if self.plan is None and self.resume_id is None:
-                    row = c.store.connection.execute(
-                        "SELECT mission_id FROM missions "
-                        "WHERE terminal_at IS NULL AND cancelled=0 ORDER BY created_at DESC LIMIT 1"
-                    ).fetchone()
+                if self.plan is None and self.scheduled_plan is None and self.resume_id is None:
+                    if self.scheduled_resume_mode:
+                        row = c.store.connection.execute(
+                            "SELECT m.mission_id FROM missions m JOIN mission_schedules s ON m.mission_id=s.mission_id "
+                            "WHERE m.terminal_at IS NULL AND m.cancelled=0 AND json_extract(s.spec,'$.mode')=? "
+                            "ORDER BY m.created_at DESC LIMIT 1",
+                            (self.scheduled_resume_mode,),
+                        ).fetchone()
+                    else:
+                        row = c.store.connection.execute(
+                            "SELECT mission_id FROM missions WHERE terminal_at IS NULL AND cancelled=0 "
+                            "AND NOT EXISTS (SELECT 1 FROM mission_schedules s WHERE s.mission_id=missions.mission_id) "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        ).fetchone()
                     if row is None:
                         raise ValueError("No resumable mission")
                     self.mission_id = self.resume_id = row[0]
                 if self.stopped.is_set():
-                    if self.plan is not None:
-                        c.store.create(self.plan)
+                    if self.plan is not None or self.scheduled_plan is not None:
+                        c.store.create(self.plan or self.scheduled_plan.mission)
                     await self._operation(c.stop(self.mission_id, cancel=True))
                     await self._exit.wait()
                     return
                 self._job = asyncio.create_task(
                     self._operation(
-                        c.start(self.plan) if self.plan else c.continue_mission(self.resume_id)
+                        c.start_scheduled(self.scheduled_plan)
+                        if self.scheduled_plan
+                        else (
+                            c.start(self.plan) if self.plan else c.continue_mission(self.resume_id)
+                        )
                     )
                 )
                 await self._exit.wait()
@@ -144,9 +187,10 @@ class MissionRuntime(QObject):
     def _dispose(self):
         self.closed = True
         self.engaged = False
-        self.bridge.shutdown()
-        self.runner.detach()
-        self.bridge.deleteLater()
+        if self.bridge is not None:
+            self.bridge.shutdown()
+            self.runner.detach()
+            self.bridge.deleteLater()
         self.deleteLater()
 
     async def _operation(self, operation):
@@ -158,7 +202,15 @@ class MissionRuntime(QObject):
                 if (state["status"] == "waiting_approval" and aid)
                 else None
             )
-            self.changed.emit({"state": state, "approval": approval})
+            consent = None
+            report = None
+            if self.coordinator.scheduler.exists(self.mission_id):
+                report = await self.coordinator.mission_report(self.mission_id)
+                if state.get("reason") == "mission_consent_required":
+                    consent = self.coordinator.scheduler.consent_request(self.mission_id)
+            self.changed.emit(
+                {"state": state, "approval": approval, "consent": consent, "report": report}
+            )
         except (RuntimeError, OSError, ValueError, KeyError, sqlite3.Error):
             self.changed.emit(
                 {
@@ -220,6 +272,24 @@ class MissionRuntime(QObject):
                 pass  # Retirement won the race; Qt cancellation already latched.
 
     def answer(self, answer):
+        from .scheduling import MissionConsent
+
+        if isinstance(self.pending, MissionConsent):
+            consent, self.pending = self.pending, None
+            if answer != "approve":
+                self.stop()
+                return
+
+            def schedule():
+                if self.coordinator and (self._job is None or self._job.done()):
+                    self._job = asyncio.create_task(
+                        self._operation(
+                            self.coordinator.consent_and_continue(self.mission_id, consent)
+                        )
+                    )
+
+            self._call(schedule)
+            return
         approval = self.pending
         if not isinstance(approval, Approval) or self.closed or self.loop is None:
             return
@@ -239,12 +309,41 @@ class MissionRuntime(QObject):
 
         self._call(schedule)
 
+    def request_boundary_pause(self):
+        async def pause():
+            if self.coordinator:
+                await self._operation(self.coordinator.request_pause(self.mission_id))
+
+        self._call(lambda: asyncio.create_task(pause()))
+
+    def request_progress(self):
+        async def report():
+            if self.coordinator and self.coordinator.scheduler.exists(self.mission_id):
+                state = await self.coordinator.snapshot(self.mission_id)
+                data = await self.coordinator.mission_report(self.mission_id)
+                self.changed.emit(
+                    {"state": state, "approval": None, "report": data, "requested_progress": True}
+                )
+
+        self._call(lambda: asyncio.create_task(report()))
+
+    def request_resume(self):
+        def schedule():
+            if self.coordinator and (self._job is None or self._job.done()):
+                self._job = asyncio.create_task(
+                    self._operation(self.coordinator.continue_mission(self.mission_id))
+                )
+
+        self._call(schedule)
+
     def stop(self):
         if self.closed:
             return
         self.stopped.set()
-        self.runner.invalidate_all(self.mission_id)
-        self.bridge.halt()
+        if hasattr(self.runner, "invalidate_all"):
+            self.runner.invalidate_all(self.mission_id)
+        if self.bridge is not None:
+            self.bridge.halt()
         if self.loop is None:
             return
 
@@ -261,7 +360,9 @@ class MissionRuntime(QObject):
             return
         self.closed = True
         self.engaged = False
-        self.runner.invalidate_all()
-        self.bridge.shutdown()  # Called on Qt thread; resolves every waiting runner.
+        if hasattr(self.runner, "invalidate_all"):
+            self.runner.invalidate_all()
+        if self.bridge is not None:
+            self.bridge.shutdown()  # Called on Qt thread; resolves every waiting runner.
         if self.loop is not None:
             self._call(self._exit.set)

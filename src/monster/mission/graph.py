@@ -40,6 +40,7 @@ class MissionNodes:
     def __init__(self, store, runner, clock):
         self.store, self.runner, self.clock = store, runner, clock
         self.running: dict[str, asyncio.Task] = {}
+        self.scheduler = None
 
     def update(self, state, **changes):
         if (
@@ -57,6 +58,15 @@ class MissionNodes:
         if control["stop_requested"]:
             return self.update(state, status="paused", reason="stopped")
         mission = self.store.mission(state["mission_id"])
+        if self.scheduler and self.scheduler.exists(mission.mission_id):
+            reason = self.scheduler.guard(mission.mission_id, tick=True)
+            if reason:
+                status = (
+                    "waiting_approval"
+                    if reason == "mission_consent_required"
+                    else ("partially_complete" if "budget" in reason else "paused")
+                )
+                return self.update(state, status=status, reason=reason)
         if self.clock() >= mission.deadline_utc:
             return self.update(state, status="partially_complete", reason="deadline")
         if state["transitions"] >= mission.max_transitions:
@@ -71,7 +81,16 @@ class MissionNodes:
 
     async def plan(self, state):
         # Phase 1 receives a validated static DAG. No model or speculative replan.
-        return self.guard(state) or self.update(state)
+        guarded = self.guard(state)
+        if guarded:
+            return guarded
+        if (
+            self.scheduler
+            and self.scheduler.exists(state["mission_id"])
+            and (self.scheduler.plan(state["mission_id"]).mode == "observe_only")
+        ):
+            return self.update(state, status="paused", reason="observe_only_handoff")
+        return self.update(state)
 
     async def choose(self, state):
         guarded = self.guard(state)
@@ -130,6 +149,10 @@ class MissionNodes:
         if effect.generation != generation:
             return self.update(state, status="partially_complete", reason="stale_generation")
         if effect.status == "approved":
+            return self.update(state)
+        if self.scheduler and self.scheduler.exists(mid):
+            # Exact admitted local DAG consent is outer-loop authority only.
+            self.store.transition(effect, "approved")
             return self.update(state)
         # Risk labels cannot reduce review for consequential or unknown effects.
         review = task.requires_approval or task.category not in ("read_only", "local_reversible")
@@ -202,12 +225,105 @@ class MissionNodes:
         task = next(s for s in mission.subtasks if s.subtask_id == sid)
         if effect.generation != self.store.control(mid)["generation"]:
             return self.update(state, status="paused", reason="stale_generation")
-        if task.requires_approval or task.category not in ("read_only", "local_reversible"):
+        scheduled = bool(self.scheduler and self.scheduler.exists(mid))
+        if not scheduled and (
+            task.requires_approval or task.category not in ("read_only", "local_reversible")
+        ):
             approval = self.store.get_approval(
                 stable_id(effect.effect_id, str(effect.generation), "approval")
             )
             if approval.decision != "approved" or approval.expires_at <= self.clock():
                 return self.update(state, status="partially_complete", reason="approval_expired")
+        reservation = None
+        pure_failures = 0
+        if scheduled:
+            try:
+                reservation = self.scheduler.reserve(mid, task, effect)
+            except Exception as exc:  # noqa: BLE001 -- fail closed with fixed categories.
+                reason = (
+                    "global_budget_exhausted"
+                    if isinstance(exc, ValueError)
+                    else "storage_unavailable"
+                )
+                return self.update(state, status="partially_complete", reason=reason)
+            if self.scheduler.plan(mid).mode == "simulation":
+                from .recovery import PreDispatchFault, backoff, decide
+
+                max_attempts = self.scheduler.plan(mid).budget.max_pure_attempts
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        await asyncio.wait_for(self.runner.pure_preflight(None), 2)
+                        break
+                    except PreDispatchFault as exc:
+                        pure_failures += 1
+                        self.scheduler.note_failure(mid)
+                        decision = decide(
+                            exc.kind, attempt=attempt, max_attempts=min(2, max_attempts)
+                        )
+                        if decision.action != "reobserve":
+                            no_start = TaskResult(
+                                mission_id=mid,
+                                subtask_id=sid,
+                                effect_id=effect.effect_id,
+                                generation=effect.generation,
+                                status="blocked",
+                                reason="timeout",
+                                proven_not_started=True,
+                                cleanup_confirmed=True,
+                                confirmed_input_transactions=0,
+                                model_planning_calls=pure_failures,
+                                review_count=0,
+                            )
+                            self.scheduler.settle(mid, reservation, no_start)
+                            return self.update(state, status="paused", reason=decision.reason_code)
+                        await asyncio.sleep(backoff(attempt))
+                    if self.store.control(mid)["stop_requested"]:
+                        no_start = self.failure(effect, "cancelled").model_copy(
+                            update={
+                                "status": "blocked",
+                                "cleanup_confirmed": True,
+                                "proven_not_started": True,
+                                "confirmed_input_transactions": 0,
+                                "model_planning_calls": pure_failures,
+                                "review_count": 0,
+                            }
+                        )
+                        self.scheduler.settle(mid, reservation, no_start)
+                        return self.guard(state)
+            if pure_failures >= task.max_model_calls:
+                no_start = TaskResult(
+                    mission_id=mid,
+                    subtask_id=sid,
+                    effect_id=effect.effect_id,
+                    generation=effect.generation,
+                    status="blocked",
+                    reason="budget",
+                    cleanup_confirmed=True,
+                    proven_not_started=True,
+                    confirmed_input_transactions=0,
+                    model_planning_calls=pure_failures,
+                    review_count=0,
+                )
+                self.scheduler.settle(mid, reservation, no_start)
+                return self.update(
+                    state, status="partially_complete", reason="model_budget_exhausted"
+                )
+            if self.scheduler.row(mid)["pause_requested"]:
+                no_start = TaskResult(
+                    mission_id=mid,
+                    subtask_id=sid,
+                    effect_id=effect.effect_id,
+                    generation=effect.generation,
+                    status="blocked",
+                    reason="cancelled",
+                    cleanup_confirmed=True,
+                    proven_not_started=True,
+                    confirmed_input_transactions=0,
+                    model_planning_calls=pure_failures,
+                    review_count=0,
+                )
+                self.scheduler.settle(mid, reservation, no_start)
+                return self.update(state, status="paused", reason="safe_boundary_pause")
         self.store.transition(effect, "dispatch_started")
         effect = self.store.effect(mid, sid)
         request = GuiSubtaskRequest(
@@ -216,9 +332,19 @@ class MissionNodes:
             effect_id=effect.effect_id,
             generation=effect.generation,
             subtask=task,
-            authorization_expires_at=approval.expires_at
-            if (task.requires_approval or task.category not in ("read_only", "local_reversible"))
-            else mission.deadline_utc,
+            schedule_ref=mid if scheduled else None,
+            configuration_digest=self.scheduler.plan(mid).configuration_digest
+            if scheduled
+            else None,
+            authorization_expires_at=mission.deadline_utc
+            if scheduled
+            else (
+                approval.expires_at
+                if (
+                    task.requires_approval or task.category not in ("read_only", "local_reversible")
+                )
+                else mission.deadline_utc
+            ),
         )
         started = time.monotonic()
         self.running[mid] = asyncio.create_task(self.runner.run(request))
@@ -230,6 +356,18 @@ class MissionNodes:
             result = TaskResult.model_validate(
                 raw.model_dump() if isinstance(raw, TaskResult) else raw
             )
+            if (
+                scheduled
+                and result.status == "verified_success"
+                and (
+                    not result.cleanup_confirmed
+                    or (
+                        self.scheduler.plan(mid).mode == "simulation"
+                        and result.evidence_kind != "fake"
+                    )
+                )
+            ):
+                raise ValueError("Scheduled result lacks cleanup or correct evidence provenance")
             if (
                 result.status == "verified_success"
                 and hasattr(self.runner, "bridge")
@@ -271,7 +409,15 @@ class MissionNodes:
             "verified_success": "observed_success",
             "verified_failure": "observed_failure",
         }.get(result.status, "uncertain")
+        if scheduled:
+            if result.model_planning_calls is not None:
+                result = result.model_copy(
+                    update={"model_planning_calls": result.model_planning_calls + pure_failures}
+                )
+            self.scheduler.settle(mid, reservation, result)
         self.store.transition(effect, status, result)
+        if scheduled:
+            self.scheduler.notify(mid)
         return self.update(state)
 
     @staticmethod
@@ -332,7 +478,12 @@ def build_graph(nodes, checkpointer):
         return node
 
     def condition(source, route):
-        graph.add_conditional_edges(source, lambda s: route(migrate_state(s)))
+        graph.add_conditional_edges(
+            source,
+            lambda s: (
+                END if (s.get("reason") == "mission_consent_required") else route(migrate_state(s))
+            ),
+        )
 
     for name in (
         "authorize",

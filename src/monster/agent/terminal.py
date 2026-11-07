@@ -13,3 +13,5 @@ class ExecutionReport:
     visual_verified: bool
     human_confirmed: bool
     observation_ref: str | None
+    model_planning_calls: int = 0
+    review_count: int = 0

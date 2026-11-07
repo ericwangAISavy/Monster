@@ -53,6 +53,7 @@ class CompanionApp:
         self.manual_lease = None
         self.manual_generation = None
         self.mission_runtime = None
+        self.phase4_qualification = None
         self.reconciliation_effect = None
         self.mission_review_timer = QTimer()
         self.mission_review_timer.setSingleShot(True)
@@ -260,6 +261,14 @@ class CompanionApp:
         self.add_action("Experimental Mission · two Notepad drafts…", self.start_experimental_mission)
         self.add_action("Resume latest experimental mission…", lambda: self.start_experimental_mission(resume=True))
         self.add_action("Mission effects · observe-only review…", self.review_mission_effects)
+        self.add_action("Phase 4 · six-stage simulation…", lambda: self.start_phase4("simulation"))
+        self.add_action("Phase 4 · observe-only rehearsal…", lambda: self.start_phase4("observe_only"))
+        self.add_action("Phase 4 · qualified native pilot…", lambda: self.start_phase4("supervised_pilot"))
+        self.add_action("Phase 4 · resume simulation…", lambda: self.start_phase4("simulation", resume=True))
+        self.add_action("Phase 4 · resume qualified pilot…", lambda: self.start_phase4("supervised_pilot", resume=True))
+        self.add_action("Mission progress…", self.show_mission_progress)
+        self.add_action("Mission · pause after stage", self.pause_mission_boundary)
+        self.add_action("Mission · resume / request consent", self.resume_mission_boundary)
         if self.controller.is_mock:
             demo = self.menu.addMenu("GUI demo")
             self.demo_menu = demo
@@ -453,6 +462,81 @@ class CompanionApp:
             self.notice(text, 5000) if source is self.mission_runtime else None)
         self.mission_runtime.start()
 
+    def start_phase4(self, mode="simulation", *, resume=False):
+        if mode == "supervised_pilot" and self.phase4_qualification is None:
+            self.notice("Phase 4 native pilot disabled · qualify Phases 2/3 and supply reviewed evidence.",5000)
+            return
+        if self.active or self.workspace_gate.busy or (self.mission_runtime and self.mission_runtime.engaged):
+            self.notice("Finish or stop the current task before starting a mission.")
+            return
+        if self.mission_runtime:
+            self.mission_runtime.close()
+            if self.mission_runtime.thread.is_alive():
+                self.notice("Mission runtime closing · retry shortly.")
+                return
+        from monster.mission.plan_templates import PILOT_OBJECTIVES, editor_plan
+        from monster.mission.runner import FakeGuiSubtaskRunner
+        from monster.mission.runtime import MissionRuntime
+        from monster.mission.scheduling import provider_binding
+        bridge = None
+        runner = FakeGuiSubtaskRunner()
+        arguments = {}
+        if mode == "supervised_pilot":
+            from monster.native import IS_WINDOWS
+            if not IS_WINDOWS or not isinstance(self.controller,SupervisedController):
+                self.notice("Qualified pilot requires Windows supervised mode.")
+                return
+            from monster.mission.gui_bridge import MissionGuiBridge
+            from monster.mission.gui_subtask_adapter import AsyncGuiSubtaskRunner
+            bridge = MissionGuiBridge(self.controller,self.workspace_gate,preflight=self._mission_preflight,
+                                      objective_catalog=PILOT_OBJECTIVES,parent=self.app)
+            runner = AsyncGuiSubtaskRunner(bridge)
+            import hashlib
+            import re
+            model = self.model_config.model
+            model_ref = model if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}",model) else hashlib.sha256(model.encode()).hexdigest()
+            arguments = {"provider_ref":"configured-ollama","model_ref":model_ref,
+                         "configuration_digest":provider_binding(self.model_config)}
+        runtime = MissionRuntime(self.config_path.parent/"missions",runner,bridge,
+            scheduled_plan=None if resume else editor_plan(mode=mode,**arguments),
+            scheduled_resume_mode=mode if resume else None,
+            native_qualification=self.phase4_qualification,parent=self.app)
+        self.mission_runtime = runtime
+        runtime.changed.connect(lambda update,source=runtime:self._mission_changed(update,source=source))
+        runtime.start()
+
+    def pause_mission_boundary(self):
+        if self.mission_runtime and not self.mission_runtime.closed:
+            self.mission_runtime.request_boundary_pause()
+
+    def resume_mission_boundary(self):
+        if self.mission_runtime and not self.mission_runtime.closed:
+            self.mission_runtime.request_resume()
+
+    def show_mission_progress(self):
+        if self.mission_runtime and not self.mission_runtime.closed:
+            self.mission_runtime.request_progress()
+
+    def _show_phase4_progress(self,report):
+        if self.pending_question or (self.pill.isVisible() and self.pill.mode=="input"):
+            return
+        used=report['budget_used']
+        budget=report['budget']
+        title = "SIMULATED" if report['provenance']=='simulated' else report['provenance'].replace('_',' ')
+        self.question("mission-progress",title+" · "+str(len(report['verified_subtask_ids']))
+            +"/6 verified · "+str(len(report['remaining_subtask_ids']))+" remaining\n"
+            +"Active budget charged: "+str(round(used['active_ms']/1000,1))+"s / "
+            +str(budget['max_active_seconds'])+"s\nInputs charged: "+str(used['input_charged'])
+            +" / "+str(budget['max_total_input_transactions'])+" · planning calls: "
+            +str(used['models_charged'])+" / "+str(budget['max_total_model_calls'])
+            +"\n"+report.get('status','unknown').replace('_',' ')
+            + (" · "+report['reason_code'].replace('_',' ') if report.get('reason_code') else ""),True)
+        self.pill.show_effect_controls()
+        self.pill.approve.setText("Pause after stage")
+        self.pill.reject.setText("Stop")
+        self.pill.edit_effect.setText("Resume / consent")
+        self.pill.pause_effect.setText("Close")
+
     def review_mission_effects(self):
         if self.mission_runtime and not self.mission_runtime.closed:
             if self.mission_runtime.engaged or self.workspace_gate.busy:
@@ -500,6 +584,31 @@ class CompanionApp:
         if self.closing or (source is not None and source is not self.mission_runtime):
             return
         state, approval = update["state"], update.get("approval")
+        if update.get("requested_progress"):
+            self._show_phase4_progress(update["report"])
+            return
+        if update.get("consent"):
+            consent = update["consent"]
+            label = "SIMULATION · no desktop input" if consent.mode=="simulation" else (
+                "Observe-only · no input" if consent.mode=="observe_only" else "EXPERIMENTAL · human supervision required")
+            budget = update["report"]["budget"]
+            used = update["report"].get("budget_used", {})
+            data_scope = ("Desktop screenshots to saved provider " + self.model_config.url
+                          + " · model " + consent.model_ref) if consent.mode=="supervised_pilot" else "No screenshots, model requests or native input."
+            text = (label + "\nSix fixed scratch sections A–F; no save, replace or send. Plan "
+                    + consent.plan_digest[:12] + " · workspace " + consent.workspace_id
+                    + "\nWall " + str(budget['max_wall_seconds']) + "s; active "
+                    + str(budget['max_active_seconds']) + "s; inputs "
+                    + str(budget['max_total_input_transactions']) + "; planning calls "
+                    + str(budget['max_total_model_calls']) + "; reviews "
+                    + str(budget['max_total_reviews']) + "; starts " + str(budget['max_subtask_starts'])
+                    + ". Inputs already charged: " + str(used.get('input_charged',0))
+                    + ".\n" + data_scope + "\nConsent covers sequence only. Each native action still needs exact review. "
+                    "Pause does not extend the absolute deadline or reset counters. Ctrl+Alt+X stops.")
+            self.question("mission-consent-"+consent.mission_id,text,True)
+            import time
+            self.mission_review_timer.start(max(1,int((consent.expires_at-time.time())*1000)))
+            return
         if approval and self.mission_runtime.stopped.is_set():
             return
         if state["status"] == "waiting_approval" and approval:
@@ -515,7 +624,14 @@ class CompanionApp:
                 self.pending_question = None
                 self._cancel_keyboard_approval()
                 self.pill.hide()
-            self.notice("Mission · " + state["status"].replace("_", " "), 5000)
+            report = update.get("report")
+            progress = update.get("progress")
+            simulated = (report and report.get("provenance")=="simulated") or (
+                progress and progress.get("provenance")=="simulated")
+            prefix = "SIMULATED mission · " if simulated else "Mission · "
+            self.notice(prefix + state["status"].replace("_", " ")
+                + (" · pause after stage pending" if state.get("reason")=="pause_pending" else (
+                    " · "+state['reason'].replace('_',' ') if state.get('reason') not in (None,'verified') else "")), 5000)
 
     def _manual_terminal(self, report):
         if self.manual_lease and report.run_generation == self.manual_generation:
@@ -674,6 +790,15 @@ class CompanionApp:
             self.answer(pending[1], "approve", source="keyboard")
 
     def answer(self, request_id, answer, *, source="mouse_or_text"):
+        if request_id == "mission-progress" and self.pending_question and self.pending_question[0]==request_id:
+            self.pending_question=None
+            self._cancel_keyboard_approval()
+            self.pill.hide()
+            if answer=="approve":self.pause_mission_boundary()
+            elif answer=="reject":self.stop()
+            elif answer=="edit":self.resume_mission_boundary()
+            self.hotkey_errors=self.register_hotkeys()
+            return
         if (self.reconciliation_effect and self.pending_question
                 and request_id == "reconcile-" + self.reconciliation_effect.effect_id
                 and self.pending_question[0] == request_id):
@@ -1106,6 +1231,8 @@ def main():
     )
     parser.add_argument("--overlay-helper", type=Path,
                         help="Explicit signed UIAccess MonsterOverlay.exe installed in Program Files")
+    parser.add_argument("--phase4-qualification",type=Path,
+                        help="Explicit local Phase2/3 PASS evidence metadata for the supervised pilot")
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Monster")
@@ -1114,6 +1241,13 @@ def main():
     app.setWindowIcon(monster_icon())
     path = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation))
     ui = CompanionApp(app, MockTaskController(), path / "companion.json")
+    if args.phase4_qualification:
+        from monster.mission.scheduling import NativePilotQualification
+        try:
+            ui.phase4_qualification=NativePilotQualification.model_validate_json(
+                args.phase4_qualification.read_text(encoding="utf-8"))
+        except (OSError,ValueError):
+            print("Phase4 qualification unavailable/invalid; native pilot remains disabled.",file=sys.stderr)
     if args.overlay_helper:
         from monster.ui.overlay_client import OverlayClient
         try:

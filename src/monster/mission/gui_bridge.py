@@ -74,6 +74,15 @@ class MissionGuiBridge(QObject):
             effect_id=req.effect_id,
             generation=req.generation,
             status="verified_success" if verified else status,
+            proven_not_started=bool(
+                cleanup
+                and (
+                    (report and not report.input_may_have_occurred)
+                    or (report is None and status == "blocked")
+                )
+            ),
+            model_planning_calls=report.model_planning_calls if report else 0,
+            review_count=report.review_count if report else 0,
             cleanup_confirmed=cleanup,
             confirmed_input_transactions=report.confirmed_input_transactions if report else 0,
             visual_verified=bool(report and report.visual_verified),
@@ -110,6 +119,17 @@ class MissionGuiBridge(QObject):
         ):
             self.resolved.emit(self.result(req))
             return
+        from .plan_templates import PILOT_TEXT
+
+        if req.subtask.objective_ref in PILOT_TEXT and req.schedule_ref != req.mission_id:
+            self.resolved.emit(self.result(req))
+            return
+        if req.schedule_ref:
+            from .scheduling import provider_binding
+
+            if req.configuration_digest != provider_binding(self.controller.config):
+                self.resolved.emit(self.result(req))
+                return
         self.seen.add(req.effect_id)
         try:
             token = self.gate.acquire(req.effect_id, req.generation)
@@ -142,6 +162,7 @@ class MissionGuiBridge(QObject):
             "stop_at": None,
         }
         self.controller.action_gate = self._policy_connected
+        self.controller.mission_review_limit = 64 if req.schedule_ref else None
         if not self.controller.submit(self.catalog[req.subtask.objective_ref]):
             self._finish(self.result(req))
             return
@@ -190,6 +211,7 @@ class MissionGuiBridge(QObject):
         self.controller.config = current["config"]
         self.controller.mission_cancel_event = None
         self.controller.action_gate = False
+        self.controller.mission_review_limit = None
         self.gate.release(current["token"], cleanup_confirmed=result.cleanup_confirmed)
         self.resolved.emit(result)
 
@@ -255,6 +277,7 @@ class MissionGuiBridge(QObject):
                 "context": context,
                 "request_key": (req.effect_id, req.generation),
                 "objective_ref": req.subtask.objective_ref,
+                "schedule_ref": req.schedule_ref,
             }
         )
 
@@ -266,6 +289,11 @@ class MissionGuiBridge(QObject):
         req = self.current["handoff"].request
         if reply.get("request_key") != (req.effect_id, req.generation):
             return
+        if req.schedule_ref:
+            from .scheduling import provider_binding
+
+            if req.configuration_digest != provider_binding(self.controller.config):
+                reply = {**reply, "allowed": False}
         self.controller.effect_reply(reply)
 
     def halt(self):

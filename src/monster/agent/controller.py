@@ -72,6 +72,8 @@ class SupervisedController(TaskController):
         self.phase = "idle"
         self.mission_cancel_event = None
         self.action_gate = False
+        self.mission_review_limit = None
+        self.review_count = 0
         self.effect_action_id = None
         self.effect_review_id = None
         self.effect_wait_nonce = None
@@ -122,6 +124,7 @@ class SupervisedController(TaskController):
         ):
             return False
         self.effect_action_id = self.effect_review_id = self.effect_wait_nonce = None
+        self.review_count = 0
         self.timings.reset()
         self.instruction = instruction.strip()[:2000]
         self.single_click_policy = single_click_requested(self.instruction)
@@ -858,6 +861,10 @@ class SupervisedController(TaskController):
                          matching_request=request_id == self.question_id,
                          timer_active=self.approval_timer.isActive())
             return
+        if self.mission_review_limit is not None and self.review_count >= self.mission_review_limit:
+            self.fail("Scheduled review envelope exhausted.")
+            return
+        self.review_count += 1
         self._record("review_response", request_id=request_id, content={"answer": answer})
         self.approval_timer.stop()
         self.question_id = None
@@ -1036,7 +1043,7 @@ class SupervisedController(TaskController):
             self.run_generation, kind, self.actions, self.input_may_have_occurred,
             False, bool(self.last_verification and self.last_verification.status == "succeeded"),
             self.human_result_confirmed,
-            getattr(self.observation, "id", None),
+            getattr(self.observation, "id", None), self.calls, self.review_count,
         )
         self._record("task_terminated", status=kind, model_job=self.job, input_job=self.input_job,
                      review_id=self.question_id, scheduled_capture=self.scheduled_capture,

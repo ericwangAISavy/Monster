@@ -21,7 +21,13 @@ def exclusive(method):
 
     @wraps(method)
     async def wrapped(self, mission, *args, **kwargs):
-        mid = mission.mission_id if isinstance(mission, Mission) else mission
+        mid = (
+            mission.mission_id
+            if isinstance(mission, Mission)
+            else mission.mission.mission_id
+            if hasattr(mission, "mission")
+            else mission
+        )
         if mid in self._busy:
             raise RuntimeError("Mission already running")
         self._busy.add(mid)
@@ -41,9 +47,13 @@ class MissionCoordinator:
         *,
         clock=time.time,
         experimental_gui=False,
+        native_qualification=None,
+        monotonic=time.monotonic,
     ):
         # A future Qt adapter requires a separately reviewed Phase 2 change.
         self.experimental_gui = experimental_gui
+        self.native_qualification = native_qualification
+        self.monotonic = monotonic
         if runner is not None and type(runner) is not FakeGuiSubtaskRunner:
             if not experimental_gui:
                 raise ValueError("Real runner requires explicit experimental mode; fake is default")
@@ -73,9 +83,21 @@ class MissionCoordinator:
                 self.store.connection, clock=self.clock, live=self.experimental_gui
             )
             self.effects.recover()
+            from .scheduling import MissionScheduler
+
+            self.scheduler = MissionScheduler(
+                self.store, clock=self.clock, monotonic=self.monotonic
+            )
+            self.scheduler.mode_guard = self._validate_scheduled_mode
+            self.scheduler.recover()
+            self.effects.schedule_lookup = self.scheduler.exists
+            self.effects.mission_guard = lambda mid: (
+                self.scheduler.guard(mid) if self.scheduler.exists(mid) else None
+            )
             if hasattr(self.runner, "configure_effects"):
                 self.runner.configure_effects(self.effects)
             self.nodes = MissionNodes(self.store, self.runner, self.clock)
+            self.nodes.scheduler = self.scheduler
             self.graph = build_graph(self.nodes, self.checkpointer)
             if self.experimental_gui:
                 self._restart_review = self.store.invalidate_unstarted_authorizations()
@@ -110,6 +132,8 @@ class MissionCoordinator:
             with tracing_context(enabled=False):
                 await self.graph.ainvoke(value, self.config(mission_id), durability="sync")
             snapshot = await self.snapshot(mission_id)
+            if self.scheduler.exists(mission_id) and snapshot["status"] == "paused":
+                self.scheduler.finalize_pause(mission_id)
             if snapshot["status"] in TERMINAL:
                 self.store.terminal(mission_id)
             return snapshot
@@ -137,6 +161,83 @@ class MissionCoordinator:
         self.store.create(mission)
         return await self._invoke(mission.mission_id, self.initial(mission.mission_id))
 
+    def _validate_scheduled_mode(self, plan):
+        from .scheduling import NativePilotQualification
+
+        if plan.mode == "supervised_pilot":
+            import os
+
+            from monster.agent.diagnostics import RUNTIME
+
+            q = self.native_qualification
+            if q is None:
+                raise ValueError("Native qualification required before Phase4 pilot")
+            q = NativePilotQualification.model_validate(q.model_dump())
+            if (
+                os.name != "nt"
+                or not self.experimental_gui
+                or type(self.runner) is FakeGuiSubtaskRunner
+                or q.expires_at <= self.clock()
+                or q.workspace_id != plan.mission.workspace_id
+                or q.configuration_digest != plan.configuration_digest
+                or q.source_ref != RUNTIME["git_revision_at_startup"]
+            ):
+                raise ValueError("Native qualification/context mismatch")
+        elif type(self.runner) is not FakeGuiSubtaskRunner and plan.mode == "simulation":
+            raise ValueError("Simulation must use fake runner")
+
+    @exclusive
+    async def start_scheduled(self, plan):
+        from .scheduling import ScheduledPlan
+
+        plan = ScheduledPlan.model_validate(plan.model_dump())
+        self._validate_scheduled_mode(plan)
+        if self.effects.unresolved():
+            raise ValueError("Unresolved effects require reconciliation")
+        self.store.create(plan.mission)
+        self.scheduler.register(plan)
+        return await self._invoke(plan.mission.mission_id, self.initial(plan.mission.mission_id))
+
+    @exclusive
+    async def consent_and_continue(self, mission_id, consent):
+        if self.effects.unresolved(mission_id):
+            raise ValueError("Unresolved effects require reconciliation")
+        if (await self.snapshot(mission_id))["status"] in TERMINAL:
+            raise ValueError("Terminal missions cannot resume")
+        self._validate_scheduled_mode(self.scheduler.plan(mission_id))
+        self.scheduler.grant(mission_id, consent)
+        await self.graph.aupdate_state(
+            self.config(mission_id),
+            {"status": "running", "reason": None, "pending_approval_id": None},
+            as_node="checkpoint",
+        )
+        return await self._invoke(mission_id, None)
+
+    async def request_pause(self, mission_id):
+        if not self.scheduler.exists(mission_id):
+            return await self.stop(mission_id)
+        # Latch before the first await: the next stage must see it even if the
+        # current result/checkpoint finishes while snapshot I/O is pending.
+        if self.store.control(mission_id)["terminal_at"] is None:
+            self.scheduler.request_pause(mission_id)
+        state = await self.snapshot(mission_id)
+        if state["status"] in TERMINAL:
+            return state
+        if mission_id not in self._active:
+            self.scheduler.finalize_pause(mission_id)
+            await self.graph.aupdate_state(
+                self.config(mission_id),
+                {"status": "paused", "reason": "safe_boundary_pause", "pending_approval_id": None},
+                as_node="checkpoint",
+            )
+            return await self.snapshot(mission_id)
+        return {**state, "reason": "pause_pending"}
+
+    async def mission_report(self, mission_id):
+        from .reports import build_report
+
+        return build_report(self, mission_id, await self.snapshot(mission_id))
+
     async def snapshot(self, mission_id):
         control = self.store.control(mission_id)
         state = await self.graph.aget_state(self.config(mission_id))
@@ -156,6 +257,13 @@ class MissionCoordinator:
             return {**snapshot, "status": "paused", "reason": "action_reconciliation_required"}
         if snapshot["status"] in TERMINAL:
             return snapshot
+        if self.scheduler.exists(mission_id):
+            return {
+                **snapshot,
+                "status": "waiting_approval",
+                "reason": "mission_consent_required",
+                "pending_approval_id": None,
+            }
         if mission_id in self._restart_review:
             self._restart_review.remove(mission_id)
             self.store.clear_stop(mission_id)

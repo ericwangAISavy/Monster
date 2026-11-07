@@ -205,3 +205,19 @@ The existing pill provides exact-action review and an observe-only human
 reconciliation entry. Standalone supervised defaults are unchanged.
 See [effect lifecycle, policy and privacy](docs/MISSION_EFFECTS_AND_POLICIES.md) and
 [tests and pending Windows qualification](docs/PHASE3_QUALIFICATION.md).
+
+## Bounded six-stage mission pilot (v3 Phase 4)
+
+The tray offers a default **six-stage simulation**, observe-only rehearsal,
+requested progress, safe-boundary pause and explicit resume. A durable scheduling
+envelope binds consent, budgets and evidence above the existing graph. Unknown
+work is not replayed and costs are not reset on restart.
+
+```powershell
+uv run python -m monster.mission.pilot --directory .monster-missions --scenario success --approve-simulation
+```
+
+This runs fake subtasks only. The new native pilot is disabled without explicit
+reviewed Phase2/3 qualification metadata; **native qualification remains PENDING**.
+See [execution architecture and commands](docs/PHASE4_LONG_HORIZON_EXECUTION.md)
+and [qualification/evidence](docs/WINDOWS_PHASE4_QUALIFICATION.md).

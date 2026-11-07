@@ -56,6 +56,7 @@ class EffectCoordinator:
         self.c, self.clock, self.live = connection, clock, live
         self.key = key or secrets.token_bytes(32)
         self.expected = {}
+        self.mission_guard = None
 
     def digest(self, value):
         canonical = json.dumps(
@@ -113,6 +114,8 @@ class EffectCoordinator:
         return [Effect.model_validate_json(row[0]) for row in rows]
 
     def _healthy(self, ctx):
+        if self.mission_guard is not None and self.mission_guard(ctx.get("mission_id")):
+            raise ValueError("Mission scheduling consent or budget unavailable")
         allowed = set(BINDING) | {
             "observation_ref",
             "objective_ref",

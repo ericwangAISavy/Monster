@@ -1,3 +1,9 @@
+> **Phase 4 update:** Bounded scheduling, exact mission consent, conservative global
+> budgets, progress and safe pause/restart are implemented over the existing graph.
+> Simulation is the default; the new native pilot requires reviewed Phase2/3 evidence.
+> See [execution](PHASE4_LONG_HORIZON_EXECUTION.md) and
+> [qualification](WINDOWS_PHASE4_QUALIFICATION.md). Native status remains PENDING.
+
 > **Phase 3 update:** Per-action journaling, deterministic policy, single-use approvals
 > and human reconciliation are implemented for the existing narrow supervised scope.
 > See [effects/policies](MISSION_EFFECTS_AND_POLICIES.md) and

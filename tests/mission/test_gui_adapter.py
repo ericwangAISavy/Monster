@@ -475,3 +475,21 @@ def test_runtime_close_tolerates_loop_already_closed(qtbot, tmp_path):
     runtime._exit = asyncio.Event()
     runtime.close()
     assert runtime.closed and b.closed
+
+
+def test_phase4_simulation_runtime_consent_progress_and_shutdown(qtbot,tmp_path):
+    from monster.mission.plan_templates import editor_plan
+    from monster.mission.runner import FakeGuiSubtaskRunner
+    from monster.mission.runtime import MissionRuntime
+    runtime=MissionRuntime(tmp_path,FakeGuiSubtaskRunner(),None,scheduled_plan=editor_plan())
+    updates=[]
+    runtime.changed.connect(updates.append)
+    runtime.start()
+    qtbot.waitUntil(lambda:bool(updates))
+    assert updates[-1].get('consent') is not None
+    runtime.answer('approve')
+    qtbot.waitUntil(lambda:any(u['state']['status']=='completed' for u in updates))
+    assert runtime.last_report['provenance']=='simulated'
+    assert len(runtime.last_report['verified_subtask_ids'])==6
+    runtime.close()
+    qtbot.waitUntil(lambda:not runtime.thread.is_alive())

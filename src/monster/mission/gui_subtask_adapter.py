@@ -153,6 +153,12 @@ class AsyncGuiSubtaskRunner:
                 from .runtime import EXPECTED_TEXT
 
                 expected = EXPECTED_TEXT.get(packet["objective_ref"])
+                if packet.get("schedule_ref"):
+                    from .plan_templates import PILOT_TEXT
+
+                    if not self.effects.schedule_lookup(packet["context"]["mission_id"]):
+                        raise ValueError("No admitted scheduling scope")
+                    expected = PILOT_TEXT.get(packet["objective_ref"])
                 if expected is None:
                     raise ValueError("No reviewed scratch objective")
                 e = self.effects.prepare(

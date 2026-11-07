@@ -57,7 +57,7 @@ class Repository:
     def _migrate(self):
         c = self.connection
         version = c.execute("PRAGMA user_version").fetchone()[0]
-        if version > 3:
+        if version > 4:
             raise ValueError("Unsupported ledger schema")
         with c:
             c.execute("BEGIN IMMEDIATE")  # sqlite3 does not begin transactions for DDL.
@@ -95,7 +95,10 @@ class Repository:
                     "INSERT INTO effect_audit (effect_id,mission_id,code,at,source) "
                     "SELECT effect_id,mission_id,code,at,'legacy_v1' FROM events WHERE effect_id IS NOT NULL"
                 )
-            c.execute("PRAGMA user_version=3")
+            from .scheduling import migrate_scheduling
+
+            migrate_scheduling(c)
+            c.execute("PRAGMA user_version=4")
 
     def create(self, mission: Mission):
         with self.connection:
@@ -264,7 +267,15 @@ class Repository:
         if mission_id not in self.prune_candidates(float("inf")):
             raise ValueError("Mission has live or unresolved state")
         with self.connection:
-            for table in ("events", "approvals", "effects", "missions"):
+            for table in (
+                "mission_progress",
+                "mission_reservations",
+                "mission_schedules",
+                "events",
+                "approvals",
+                "effects",
+                "missions",
+            ):
                 self.connection.execute(f"DELETE FROM {table} WHERE mission_id=?", (mission_id,))
 
     def metrics(self, mission_id):
