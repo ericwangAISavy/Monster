@@ -2217,3 +2217,35 @@ def test_terminal_receipt_only_after_cleanup_and_requires_visual_and_human(qtbot
     assert reports[0].visual_verified and reports[0].human_confirmed
     assert reports[0].run_generation < engine.generation
     engine.close()
+
+
+def test_mission_effect_gate_prevents_execute_before_durable_ack(qtbot):
+    engine,bridge,_=controller([])
+    requests=[]
+    engine.effect_requested.connect(requests.append)
+    engine.action_gate=True
+    assert engine.submit('Type harmless text')
+    engine.job=None
+    engine.observation=observation()
+    engine.pending=Decision('action','type',{'op':'text','text':'safe'},'benign')
+    engine._request_effect('dispatch',action={'op':'text','text':'safe'})
+    assert requests and bridge.executed==[]
+    engine.effect_reply({'nonce':requests[-1]['nonce'],'operation':'dispatch','allowed':False})
+    qtbot.waitUntil(lambda:engine.phase=='idle')
+    assert bridge.executed==[]
+    engine.close()
+
+
+def test_mission_provider_diagnostics_drop_denied_sensitive_proposals(qtbot):
+    from monster.providers.ollama import OllamaProvider
+    engine,_bridge,_=controller([])
+    engine.action_gate=True
+    assert engine.submit('Safe scratch instruction')
+    engine.provider_factory=lambda config:OllamaProvider(config)
+    provider=engine._provider(engine.run_diagnostics,'deciding')
+    provider.diagnostic_callback('provider_structured_response',{},
+        content={'action':{'op':'text','text':'password=private-test-value'},'summary':'private-test-value'})
+    assert 'private-test-value' not in engine.diagnostic_snapshot().text()
+    engine.cancel()
+    qtbot.waitUntil(lambda:engine.phase=='idle')
+    engine.close()

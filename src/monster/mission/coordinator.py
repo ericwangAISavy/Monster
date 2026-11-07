@@ -67,6 +67,14 @@ class MissionCoordinator:
             self.checkpointer = await self._stack.enter_async_context(
                 AsyncSqliteSaver.from_conn_string(str(self.directory / "checkpoints.sqlite3"))
             )
+            from .effects import EffectCoordinator
+
+            self.effects = EffectCoordinator(
+                self.store.connection, clock=self.clock, live=self.experimental_gui
+            )
+            self.effects.recover()
+            if hasattr(self.runner, "configure_effects"):
+                self.runner.configure_effects(self.effects)
             self.nodes = MissionNodes(self.store, self.runner, self.clock)
             self.graph = build_graph(self.nodes, self.checkpointer)
             if self.experimental_gui:
@@ -124,6 +132,8 @@ class MissionCoordinator:
     async def start(self, mission: Mission):
         # Revalidate frozen models: model_copy is intentionally not a validation API.
         mission = Mission.model_validate(mission.model_dump())
+        if self.experimental_gui and self.effects.unresolved():
+            raise ValueError("Unresolved action effects require human reconciliation")
         self.store.create(mission)
         return await self._invoke(mission.mission_id, self.initial(mission.mission_id))
 
@@ -142,6 +152,8 @@ class MissionCoordinator:
         if mission_id in self._active:
             raise RuntimeError("Mission already running")
         snapshot = await self.snapshot(mission_id)
+        if self.effects.unresolved(mission_id):
+            return {**snapshot, "status": "paused", "reason": "action_reconciliation_required"}
         if snapshot["status"] in TERMINAL:
             return snapshot
         if mission_id in self._restart_review:
@@ -214,11 +226,15 @@ class MissionCoordinator:
         if mission_id in self._active:
             raise RuntimeError("Mission already running")
         result = TaskResult.model_validate(result.model_dump())
+        if self.effects.unresolved(mission_id):
+            raise ValueError("Resolve action effects before attesting the subtask")
         effect = self.store.effect(mission_id, result.subtask_id)
         if effect is None or effect.status != "uncertain":
             raise ValueError("No uncertain effect to reconcile")
         if result.status not in ("verified_success", "verified_failure"):
             raise ValueError("Reconciliation requires verified evidence")
+        if result.evidence_kind == "human":
+            result = result.model_copy(update={"evidence_kind": "human_attested"})
         self.store.transition(
             effect,
             "observed_success" if result.status == "verified_success" else "observed_failure",

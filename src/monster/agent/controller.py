@@ -35,6 +35,7 @@ from monster.providers.ollama import OllamaProvider
 
 
 class SupervisedController(TaskController):
+    effect_requested = Signal(object)
     terminal_ready = Signal(object)  # ExecutionReport, emitted only after cleanup.
     capture_requested = Signal()
     preview_ready = Signal(object)
@@ -70,6 +71,10 @@ class SupervisedController(TaskController):
         self.generation = 0
         self.phase = "idle"
         self.mission_cancel_event = None
+        self.action_gate = False
+        self.effect_action_id = None
+        self.effect_review_id = None
+        self.effect_wait_nonce = None
         self.job = self.input_job = None
         self.question_id = None
         self.observation = self.pending = None
@@ -116,10 +121,11 @@ class SupervisedController(TaskController):
             or not instruction.strip()
         ):
             return False
+        self.effect_action_id = self.effect_review_id = self.effect_wait_nonce = None
         self.timings.reset()
         self.instruction = instruction.strip()[:2000]
         self.single_click_policy = single_click_requested(self.instruction)
-        self.run_diagnostics = RunDiagnostics(instruction.strip(), self.config)
+        self.run_diagnostics = RunDiagnostics(instruction.strip(), self.config, content_free=self.action_gate)
         self.log_frame = self.planned_frame = None
         self.run_diagnostics.add(
             "task_started", "opening", draft_policy=draft_only(self.instruction),
@@ -164,6 +170,8 @@ class SupervisedController(TaskController):
         return True
 
     def _record(self, event, *, content=None, **details):
+        if self.action_gate:
+            content = None  # Mission audit is content-free even before a proposal is denied.
         if self.run_diagnostics is not None:
             self.run_diagnostics.add(event, self.phase, content=content,
                                      planning_call=self.calls, step=self.actions,
@@ -200,6 +208,8 @@ class SupervisedController(TaskController):
         self._bound_diagnostic(event, self.model_diagnostic_origins, event.get("job"), "model")
 
     def _worker_diagnostic(self, event):
+        if self.action_gate and event.get("event") == "dispatch_to_worker" and event.get("job") == self.input_job:
+            self._effect_event("started")
         self._bound_diagnostic(event, self.input_diagnostic_origins,
                                event.get("job", event.get("source_open_job")), "input")
 
@@ -257,6 +267,9 @@ class SupervisedController(TaskController):
         self._record("input_result", job=job, receipt=receipt,
                      content={"error": error} if error else None)
         successful = not error and bool(result)
+        if self.phase == "executing" and self.action_gate:
+            self._effect_event("receipt", inserted=not error and isinstance(result, dict)
+                               and result.get("status") == "inserted")
         if self.phase == "executing":
             successful = successful and result.get("status") == "inserted"
         self.timings.finish(("input", job), "completed" if successful else "failed")
@@ -541,6 +554,9 @@ class SupervisedController(TaskController):
             # proposal and checked scene, then obtain a fresh matching capture.
             self._begin_recheck(restore=False)
         elif self.phase == "verifying":
+            if self.action_gate:
+                self._effect_event("observe", status=result.status,
+                                   observation_ref=self.observation.id)
             self.last_verification = result
             self.last_verified_proposal = deepcopy(self.pending)
             self._record("verification_result", observation=self.log_frame, content={
@@ -630,6 +646,9 @@ class SupervisedController(TaskController):
             if not self._reviewed_proposal_matches():
                 return
             if not result or age > 2:
+                if self.action_gate:
+                    self._effect_event("revoke")
+                    self.effect_action_id = None
                 self.draft_target_proposal = None
                 self.human_confirmed_focus = False
                 self.stale += 1
@@ -662,22 +681,11 @@ class SupervisedController(TaskController):
                     )
                 )
                 return
-            self.phase = "executing"
-            self.state_changed.emit(State.WORKING)
-            self.stage_changed.emit("Acting")
-            self._record("dispatch_requested", transaction=self.actions + 1,
-                         observation=self.log_frame, planned_observation=self.planned_frame,
-                         expected_foreground=self.run_diagnostics.focus_alias(self.observation.foreground),
-                         observed_foreground=self.run_diagnostics.focus_alias(self.observation.foreground),
-                         expected_geometry=[asdict(bounds) for bounds in self.observation.displays],
-                         observation_age_s=time.monotonic() - self.observation.captured_at,
-                         content={"image_action": self.pending.action, "physical_action": action})
-            self.input_job = self._start_input(
-                "execute",
-                action,
-                self.observation.foreground,
-                list(self.observation.displays),
-            )
+            if self.action_gate:
+                self._request_effect("dispatch", action=dict(self.pending.action))
+            else:
+                self._dispatch_checked_action(action)
+
         elif self.phase == "deciding":
             self.draft_target_proposal = None
             self.pending = result
@@ -754,10 +762,89 @@ class SupervisedController(TaskController):
                     + "\nApprove only after inspecting it."
                 )
                 self.phase = "confirming"
+            if self.action_gate and self.phase == "approval":
+                self.effect_review_id = uuid.uuid4().hex
+                self._request_effect("prepare", action=dict(self.pending.action),
+                                     review_id=self.effect_review_id, model_risk=self.pending.risk)
+                return
             self.question_id = uuid.uuid4().hex
             self.state_changed.emit(State.WAITING)
             self.approval_requested.emit(self.question_id, text)
             self.approval_timer.start(60000)
+
+
+    def _dispatch_checked_action(self, action):
+        self.phase = "executing"
+        self.state_changed.emit(State.WORKING)
+        self.stage_changed.emit("Acting")
+        self._record("dispatch_requested", transaction=self.actions + 1,
+                     observation=self.log_frame, planned_observation=self.planned_frame,
+                     expected_foreground=self.run_diagnostics.focus_alias(self.observation.foreground),
+                     observed_foreground=self.run_diagnostics.focus_alias(self.observation.foreground),
+                     expected_geometry=[asdict(bounds) for bounds in self.observation.displays],
+                     observation_age_s=time.monotonic() - self.observation.captured_at,
+                     content={"image_action": self.pending.action, "physical_action": action})
+        self.input_job = self._start_input(
+            "execute",
+            action,
+            self.observation.foreground,
+            list(self.observation.displays),
+        )
+
+    def _effect_event(self, operation, **data):
+        if self.effect_action_id:
+            self.effect_requested.emit({"operation": operation, "effect_id": self.effect_action_id,
+                                        "nonce": None, **data})
+
+    def _request_effect(self, operation, **data):
+        self.effect_wait_nonce = uuid.uuid4().hex
+        self.phase = "effect_wait"
+        self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Authorizing")
+        self.effect_requested.emit({"operation": operation, "effect_id": self.effect_action_id,
+                                    "nonce": self.effect_wait_nonce, **data})
+
+    def effect_reply(self, reply):
+        if not self.active:
+            return
+        if reply.get("nonce") is None:
+            if not reply.get("allowed"):
+                self.fail("Mission journal unavailable; inspect input before continuing.")
+            return
+        if reply.get("nonce") != self.effect_wait_nonce or self.phase != "effect_wait":
+            return
+        self.effect_wait_nonce = None
+        if not reply.get("allowed") or (self.mission_cancel_event and self.mission_cancel_event.is_set()):
+            self.fail("Mission policy or journal refused this action; no new input authorized.")
+            return
+        op = reply["operation"]
+        if op == "prepare":
+            self.effect_action_id = reply["effect_id"]
+            self.phase = "effect_approval"
+            self.question_id = self.effect_review_id
+            self.state_changed.emit(State.WAITING)
+            text = ("One exact action · " + reply["risk"] + "\nWhere: user-designated disposable editor. "
+                    "No external destination. Expires in 60s.\nData/action (inspect exactly): "
+                    + json.dumps(self.pending.action, ensure_ascii=False)
+                    + "\nFingerprint: " + reply["fingerprint"][:12]
+                    + " · Changing scope requires a new review.")
+            self.approval_requested.emit(self.question_id, text)
+            self.approval_timer.start(60000)
+        elif op == "approve":
+            self.phase = "approval"
+            self._begin_recheck(restore=True)
+        elif op == "dispatch":
+            if (self.observation is None or time.monotonic()-self.observation.captured_at > 2
+                    or not self._reviewed_proposal_matches()):
+                self.fail("Observation changed while recording intent; inspect before continuing.")
+                return
+            try:
+                action = self._prepare_action(self.pending.action, self.observation)
+                self._validate_draft_proposal()
+            except (ValueError, TypeError):
+                self.fail("Action changed after authorization.")
+                return
+            self._dispatch_checked_action(action)
 
     def respond(self, request_id, answer):
         if (
@@ -774,6 +861,13 @@ class SupervisedController(TaskController):
         self._record("review_response", request_id=request_id, content={"answer": answer})
         self.approval_timer.stop()
         self.question_id = None
+        if self.phase == "effect_approval":
+            if answer == "approve":
+                self._request_effect("approve", review_id=self.effect_review_id)
+            else:
+                self._effect_event("revoke", decision="denied" if answer == "reject" else "revoked")
+                self.cancel()
+            return
         if self.phase == "clarifying":
             self.instruction = (self.instruction + "\nUser clarification: " + answer[:1000])[:3000]
             self.restore_focus = self.observation.foreground
@@ -935,6 +1029,8 @@ class SupervisedController(TaskController):
             self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
+        if self.action_gate:
+            self._effect_event("revoke")
         from monster.agent.terminal import ExecutionReport
         self.terminal_report = ExecutionReport(
             self.run_generation, kind, self.actions, self.input_may_have_occurred,

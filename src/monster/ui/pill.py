@@ -105,6 +105,16 @@ class Pill(QWidget):
         controls.addWidget(self.reject)
         controls.addWidget(self.approve)
         self.layout_box.addWidget(self.buttons)
+        self.effect_controls = QWidget()
+        extra = QHBoxLayout(self.effect_controls)
+        extra.setContentsMargins(26, 0, 0, 2)
+        self.edit_effect = QPushButton("Edit / prepare again")
+        self.pause_effect = QPushButton("Pause mission")
+        self.edit_effect.clicked.connect(lambda: self._answer("edit"))
+        self.pause_effect.clicked.connect(lambda: self._answer("pause"))
+        extra.addWidget(self.edit_effect)
+        extra.addWidget(self.pause_effect)
+        self.layout_box.addWidget(self.effect_controls)
         self.show_input()
         self.hide()
 
@@ -112,6 +122,11 @@ class Pill(QWidget):
         self._hide_timer.stop()
         self.mode = mode
         self.request_id = ""
+        self.effect_controls.hide()
+        self.approve.setText("Approve")
+        self.reject.setText("Decline")
+        self.edit_effect.setText("Edit / prepare again")
+        self.pause_effect.setText("Pause mission")
         self.input.setVisible(mode in ("input", "clarification"))
         self.send.setVisible(mode in ("input", "clarification"))
         self.message_area.setVisible(mode in ("status", "approval"))
@@ -170,6 +185,12 @@ class Pill(QWidget):
             self.input.setPlaceholderText(text)
             self.input.setToolTip(text)
         self.show()
+
+    def show_effect_controls(self):
+        self.approve.setText("Approve this exact action")
+        self.reject.setText("Reject")
+        self.effect_controls.show()
+        self.setFixedHeight(self.height() + 40)
 
     def _submit(self):
         text = self.input.text().strip()

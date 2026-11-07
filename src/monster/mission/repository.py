@@ -57,7 +57,7 @@ class Repository:
     def _migrate(self):
         c = self.connection
         version = c.execute("PRAGMA user_version").fetchone()[0]
-        if version > 2:
+        if version > 3:
             raise ValueError("Unsupported ledger schema")
         with c:
             c.execute("BEGIN IMMEDIATE")  # sqlite3 does not begin transactions for DDL.
@@ -87,7 +87,15 @@ class Repository:
                 "mission_id TEXT NOT NULL, effect_id TEXT, code TEXT NOT NULL, "
                 "at REAL NOT NULL, elapsed_ms INTEGER NOT NULL DEFAULT 0)"
             )
-            c.execute("PRAGMA user_version=2")
+            from .effects import migrate_journal
+
+            migrate_journal(c)
+            if version < 3:
+                c.execute(
+                    "INSERT INTO effect_audit (effect_id,mission_id,code,at,source) "
+                    "SELECT effect_id,mission_id,code,at,'legacy_v1' FROM events WHERE effect_id IS NOT NULL"
+                )
+            c.execute("PRAGMA user_version=3")
 
     def create(self, mission: Mission):
         with self.connection:
@@ -214,6 +222,12 @@ class Repository:
             "INSERT INTO events (mission_id,effect_id,code,at,elapsed_ms) VALUES (?,?,?,?,?)",
             (mission_id, effect_id, code, time.time(), elapsed_ms),
         )
+        if effect_id:
+            self.connection.execute(
+                "INSERT INTO effect_audit (effect_id,mission_id,code,at,source) "
+                "VALUES (?,?,?,?,'subtask')",
+                (effect_id, mission_id, code, time.time()),
+            )
 
     def events(self, mission_id):
         return [
@@ -231,6 +245,9 @@ class Repository:
             )
 
     def prune_candidates(self, before: float):
+        from .effects import EffectCoordinator
+
+        blocked = {e.mission_id for e in EffectCoordinator(self.connection).unresolved()}
         # Never discard live/paused missions or unresolved external outcomes.
         return [
             r[0]
@@ -240,6 +257,7 @@ class Repository:
                 "AND e.status IN ('dispatch_started','uncertain'))",
                 (before,),
             )
+            if r[0] not in blocked
         ]
 
     def delete_terminal(self, mission_id):

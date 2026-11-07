@@ -114,7 +114,7 @@ class TaskResult(Contract):
     human_confirmed: bool = False
     observation_ref: Ref | None = None
     evidence_ref: Ref | None = None
-    evidence_kind: Literal["fake", "visual", "human", "none"] = "none"
+    evidence_kind: Literal["fake", "visual", "human", "human_attested", "none"] = "none"
     model_id: Ref = "fake-model"
     elapsed_ms: int = Field(default=0, ge=0, le=300000)
     transaction_ids: list[Ref] = Field(default_factory=list, max_length=10)
@@ -141,6 +141,18 @@ class TaskResult(Contract):
 
 
 class Effect(Contract):
+    schema_version: Literal[1, 2] = 1
+    action_kind: Ref | None = None
+    objective_ref: Ref | None = None
+    attempt_id: Ref | None = None
+    workspace_id: Ref | None = None
+    fingerprint: Ref | None = None
+    action_digest: Ref | None = None
+    observation_ref: Ref | None = None
+    scene_ref: Ref | None = None
+    policy_version: Ref | None = None
+    created_at: float | None = Field(default=None, allow_inf_nan=False)
+    expires_at: float | None = Field(default=None, allow_inf_nan=False)
     effect_id: Ref
     mission_id: Ref
     subtask_id: Ref
@@ -152,20 +164,83 @@ class Effect(Contract):
         "observed_success",
         "observed_failure",
         "uncertain",
+        "approval_pending",
+        "denied",
+        "dispatch_intent_recorded",
+        "awaiting_observation",
+        "not_dispatched",
     ]
     target_ref: Ref
     category: Ref
     result: TaskResult | None = None
 
+    @model_validator(mode="after")
+    def versioned_binding(self):
+        if self.schema_version == 2 and any(
+            getattr(self, name) is None
+            for name in (
+                "attempt_id",
+                "workspace_id",
+                "fingerprint",
+                "action_digest",
+                "observation_ref",
+                "scene_ref",
+                "policy_version",
+                "created_at",
+                "expires_at",
+                "action_kind",
+                "objective_ref",
+            )
+        ):
+            raise ValueError("Version2 effect requires immutable security bindings")
+        return self
+
 
 class Approval(Contract):
+    schema_version: Literal[1, 2] = 1
+    fingerprint: Ref | None = None
+    workspace_id: Ref | None = None
+    policy_version: Ref | None = None
+    review_digest: Ref | None = None
+    actor_ref: Ref | None = None
+    issued_at: float | None = Field(default=None, allow_inf_nan=False)
+    consumed_at: float | None = Field(default=None, allow_inf_nan=False)
+    ui_request_id: Ref | None = None
     approval_id: Ref
     mission_id: Ref
     subtask_id: Ref
     effect_id: Ref
     generation: int = Field(ge=1)
     expires_at: float = Field(gt=0, allow_inf_nan=False)
-    decision: Literal["pending", "approved", "denied", "expired"] = "pending"
+    decision: Literal["pending", "approved", "denied", "expired", "revoked"] = "pending"
+
+    @model_validator(mode="after")
+    def versioned_binding(self):
+        if self.schema_version == 2 and any(
+            getattr(self, name) is None
+            for name in (
+                "fingerprint",
+                "workspace_id",
+                "policy_version",
+                "review_digest",
+                "ui_request_id",
+            )
+        ):
+            raise ValueError("Version2 approval requires exact review bindings")
+        return self
+
+
+class EffectEvidence(Contract):
+    source: Literal["worker", "visual", "human_attested"]
+    observed_at: float = Field(ge=0, allow_inf_nan=False)
+    observation_ref: Ref | None = None
+    category: Literal["input_receipt", "visible_outcome", "human_attestation"]
+
+    @model_validator(mode="after")
+    def observed_reference(self):
+        if self.source != "worker" and self.observation_ref is None:
+            raise ValueError("Outcome evidence requires an observation reference")
+        return self
 
 
 class ApprovalDecision(Contract):

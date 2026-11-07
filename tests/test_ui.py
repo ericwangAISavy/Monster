@@ -451,3 +451,19 @@ def test_retired_mission_update_cannot_hide_current_review(qtbot,qapp,tmp_path):
         assert ui.pending_question[0]=='mission-new'
     finally:
         ui.shutdown()
+
+
+def test_effect_review_has_exact_scope_and_edit_pause_controls(qtbot):
+    pill=Pill()
+    qtbot.addWidget(pill)
+    pill.show_question('effect1','One exact effect',True,take_focus=False)
+    pill.show_effect_controls()
+    assert pill.approve.text()=='Approve this exact action'
+    assert pill.edit_effect.isVisible() and pill.pause_effect.isVisible()
+    answers=[]
+    pill.answered.connect(lambda rid,answer:answers.append((rid,answer)))
+    qtbot.mouseClick(pill.edit_effect,Qt.MouseButton.LeftButton)
+    assert answers==[('effect1','edit')]
+    pill.show_question('normal','Normal approval',True)
+    assert pill.approve.text()=='Approve'
+    assert not pill.effect_controls.isVisible()

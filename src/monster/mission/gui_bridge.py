@@ -21,6 +21,8 @@ class MissionGuiBridge(QObject):
     start_requested = Signal(object)
     cancel_requested = Signal(object)
     resolved = Signal(object)
+    policy_requested = Signal(object)
+    policy_completed = Signal(object)
 
     def __init__(
         self,
@@ -46,6 +48,10 @@ class MissionGuiBridge(QObject):
         self.start_requested.connect(self._start, Qt.ConnectionType.QueuedConnection)
         self.cancel_requested.connect(self._cancel, Qt.ConnectionType.QueuedConnection)
         self.controller.terminal_ready.connect(self._terminal)
+        self._policy_connected = hasattr(controller, "effect_requested")
+        if self._policy_connected:
+            controller.effect_requested.connect(self._policy_request)
+        self.policy_completed.connect(self._policy_reply, Qt.ConnectionType.QueuedConnection)
         self.timer.start()
 
     def affinity(self):
@@ -135,9 +141,11 @@ class MissionGuiBridge(QObject):
             "deadline": time.monotonic() + req.subtask.deadline_seconds,
             "stop_at": None,
         }
+        self.controller.action_gate = self._policy_connected
         if not self.controller.submit(self.catalog[req.subtask.objective_ref]):
             self._finish(self.result(req))
             return
+        self.controller.action_gate = self._policy_connected
         self.controller.task_foreground = target
         self.controller.mission_cancel_event = handoff.cancelled
 
@@ -181,6 +189,7 @@ class MissionGuiBridge(QObject):
         current, self.current = self.current, None
         self.controller.config = current["config"]
         self.controller.mission_cancel_event = None
+        self.controller.action_gate = False
         self.gate.release(current["token"], cleanup_confirmed=result.cleanup_confirmed)
         self.resolved.emit(result)
 
@@ -205,6 +214,60 @@ class MissionGuiBridge(QObject):
                 )
             )
 
+    @Slot(object)
+    def _policy_request(self, packet):
+        self.affinity()
+        if not self.current:
+            return
+        req = self.current["handoff"].request
+        observation = getattr(self.controller, "observation", None)
+        # Only non-sensitive references/digests persist; actual action stays in RAM.
+        import hashlib
+        import json
+
+        geometry = (
+            (
+                [vars(b) for b in observation.displays],
+                vars(observation.bounds),
+                observation.foreground,
+            )
+            if observation
+            else None
+        )
+        scene = hashlib.sha256(json.dumps(geometry, sort_keys=True).encode()).hexdigest()
+        context = {
+            "mission_id": req.mission_id,
+            "subtask_id": req.subtask.subtask_id,
+            "attempt_id": req.effect_id,
+            "workspace_id": req.workspace_id,
+            "objective_ref": req.subtask.objective_ref,
+            "generation": req.generation,
+            "target_ref": "disposable-editor",
+            "observation_ref": observation.id if observation else "unavailable",
+            "scene_ref": scene,
+            "active": not self.current["handoff"].cancelled.is_set(),
+            "lease_valid": self.gate.current == self.current["token"] and not self.gate.quarantined,
+            "cleanup_healthy": not self.controller.cleanup_blocked,
+        }
+        self.policy_requested.emit(
+            {
+                **packet,
+                "context": context,
+                "request_key": (req.effect_id, req.generation),
+                "objective_ref": req.subtask.objective_ref,
+            }
+        )
+
+    @Slot(object)
+    def _policy_reply(self, reply):
+        self.affinity()
+        if not self.current:
+            return
+        req = self.current["handoff"].request
+        if reply.get("request_key") != (req.effect_id, req.generation):
+            return
+        self.controller.effect_reply(reply)
+
     def halt(self):
         self.affinity()
         self.closed = True
@@ -216,6 +279,9 @@ class MissionGuiBridge(QObject):
         self.affinity()
         self.closed = True
         self.timer.stop()
+        if self._policy_connected:
+            self.controller.effect_requested.disconnect(self._policy_request)
+            self._policy_connected = False
         if self._terminal_connected:
             self.controller.terminal_ready.disconnect(self._terminal)
             self._terminal_connected = False

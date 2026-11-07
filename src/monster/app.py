@@ -53,6 +53,7 @@ class CompanionApp:
         self.manual_lease = None
         self.manual_generation = None
         self.mission_runtime = None
+        self.reconciliation_effect = None
         self.mission_review_timer = QTimer()
         self.mission_review_timer.setSingleShot(True)
         self.mission_review_timer.timeout.connect(self.stop)
@@ -258,6 +259,7 @@ class CompanionApp:
         self.add_action("Last run report…", self.show_run_report)
         self.add_action("Experimental Mission · two Notepad drafts…", self.start_experimental_mission)
         self.add_action("Resume latest experimental mission…", lambda: self.start_experimental_mission(resume=True))
+        self.add_action("Mission effects · observe-only review…", self.review_mission_effects)
         if self.controller.is_mock:
             demo = self.menu.addMenu("GUI demo")
             self.demo_menu = demo
@@ -418,7 +420,7 @@ class CompanionApp:
         elif lease:
             self.workspace_gate.release(lease, cleanup_confirmed=True)
 
-    def start_experimental_mission(self, *, resume=False):
+    def start_experimental_mission(self, *, resume=False, reconciliation_only=False):
         if (not isinstance(self.controller, SupervisedController) or self.active
                 or self.workspace_gate.busy or self.controller.phase != "idle"
                 or self.input_cleanup_blocked
@@ -441,10 +443,45 @@ class CompanionApp:
             preflight=self._mission_preflight, objective_catalog=EDITOR_OBJECTIVES, parent=self.app)
         runner = AsyncGuiSubtaskRunner(bridge)
         self.mission_runtime = MissionRuntime(self.config_path.parent / "missions", runner, bridge,
-                                              plan=None if resume else editor_mission(), parent=self.app)
+                                              plan=None if resume else editor_mission(),
+                                              reconciliation_only=reconciliation_only, parent=self.app)
         runtime = self.mission_runtime
         runtime.changed.connect(lambda update, source=runtime: self._mission_changed(update, source=source))
+        runtime.reconciliation_ready.connect(lambda records, source=runtime:
+                                             self._reconciliation_changed(records, source=source))
+        runtime.reconciliation_error.connect(lambda text, source=runtime:
+            self.notice(text, 5000) if source is self.mission_runtime else None)
         self.mission_runtime.start()
+
+    def review_mission_effects(self):
+        if self.mission_runtime and not self.mission_runtime.closed:
+            if self.mission_runtime.engaged or self.workspace_gate.busy:
+                self.notice("Stop and finish input cleanup before reviewing uncertain effects.")
+                return
+            self.mission_runtime.review_effects()
+        else:
+            self.start_experimental_mission(resume=True, reconciliation_only=True)
+
+    def _reconciliation_changed(self, records, *, source):
+        if source is not self.mission_runtime or self.closing:
+            return
+        if not records:
+            self.reconciliation_effect = None
+            self.notice("No unresolved action effects. Attestation never restarts input.", 5000)
+            return
+        effect = records[0]
+        self.reconciliation_effect = effect
+        self.question("reconcile-" + effect.effect_id,
+            "Observe only · inspect the desktop yourself. No input or retry.\n"
+            + str(effect.action_kind) + " · " + effect.target_ref + " · " + effect.category
+            + "\nObjective: " + str(effect.objective_ref) + " · fingerprint "
+            + effect.fingerprint[:12] + "\nLast state: " + effect.status
+            + ". Confirm only what you can independently observe; this records human attestation.", True)
+        self.pill.show_effect_controls()
+        self.pill.approve.setText("Confirm occurred")
+        self.pill.reject.setText("Confirm did not occur")
+        self.pill.edit_effect.setText("Leave unresolved")
+        self.pill.pause_effect.setText("Abandon mission")
 
     def _mission_preflight(self):
         from monster.computer.windows import WindowsInput
@@ -575,6 +612,8 @@ class CompanionApp:
             text += f"\nApprove: Ctrl+Alt+Y, then release all keys. Stop: {stop_key}."
         self.set_state(State.WAITING)
         self.pill.show_question(request_id, text, approval, take_focus=not passive)
+        if getattr(self.controller, "phase", None) == "effect_approval":
+            self.pill.show_effect_controls()
         self._log_ui("review_surface", request_id=request_id, passive=passive,
                      keyboard_available=self.approval_hotkey_available,
                      hotkey_errors=list(self.hotkey_errors))
@@ -635,6 +674,21 @@ class CompanionApp:
             self.answer(pending[1], "approve", source="keyboard")
 
     def answer(self, request_id, answer, *, source="mouse_or_text"):
+        if (self.reconciliation_effect and self.pending_question
+                and request_id == "reconcile-" + self.reconciliation_effect.effect_id
+                and self.pending_question[0] == request_id):
+            effect = self.reconciliation_effect
+            self.reconciliation_effect = None
+            self.pending_question = None
+            self._cancel_keyboard_approval()
+            self.pill.hide()
+            self.hotkey_errors = self.register_hotkeys()
+            if answer == "pause":
+                self.mission_runtime.stop()
+            else:
+                outcome = {"approve": "success", "reject": "failure"}.get(answer, "unresolved")
+                self.mission_runtime.attest_effect(effect.effect_id, outcome)
+            return
         if (self.mission_runtime and self.pending_question
                 and self.pending_question[0] == request_id and request_id.startswith("mission-")):
             self.mission_review_timer.stop()

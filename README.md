@@ -195,3 +195,13 @@ Qt thread, holds one desktop writer, waits for cleanup, and never replays ambigu
 input. Default modes remain unchanged. **Native Windows qualification is pending.**
 See [integration and limits](docs/PHASE2_GUI_INTEGRATION.md) and
 [the opt-in Windows smoke procedure](docs/WINDOWS_PHASE2_QUALIFICATION.md).
+
+## Effect journal and recovery (v3 Phase 3)
+
+Experimental missions now journal each action, bind review to one exact effect,
+consume approval transactionally before input, and block uncertain continuation.
+Unknown clicks and external/destructive/credential/financial actions remain blocked.
+The existing pill provides exact-action review and an observe-only human
+reconciliation entry. Standalone supervised defaults are unchanged.
+See [effect lifecycle, policy and privacy](docs/MISSION_EFFECTS_AND_POLICIES.md) and
+[tests and pending Windows qualification](docs/PHASE3_QUALIFICATION.md).

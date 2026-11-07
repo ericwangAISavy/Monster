@@ -1,3 +1,8 @@
+> **Phase 3 update:** Per-action journaling, deterministic policy, single-use approvals
+> and human reconciliation are implemented for the existing narrow supervised scope.
+> See [effects/policies](MISSION_EFFECTS_AND_POLICIES.md) and
+> [qualification evidence](PHASE3_QUALIFICATION.md). Native Windows qualification is pending.
+
 > **Phase 2 update:** The opt-in Qt-safe mission adapter is now implemented; native
 > Windows qualification is pending. See [integration evidence](PHASE2_GUI_INTEGRATION.md)
 > and [manual qualification](WINDOWS_PHASE2_QUALIFICATION.md). The Phase 1 section

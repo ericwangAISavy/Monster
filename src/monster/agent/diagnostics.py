@@ -130,12 +130,13 @@ def synchronized(method):
 
 class RunDiagnostics:
     def __init__(self, instruction, config, *, max_events=512, max_images=16,
-                 max_image_bytes=24 * 1024 * 1024, clock=time.monotonic):
+                 max_image_bytes=24 * 1024 * 1024, clock=time.monotonic, content_free=False):
+        self.content_free = content_free
         self.lock = threading.RLock()
         self.clock, self.started = clock, clock()
         self.run_id = uuid.uuid4().hex
         self.started_at = datetime.now(UTC).isoformat()
-        self.instruction = instruction[:8000]
+        self.instruction = "[omitted mission content]" if content_free else instruction[:8000]
         self.instruction_truncated = len(instruction) > 8000
         self.configuration = {name: getattr(config, name) for name in (
             "model", "mode", "timeout", "context_size", "max_output_tokens", "thinking",
@@ -154,7 +155,7 @@ class RunDiagnostics:
         self.images = OrderedDict()
         self.focus = {}
         self.outcome = {"status": "running", "stage": "opening", "reason": None}
-        self.max_events, self.max_images = max_events, max_images
+        self.max_events, self.max_images = max_events, 0 if content_free else max_images
         self.max_image_bytes = max_image_bytes
         self.image_bytes = self.sequence = self.frame_sequence = 0
         self.events_dropped = self.images_dropped = self.observations_dropped = 0
@@ -172,7 +173,7 @@ class RunDiagnostics:
             "sequence": self.sequence, "elapsed_s": round(self.clock() - self.started, 6),
             "event": kind, "stage": phase, "details": deepcopy(details),
         }
-        if content:
+        if content and not self.content_free:
             event["content"] = deepcopy(content)
         self.events.append(event)
         if len(self.events) > self.max_events:
@@ -217,6 +218,7 @@ class RunDiagnostics:
 
     @synchronized
     def snapshot(self, *, include_content=True, summary=None):
+        include_content = include_content and not self.content_free
         observations = deepcopy(self.observations)
         for observation in observations:
             observation["retained"] = observation["id"] in self.images

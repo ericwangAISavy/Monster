@@ -1,6 +1,7 @@
 """Opt-in UI facade. SQLite and LangGraph live exclusively on its async worker thread."""
 
 import asyncio
+import sqlite3
 import threading
 import time
 from uuid import uuid4
@@ -16,6 +17,9 @@ EDITOR_OBJECTIVES = {
     "editor-b": 'Type "Monster mission B." into the currently focused disposable Notepad '
     "document. Preserve the first sentence. Do not send. Do not replace existing text.",
 }
+
+
+EXPECTED_TEXT = {"editor-a": "Monster mission A. ", "editor-b": "Monster mission B."}
 
 
 def editor_mission():
@@ -41,11 +45,24 @@ def editor_mission():
 class MissionRuntime(QObject):
     changed = Signal(object)
     retired = Signal()
+    reconciliation_ready = Signal(object)
+    reconciliation_error = Signal(str)
 
-    def __init__(self, directory, runner, bridge, *, plan=None, resume_id=None, parent=None):
+    def __init__(
+        self,
+        directory,
+        runner,
+        bridge,
+        *,
+        plan=None,
+        resume_id=None,
+        reconciliation_only=False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.directory, self.runner, self.bridge = directory, runner, bridge
         self.plan, self.resume_id = plan, resume_id
+        self.reconciliation_only = reconciliation_only
         self.mission_id = plan.mission_id if plan else resume_id
         self.loop = None
         self.coordinator = None
@@ -77,6 +94,14 @@ class MissionRuntime(QObject):
                 self.coordinator = c
                 if self.closed:
                     return
+                if self.reconciliation_only:
+                    records = c.effects.unresolved()
+                    self.engaged = False
+                    if records:
+                        self.mission_id = records[0].mission_id
+                    self.reconciliation_ready.emit(records)
+                    await self._exit.wait()
+                    return
                 if self.plan is None and self.resume_id is None:
                     row = c.store.connection.execute(
                         "SELECT mission_id FROM missions "
@@ -100,7 +125,7 @@ class MissionRuntime(QObject):
                 if self._job and not self._job.done():
                     await c.stop(self.mission_id, cancel=True)
                     await asyncio.gather(self._job, return_exceptions=True)
-        except (RuntimeError, OSError, ValueError, KeyError):
+        except (RuntimeError, OSError, ValueError, KeyError, sqlite3.Error):
             self.changed.emit(
                 {
                     "state": {
@@ -134,7 +159,7 @@ class MissionRuntime(QObject):
                 else None
             )
             self.changed.emit({"state": state, "approval": approval})
-        except (RuntimeError, OSError, ValueError, KeyError):
+        except (RuntimeError, OSError, ValueError, KeyError, sqlite3.Error):
             self.changed.emit(
                 {
                     "state": {
@@ -145,6 +170,46 @@ class MissionRuntime(QObject):
                     "approval": None,
                 }
             )
+
+    def review_effects(self):
+        async def review():
+            if self.coordinator:
+                try:
+                    records = self.coordinator.effects.unresolved(
+                        None if self.reconciliation_only else self.mission_id
+                    )
+                    self.reconciliation_ready.emit(records)
+                except (ValueError, OSError, RuntimeError, sqlite3.Error):
+                    self.reconciliation_error.emit(
+                        "Journal unavailable; unresolved effects remain blocked."
+                    )
+
+        self._call(lambda: asyncio.create_task(review()))
+
+    async def _attest_effect(self, effect_id, outcome):
+        if self.coordinator:
+            from .reconciliation import HumanEffectReconciler
+
+            try:
+                HumanEffectReconciler(self.coordinator.effects).attest(effect_id, outcome)
+                if outcome == "unresolved":
+                    self.reconciliation_error.emit(
+                        "Effect remains unresolved. No input or retry authorized."
+                    )
+                    return
+                records = self.coordinator.effects.unresolved(
+                    None if self.reconciliation_only else self.mission_id
+                )
+                if self.reconciliation_only and records:
+                    self.mission_id = records[0].mission_id
+                self.reconciliation_ready.emit(records)
+            except (ValueError, OSError, RuntimeError, sqlite3.Error):
+                self.reconciliation_error.emit(
+                    "Journal update failed; inspect and review again. No input authorized."
+                )
+
+    def attest_effect(self, effect_id, outcome):
+        self._call(lambda: asyncio.create_task(self._attest_effect(effect_id, outcome)))
 
     def _call(self, callback):
         loop = self.loop
