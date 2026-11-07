@@ -478,6 +478,11 @@ class SupervisedController(TaskController):
             self.phase = "verifying"
             action = dict(self.pending.action)
             expected = self.pending.expected_result or self.pending.summary
+            query = application_search_query(self.instruction, action)
+            if query:
+                expected = (f'Windows Start/Search visibly contains the app query {query!r} '
+                            'and shows a matching application result. This is search readiness '
+                            'only; the application does not need to be open yet.')
             if self.verification_launch_activation:
                 expected = (f'The requested application {self.launch_query_pending} is visibly open '
                             'in its own usable foreground window, not merely a Start/Search result '
@@ -707,6 +712,12 @@ class SupervisedController(TaskController):
                             'No search text will be retyped. Decline if the query or target is wrong.',
                         )
                         self.approval_timer.start(60000)
+                        return
+                    if not draft_only(self.instruction):
+                        self.fail(
+                            "Text location remains uncertain. Task is incomplete; no text was "
+                            "retyped and no Enter was dispatched to an unverified target."
+                        )
                         return
                     self.phase = "confirming"
                     self.question_id = uuid.uuid4().hex

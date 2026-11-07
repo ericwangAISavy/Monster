@@ -69,3 +69,17 @@ Verified in the current Linux/offscreen environment:
 
 These checks use fake input and model fixtures. Real Windows launch and the
 original drawing goal still require an operator-visible run with the updated code.
+
+### Follow-up: search text reaching the generic text review
+
+The generic “confirm your ENTIRE task” dialog can still be reached when an app
+query does not match the narrowly parsed launch instruction and verification is
+uncertain. Conversational prefixes such as “Can you open painter…” are now
+recognized. Matching queries use an explicit search-readiness postcondition,
+independent of whether the proposed expectation incorrectly requires the app
+window to be open already. Search readiness still does not establish launch.
+Uncertain ordinary text now stops incomplete instead of offering whole-task
+confirmation; supervised draft-only composer reviews retain their existing scope.
+Hands-free must be enabled in the installed application's provider settings to
+suppress intermediate human reviews. An older installation or disabled setting
+can still show review dialogs.

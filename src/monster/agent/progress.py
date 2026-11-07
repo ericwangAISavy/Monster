@@ -54,7 +54,8 @@ def application_search_query(instruction, action):
     if draft_only(instruction) or action.get('op') != 'text':
         return None
     match = re.match(
-        r'^\s*(?:(?:please|now)\s+){0,2}(?:open|launch|start|run)\s+(?:the\s+)?'
+        r'^\s*(?:(?:please|now)\s+){0,2}(?:(?:can|could|would)\s+you\s+)?'
+        r'(?:please\s+)?(?:open|launch|start|run)\s+(?:the\s+)?'
         r'([\w .-]{1,80}?)(?=\s+(?:and|then)\b|[,;!?\n]|\.(?:\s|$)|$)',
         instruction, re.IGNORECASE,
     )

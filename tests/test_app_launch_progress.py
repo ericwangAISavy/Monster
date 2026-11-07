@@ -43,6 +43,8 @@ def enter():
     "task,text",
     [
         ("open painter and draw simple links", "Paint"),
+        ("Can you open painter and draw a line?", "painter"),
+        ("Please could you open the Paint app?", "Paint"),
         ("Open Notepad", "notepad"),
         ("Please launch the Paint app and draw a line", "Paint"),
         ("start Calculator then calculate", "Calculator"),
@@ -163,6 +165,7 @@ def test_verified_query_cannot_complete_before_grounded_open_click(qtbot):
         assert [a[0]["op"] for a in bridge.executed] == ["text", "click"]
         assert "own usable foreground window" in checks[-1][3]
         assert engine.launch_query_pending is None
+        assert "search readiness" in checks[0][3]
         assert engine.rejected_proposals == 0  # reset only after actual activation verifies
         assert any("App search is not completion" in item for item in engine.history)
     finally:
