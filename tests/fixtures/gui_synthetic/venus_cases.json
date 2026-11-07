@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "purpose": "Native parser and coordinate fixtures, not model grounding accuracy",
+  "cases": [
+    {
+      "id": "negative-origin-center",
+      "screenshot": "desktop_1080.png",
+      "origin_px": [
+        -1920,
+        0
+      ],
+      "response": "<action>Click(box=(500,500))</action>",
+      "expected": {
+        "kind": "action",
+        "image_action": {
+          "op": "click",
+          "x": 960,
+          "y": 540,
+          "button": "left",
+          "count": 1
+        },
+        "desktop_action": {
+          "op": "click",
+          "x": -960,
+          "y": 540,
+          "button": "left",
+          "count": 1
+        }
+      }
+    },
+    {
+      "id": "right-monitor-endpoint",
+      "screenshot": "desktop_1080.png",
+      "origin_px": [
+        1920,
+        0
+      ],
+      "response": "RightClick(box=(999,999))",
+      "expected": {
+        "kind": "action",
+        "desktop_action": {
+          "op": "click",
+          "x": 3839,
+          "y": 1079,
+          "button": "right",
+          "count": 1
+        }
+      }
+    },
+    {
+      "id": "1440-native-scale",
+      "screenshot": "desktop_1440.png",
+      "origin_px": [
+        0,
+        0
+      ],
+      "response": "Hover(box=(500,500))",
+      "expected": {
+        "kind": "action",
+        "image_action": {
+          "op": "move",
+          "x": 1281,
+          "y": 720
+        }
+      }
+    },
+    {
+      "id": "complete-is-only-claim",
+      "screenshot": "desktop_1080.png",
+      "origin_px": [
+        0,
+        0
+      ],
+      "response": "Finished(content='Synthetic outcome')",
+      "expected": {
+        "kind": "completion_claim",
+        "verification": "unverified",
+        "execution_allowed": false
+      }
+    },
+    {
+      "id": "call-user",
+      "screenshot": "desktop_1080.png",
+      "origin_px": [
+        0,
+        0
+      ],
+      "response": "CallUser(content='Need target clarification')",
+      "expected": {
+        "kind": "needs_user",
+        "execution_allowed": false
+      }
+    },
+    {
+      "id": "reject-1000-scale",
+      "screenshot": "desktop_1080.png",
+      "origin_px": [
+        0,
+        0
+      ],
+      "response": "Click(box=(1000,500))",
+      "expect_error": "coordinate_range"
+    },
+    {
+      "id": "reject-open-loop",
+      "screenshot": "desktop_1080.png",
+      "origin_px": [
+        0,
+        0
+      ],
+      "response": "Sequence(actions=[Click(box=(1,1)),Finished()])",
+      "expect_error": "open_loop_sequence_unsupported"
+    }
+  ]
+}

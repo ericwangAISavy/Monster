@@ -152,3 +152,11 @@ of the PNG. A successful Windows capture-exclusion hint alone is not treated as
 proof of isolation. Synthetic **Test vision + JSON** sends generated color panels,
 never a desktop screenshot. Repeated passive approval prompts now keep the final
 window flags instead of switching through an intermediate focus mode.
+
+The adopted [v2 architecture](docs/ARCHITECTURE_V2.md) is being implemented
+incrementally; see [migration status](docs/V2_MIGRATION.md). The first new increment
+is an isolated [UI-Venus native-format preview adapter](docs/UI_VENUS.md), with an
+offline synthetic fixture command and no real-input integration or automatic model
+switch. Native Windows and exact model/runtime qualification remain required;
+[benchmark records](docs/RELIABILITY_BENCHMARKS.md) distinguish tests from evidence
+of real task reliability.
