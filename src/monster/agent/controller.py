@@ -9,6 +9,12 @@ from dataclasses import asdict, is_dataclass
 
 from PySide6.QtCore import QTimer, Signal
 
+from monster.agent.contract_adapters import (
+    grounded_from_checked,
+    proposal_from_decision,
+    receipt_from_legacy,
+    verification_from_legacy,
+)
 from monster.agent.diagnostics import RunDiagnostics
 from monster.agent.input_bridge import InputBridge
 from monster.agent.keyboard import terminal_window_requested
@@ -100,6 +106,8 @@ class SupervisedController(TaskController):
         self.verification_retry_scene = None
         self.last_verified_proposal = None
         self.reviewed_proposal = None
+        self.pending_contract = self.grounded_contract = None
+        self.contract_handoff_started_at = None
         self.draft_target_proposal = None
         self.drawing_target_proposal = None
         self.task_foreground = None
@@ -169,6 +177,8 @@ class SupervisedController(TaskController):
         self.verification_retry_scene = None
         self.last_verified_proposal = None
         self.reviewed_proposal = None
+        self.pending_contract = self.grounded_contract = None
+        self.contract_handoff_started_at = None
         self.draft_target_proposal = None
         self.drawing_target_proposal = None
         self.task_foreground = None
@@ -201,6 +211,19 @@ class SupervisedController(TaskController):
             self.run_diagnostics.add(event, self.phase, content=content,
                                      planning_call=self.calls, step=self.actions,
                                      generation=self.generation, **details)
+
+    def _record_contract(self, event, build):
+        # Slice 1 is a compatibility projection, never an alternate authorization
+        # path. Adapter refusal is visible in diagnostics; existing policy and
+        # lifecycle checks continue to decide input and outcome.
+        try:
+            record = build()
+        except (ValueError, TypeError, AttributeError, KeyError):
+            self._record("operational_contract_unavailable", contract_event=event,
+                         reason="legacy_adapter_validation")
+            return None
+        self._record(event, contract=record.model_dump(mode="json"))
+        return record
 
     def _remember_diagnostic_origin(self, origins, job):
         if self.run_diagnostics is None:
@@ -293,6 +316,11 @@ class SupervisedController(TaskController):
         self._record("input_result", job=job, receipt=receipt,
                      content={"error": error} if error else None)
         successful = not error and bool(result)
+        if self.phase == "executing":
+            self._record_contract("execution_receipt_contract", lambda: receipt_from_legacy(
+                self.grounded_contract, result, job, error=bool(error),
+                started_at=self.contract_handoff_started_at, received_at=time.monotonic(),
+            ))
         if self.phase == "executing" and self.action_gate:
             self._effect_event("receipt", inserted=not error and isinstance(result, dict)
                                and result.get("status") == "inserted")
@@ -680,6 +708,12 @@ class SupervisedController(TaskController):
         elif self.phase == "verifying":
             self.last_verification = result
             self.last_verified_proposal = deepcopy(self.pending)
+            self._record_contract("verification_contract", lambda: verification_from_legacy(
+                self.grounded_contract, result, self.observation, generation=self.generation,
+                model=self.config.model, expected_result=self.verification_expected or self.pending.expected_result or self.pending.summary,
+                evidence_ref=f"{self.run_diagnostics.run_id}:verification-{self.verification_calls}",
+                frame_ref=self.log_frame,
+            ))
             self._record("verification_result", observation=self.log_frame, content={
                 "action": self.pending.action, "expected_result": self.verification_expected or self.pending.expected_result or self.pending.summary,
                 "status": result.status, "evidence": result.evidence,
@@ -881,6 +915,8 @@ class SupervisedController(TaskController):
                 self._dispatch_checked_action(action)
 
         elif self.phase == "deciding":
+            self.pending_contract = self.grounded_contract = None
+            self.contract_handoff_started_at = None
             self.draft_target_proposal = None
             self.drawing_target_proposal = None
             self.pending = result
@@ -966,6 +1002,10 @@ class SupervisedController(TaskController):
                     + json.dumps(result.action, ensure_ascii=False)
                     + "\nCtrl+Alt+X stops."
                 )
+                self.pending_contract = self._record_contract("action_proposal_contract", lambda: proposal_from_decision(
+                    result, self.observation, self.generation,
+                    task_ref=self.run_diagnostics.run_id, model=self.config.model, frame_ref=self.planned_frame,
+                ))
                 self.reviewed_proposal = deepcopy(result)
                 self.phase = "approval"
                 if self.hands_free and reason is not None:
@@ -1011,6 +1051,12 @@ class SupervisedController(TaskController):
 
 
     def _dispatch_checked_action(self, action):
+        self.contract_handoff_started_at = time.monotonic()
+        self.grounded_contract = self._record_contract("grounded_action_contract", lambda: grounded_from_checked(
+            self.pending_contract, self.observation, action,
+            generation=self.generation, frame_ref=self.log_frame,
+            effect_ref=self.effect_action_id if self.action_gate else None,
+        ))
         self.phase = "executing"
         self.state_changed.emit(State.WORKING)
         self.stage_changed.emit("Acting")
@@ -1334,6 +1380,8 @@ class SupervisedController(TaskController):
         self.instruction = ""
         self.observation = self.pending = None
         self.reviewed_proposal = None
+        self.pending_contract = self.grounded_contract = None
+        self.contract_handoff_started_at = None
         self.draft_target_proposal = None
         self.drawing_target_proposal = None
 
