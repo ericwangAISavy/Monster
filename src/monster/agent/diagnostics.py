@@ -140,7 +140,7 @@ class RunDiagnostics:
         self.instruction_truncated = len(instruction) > 8000
         self.configuration = {name: getattr(config, name) for name in (
             "model", "mode", "timeout", "context_size", "max_output_tokens", "thinking",
-            "keep_alive", "approve_each_step", "allow_lan_http", "local_server_confirmed",
+            "keep_alive", "approve_each_step", "hands_free", "allow_lan_http", "local_server_confirmed",
         )}
         try:
             origin = urlsplit(config.url)
