@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QFrame,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
@@ -65,9 +64,9 @@ class ProviderSettings(QDialog):
             else None
         )
         self.setStyleSheet(
-            "QDialog {background:#12172c;} QLabel,QCheckBox {color:#eeeaff;}"
-            "QLineEdit,QComboBox,QSpinBox {background:#242b46;color:#eeeaff;"
-            "padding:6px;border:1px solid #615c91;border-radius:5px;}"
+            "QDialog {background:#222626;} QLabel,QCheckBox {color:#f2f4f3;}"
+            "QLineEdit,QComboBox,QSpinBox {background:#303535;color:#f2f4f3;"
+            "padding:6px;border:1px solid #505956;border-radius:5px;}"
             "QPushButton {padding:6px 12px;}"
         )
         outer = QVBoxLayout(self)
@@ -79,7 +78,7 @@ class ProviderSettings(QDialog):
         self.form_scroll.setWidgetResizable(True)
         self.form_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.form_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget {background:#12172c;}")
+        self.form_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget {background:#222626;}")
         self.form_scroll.setWidget(content)
         outer.addWidget(self.form_scroll, 1)
         form = QFormLayout()
@@ -93,10 +92,10 @@ class ProviderSettings(QDialog):
         self.timeout.setRange(5, 300)
         self.timeout.setSuffix(" seconds")
         self.timeout.setValue(config.timeout)
-        self.http = QCheckBox("Allow unencrypted HTTP on my trusted LAN")
+        self.http = QCheckBox("Allow unencrypted HTTP on trusted LAN")
         self.http.setChecked(config.allow_lan_http)
         self.local = QCheckBox(
-            "I confirmed this server uses local weights with cloud routing disabled"
+            "I confirm local weights; cloud routing disabled"
         )
         self.local.setChecked(config.local_server_confirmed)
         self.mode = QComboBox()
@@ -110,7 +109,7 @@ class ProviderSettings(QDialog):
         form.addRow(self.http)
         form.addRow(self.local)
         form.addRow("Task mode", self.mode)
-        self.approve_each_step = QCheckBox("Ask human approval before every action")
+        self.approve_each_step = QCheckBox("Ask approval before every action")
         self.approve_each_step.setChecked(config.approve_each_step)
         self.approve_each_step.setEnabled(config.mode == "supervised")
         self.mode.currentIndexChanged.connect(
@@ -143,7 +142,7 @@ class ProviderSettings(QDialog):
         self.advanced_toggle.setCheckable(True)
         self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.advanced_toggle.setStyleSheet("QToolButton {color:#eeeaff; padding:4px;}")
+        self.advanced_toggle.setStyleSheet("QToolButton {color:#f2f4f3; padding:4px;}")
         layout.addWidget(self.advanced_toggle)
         self.advanced = QWidget()
         advanced_form = QFormLayout(self.advanced)
@@ -158,8 +157,9 @@ class ProviderSettings(QDialog):
         self.keep_alive = QComboBox()
         self.keep_alive.addItems(["0", "1m", "5m", "15m", "30m"])
         self.keep_alive.setCurrentText(config.keep_alive)
-        self.thinking = QCheckBox("Enable model thinking (uses output budget and time)")
+        self.thinking = QCheckBox("Enable model thinking")
         self.thinking.setChecked(config.thinking)
+        self.thinking.setToolTip("Uses output budget and time.")
         advanced_form.addRow("Context size · tokens", self.context_size)
         advanced_form.addRow("Max output tokens", self.max_output)
         advanced_form.addRow("Keep model loaded", self.keep_alive)
@@ -181,7 +181,7 @@ class ProviderSettings(QDialog):
         layout.addWidget(self.advanced)
         self.advanced.hide()
         self.advanced_toggle.toggled.connect(self.toggle_advanced)
-        actions = QHBoxLayout()
+        actions = QVBoxLayout()
         self.connect_button = QPushButton("Test connection / discover")
         self.probe_button = QPushButton("Test vision + JSON")
         self.cancel_button = QPushButton("Cancel request")

@@ -24,10 +24,10 @@ class Settings(QDialog):
         self.setWindowTitle("Monster · companion settings")
         self.setMinimumWidth(380)
         self.setStyleSheet(
-            "QDialog { background: #12172c; color: #eeeaff; }"
-            "QLabel, QCheckBox { color: #eeeaff; }"
-            "QLineEdit, QSpinBox, QComboBox { background: #242b46; color: white;"
-            "border: 1px solid #615c91; border-radius: 5px; padding: 6px; }"
+            "QDialog { background: #222626; color: #f2f4f3; }"
+            "QLabel, QCheckBox { color: #f2f4f3; }"
+            "QLineEdit, QSpinBox, QComboBox { background: #303535; color: white;"
+            "border: 1px solid #505956; border-radius: 5px; padding: 6px; }"
         )
         layout = QVBoxLayout(self)
         form = QFormLayout()
