@@ -161,12 +161,18 @@ class AsyncGuiSubtaskRunner:
                     expected = PILOT_TEXT.get(packet["objective_ref"])
                 if expected is None:
                     raise ValueError("No reviewed scratch objective")
+                model_risk = packet.get("model_risk")
+                # Provider vocabulary differs from the legacy policy hint vocabulary.
+                # "routine" is only a non-escalating hint: deterministic classification
+                # of the exact action still decides whether review is even available.
+                if type(model_risk) is str and model_risk == "routine":
+                    model_risk = "low"
                 e = self.effects.prepare(
                     ctx,
                     packet["action"],
                     expected_text=expected,
                     review_id=packet["review_id"],
-                    model_risk=packet.get("model_risk"),
+                    model_risk=model_risk,
                 )
                 reply.update(effect_id=e.effect_id, risk=e.category, fingerprint=e.fingerprint)
                 if e.status != "approval_pending":
