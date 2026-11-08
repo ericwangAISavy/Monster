@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMenu,
@@ -30,6 +31,7 @@ from monster.native import GlobalHotkeys, approval_keys_released, focus_window, 
 from monster.preview import PreviewTaskController
 from monster.providers import config as provider_config
 from monster.ui.companion import Companion, draw_monster
+from monster.ui.control_panel import ControlPanel
 from monster.ui.pill import Pill
 from monster.ui.provider_settings import ProviderSettings
 from monster.ui.settings import Settings
@@ -119,6 +121,7 @@ class CompanionApp:
         self.bind_controller(controller)
         self.tray = None
         self.menu = None
+        self.control_panel = None
         if enable_tray:
             self.create_tray()
         self.companion.show()
@@ -293,13 +296,71 @@ class CompanionApp:
                 )
         self.menu.addSeparator()
         self.add_action("Quit Monster", self.app.quit)
-        self.tray.setContextMenu(self.menu)
+        self.control_panel = ControlPanel()
+        self.isolation.windows.append(self.control_panel)
+        self._build_control_panel()
         self.tray.activated.connect(
-            lambda reason: (
-                self.activate() if reason == QSystemTrayIcon.ActivationReason.Trigger else None
-            )
+            lambda reason: self.toggle_control_panel()
+            if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                          QSystemTrayIcon.ActivationReason.Context) else None
         )
         self.tray.show()
+
+    def _build_control_panel(self):
+        panel = self.control_panel
+        sections = {
+            "task": panel.section("Your assistant", "Give Monster a task. Stay in control."),
+            "settings": panel.section("Make it yours"),
+            "activity": panel.section("Activity & diagnostics"),
+            "missions": panel.section("Missions & workspaces", "Experimental workflows and workspace controls.", collapsed=True),
+            "app": panel.section("Application"),
+        }
+        task_secondary = QHBoxLayout()
+        sections["task"].addLayout(task_secondary)
+        for action in self.menu.actions():
+            if action.isSeparator():
+                continue
+            text = action.text()
+            if action.menu():
+                demo = panel.section("Demo tools", collapsed=True)
+                demo_frame = demo.parentWidget().parentWidget()
+                action.changed.connect(
+                    lambda current=action, frame=demo_frame: frame.setVisible(current.isVisible())
+                )
+                demo_frame.setVisible(action.isVisible())
+                for child in action.menu().actions():
+                    panel.action_button(demo, child)
+                continue
+            if text in ("Talk to Monster", "Pause", "Stop task"):
+                group = "task"
+            elif text in ("Show companion", "Settings…", "AI model settings…"):
+                group = "settings"
+            elif text.startswith("Last "):
+                group = "activity"
+            elif text == "Quit Monster":
+                group = "app"
+            else:
+                group = "missions"
+            label = {"Talk to Monster": "＋  New task", "Settings…": "Companion & shortcuts  ›",
+                     "AI model settings…": "AI model & automation  ›"}.get(text)
+            target = task_secondary if text in ("Pause", "Stop task") else sections[group]
+            if text == "Talk to Monster":
+                sections[group].removeItem(task_secondary)
+            panel.action_button(target, action, label,
+                                "primary" if text == "Talk to Monster" else
+                                "danger" if text == "Stop task" else None)
+            if text == "Talk to Monster":
+                sections[group].addLayout(task_secondary)
+        panel.content.addStretch()
+
+    def toggle_control_panel(self):
+        if self.isolation.busy:
+            return
+        if self.control_panel.isVisible():
+            self.control_panel.hide()
+            return
+        self._pause_for_secondary()
+        self.control_panel.open()
 
     def add_action(self, text, callback):
         action = QAction(text, self.menu)
@@ -369,6 +430,8 @@ class CompanionApp:
         ):
             target = foreground_window()
             owned = {int(self.pill.winId()), int(self.companion.winId())}
+            if self.control_panel:
+                owned.add(int(self.control_panel.winId()))
             self.activation_target = target if target and target not in owned else None
         self.state_timer.stop()
         self.pill.show_input()
@@ -575,8 +638,11 @@ class CompanionApp:
         from monster.workspaces.registry import ManualGuestWorkspace
 
         if self.workspace_window:
-            self.workspace_window.show()
-            self.workspace_window.raise_()
+            if self.control_panel:
+                self.control_panel.present(self.workspace_window)
+            else:
+                self.workspace_window.show()
+                self.workspace_window.raise_()
             return
         try:
             self.workspace_registry = ManualGuestWorkspace(self.config_path.parent / 'workspaces.json')
@@ -596,7 +662,10 @@ class CompanionApp:
         window.stop_requested.connect(lambda: self._workspace_command('stop'))
         window.revoke_requested.connect(lambda: self._workspace_command('revoke'))
         window.reconcile_requested.connect(lambda: self._workspace_command('reconcile'))
-        window.show()
+        if self.control_panel:
+            self.control_panel.present(window)
+        else:
+            window.show()
 
     def register_workspace(self):
         if not self.workspace_registry:
@@ -897,6 +966,12 @@ class CompanionApp:
     def set_state(self, state):
         self.current_state = State(state)
         self.companion.set_state(state)
+        if self.control_panel:
+            mode = "Demo" if self.controller.is_mock else (
+                "Hands-free" if self.model_config.hands_free else
+                "Real input" if getattr(self.controller, "is_supervised", False) else "Preview"
+            )
+            self.control_panel.status.setText(f"●  {str(state).replace('_', ' ').title()}  ·  {mode}")
         if self.tray:
             mode = "GUI demo" if self.controller.is_mock else "Ollama preview"
             if getattr(self.controller, "is_supervised", False):
@@ -1134,6 +1209,8 @@ class CompanionApp:
         if self.closing:
             self.pill.hide()
             self.companion.hide()
+            if self.control_panel:
+                self.control_panel.hide()
             return
         self.companion.setVisible(self.enabled)
         if self.pending_question:
@@ -1159,8 +1236,11 @@ class CompanionApp:
             self.settings_window = Settings(self.preferences)
             self.settings_window.saved.connect(self.save_settings)
             self.settings_window.rejected.connect(self._discard_settings)
-        self.settings_window.show()
-        focus_window(self.settings_window)
+        if self.control_panel:
+            self.control_panel.present(self.settings_window)
+        else:
+            self.settings_window.show()
+            focus_window(self.settings_window)
 
     def _discard_settings(self):
         if self.settings_window:
@@ -1373,7 +1453,7 @@ class CompanionApp:
     def _focus_secondary_except(self, current):
         for window in (self.settings_window, self.provider_window, self.preview_window):
             if window is not None and window is not current and window.isVisible():
-                focus_window(window)
+                focus_window(window.window())
                 return True
         return False
 
@@ -1390,8 +1470,11 @@ class CompanionApp:
             self.provider_window.saved.connect(self.save_provider_settings)
             self.provider_window.activity_changed.connect(self.companion.set_activity)
             self.provider_window.finished.connect(self._discard_provider_settings)
-        self.provider_window.show()
-        focus_window(self.provider_window)
+        if self.control_panel:
+            self.control_panel.present(self.provider_window)
+        else:
+            self.provider_window.show()
+            focus_window(self.provider_window)
 
     def _discard_provider_settings(self):
         self.companion.set_activity("")
@@ -1482,6 +1565,9 @@ class CompanionApp:
         self.hotkeys.close()
         self.companion.timer.stop()
         self.pill._hide_timer.stop()
+        if self.control_panel:
+            self.isolation.suppress_restore(self.control_panel)
+            self.control_panel.hide()
         if self.tray:
             self.tray.hide()
         self.pill.close()
