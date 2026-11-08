@@ -12,6 +12,7 @@ from monster.agent.keyboard import (
     validate_quoted_typing,
     validate_shortcut_description,
 )
+from monster.agent.progress import drawing_requested
 from monster.computer.contracts import MODIFIERS, Bounds, validate_action
 
 
@@ -127,6 +128,10 @@ def approval_reason(decision, instruction=""):
         return "The model is uncertain about this action's target or effect."
     if action.get("op") in {"move", "scroll", "text"}:
         return None
+    if action.get("op") == "drag":
+        return (None if drawing_requested(instruction) and decision.risk == "routine"
+                and action.get("button", "left") == "left"
+                else "Dragging requires an explicit drawing task and a verified canvas, or review.")
     if action.get("op") == "click":
         return (
             None if decision.risk == "routine" else "Click target/effect has not been classified."
@@ -202,9 +207,10 @@ def prepare_action(action, observation, *, allow_window_close=False, allow_termi
             ["SHIFT", "ENTER"],
         ):
             raise ValueError("Shortcut is outside the supervised demo allowlist.")
-    if "x" in action:
-        action["x"] += observation.bounds.x
-        action["y"] += observation.bounds.y
+    for xkey, ykey in (("x", "y"), ("end_x", "end_y")):
+        if xkey in action:
+            action[xkey] += observation.bounds.x
+            action[ykey] += observation.bounds.y
     return validate_action(action, list(observation.displays))
 
 
@@ -228,6 +234,13 @@ def scene_matches(before, after, action, *, diagnostics=None):
         region = QRect(x - 20, y - 20, 41, 41).intersected(old.rect())
         if old.copy(region) != new.copy(region):
             return finish(False, "target_patch_changed", patch=[region.x(), region.y(), region.width(), region.height()])
+    if action.get("op") == "drag":
+        region = QRect(min(action["x"], action["end_x"]) - 20,
+                       min(action["y"], action["end_y"]) - 20,
+                       abs(action["end_x"] - action["x"]) + 41,
+                       abs(action["end_y"] - action["y"]) + 41).intersected(old.rect())
+        if old.copy(region) != new.copy(region):
+            return finish(False, "drag_path_changed")
     old = old.scaled(320, 180, Qt.AspectRatioMode.KeepAspectRatio).convertToFormat(
         QImage.Format.Format_RGBA8888
     )

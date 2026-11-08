@@ -36,6 +36,14 @@ def draft_only(instruction):
     )
 
 
+def drawing_requested(instruction):
+    """Explicit drawing intent; an app name alone is not permission to draw."""
+    return not draft_only(instruction) and bool(re.search(
+        r'\b(?:draw|sketch)(?:ing)?\b|\bpaint\s+(?:a|an|some|simple|straight|lines?|shapes?)\b',
+        instruction, re.IGNORECASE,
+    ))
+
+
 def needs_text_target_check(instruction, action):
     """Verify ordinary Notepad typing without imposing chat-only action limits."""
     return draft_only(instruction) or (
@@ -71,6 +79,20 @@ def application_search_query(instruction, action):
     if aliases.get(wanted, wanted) == aliases.get(normalize(query), normalize(query)):
         return query
     return None
+
+
+def app_activation_candidate(decision):
+    action = decision.action or {}
+    if action == {"op": "press", "key": "ENTER"}:
+        return True
+    if action.get("op") != "click":
+        return False
+    # Tool-selection clicks inside an already-open app are not launch effects.
+    expected = decision.expected_result or ""
+    return bool(re.search(
+        r'\b(?:open|launch|activate)(?:s|ed|ing)?\b|\b(?:foreground|app window)\b',
+        expected, re.IGNORECASE,
+    ))
 
 
 def validate_draft_action(decision, instruction, text_inserted=False):

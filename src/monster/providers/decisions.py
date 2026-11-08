@@ -36,6 +36,14 @@ ACTION_SCHEMA = {
                     "horizontal": {"type": "boolean"},
                 },
             ),
+            ("drag", {
+                "x_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "y_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "end_x_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "end_y_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "button": {"const": "left"},
+                "duration": {"type": "number", "minimum": 0.05, "maximum": 2.0},
+            }),
             ("text", {"text": {"type": "string", "minLength": 1, "maxLength": 2000}}),
             ("press", {"key": {"enum": [key for key in KEYS if key != "DELETE" and key not in MODIFIERS - {"WIN"}]}}),
             (
@@ -92,7 +100,7 @@ def decision_schema_for_draft():
     """Constrain generation as well as enforcing draft policy at dispatch."""
     schema = deepcopy(DECISION_SCHEMA)
     variants = schema["oneOf"][0]["properties"]["action"]["oneOf"]
-    variants[:] = [v for v in variants if v["properties"]["op"]["const"] != "press"]
+    variants[:] = [v for v in variants if v["properties"]["op"]["const"] not in {"press", "drag"}]
     for variant in variants:
         op = variant["properties"]["op"]["const"]
         if op == "text":
@@ -151,18 +159,23 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
                 "move",
                 "click",
                 "scroll",
+                "drag",
                 "text",
                 "press",
                 "chord",
             }:
                 raise ProviderError("Unsupported model action.")
-            if coordinate_space == "normalized_1000" and action.get("op") in {"move", "click", "scroll"}:
+            if coordinate_space == "normalized_1000" and action.get("op") in {"move", "click", "scroll", "drag"}:
+                coordinates = {"x_1000": ("x", width), "y_1000": ("y", height)}
+                if action["op"] == "drag":
+                    coordinates.update(end_x_1000=("end_x", width), end_y_1000=("end_y", height))
                 if any(key in action for key in ("x", "y", "end_x", "end_y")) or any(
                     type(action.get(key)) is not int or not 0 <= action[key] <= 1000
-                    for key in ("x_1000", "y_1000")
+                    for key in coordinates
                 ):
                     raise ProviderError(
-                        "Model action failed validation: use integer x_1000/y_1000 in [0,1000], not pixel coordinates."
+                        "Model action failed validation: use integer x_1000/y_1000 (and drag end_x_1000/end_y_1000) "
+                        "in [0,1000], not pixel coordinates."
                     )
                 coordinate_source = {
                     "space": "normalized_1000", "model_action": deepcopy(action),
@@ -170,8 +183,8 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
                     "mapping": "round(value * (image_size - 1) / 1000)",
                 }
                 action = dict(action)
-                action["x"] = round(action.pop("x_1000") * (width - 1) / 1000)
-                action["y"] = round(action.pop("y_1000") * (height - 1) / 1000)
+                for source, (target, extent) in coordinates.items():
+                    action[target] = round(action.pop(source) * (extent - 1) / 1000)
             try:
                 validate_action(action, [Bounds(0, 0, width, height)])
             except (ValueError, TypeError):

@@ -16,8 +16,10 @@ from monster.agent.metrics import OperationTimings
 from monster.agent.progress import (
     action_description,
     action_signature,
+    app_activation_candidate,
     application_search_query,
     draft_only,
+    drawing_requested,
     equivalent_action,
     history_window,
     needs_text_target_check,
@@ -88,6 +90,8 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.launch_query_pending = None
+        self.launch_activation_attempted = False
+        self.launch_reconciliations = 0
         self.verification_launch_activation = False
         self.verification_expected = None
         self.last_verification = None
@@ -97,6 +101,7 @@ class SupervisedController(TaskController):
         self.last_verified_proposal = None
         self.reviewed_proposal = None
         self.draft_target_proposal = None
+        self.drawing_target_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
@@ -154,6 +159,8 @@ class SupervisedController(TaskController):
         self.failed_actions = []
         self.inserted_text = set()
         self.launch_query_pending = None
+        self.launch_activation_attempted = False
+        self.launch_reconciliations = 0
         self.verification_launch_activation = False
         self.verification_expected = None
         self.last_verification = None
@@ -163,6 +170,7 @@ class SupervisedController(TaskController):
         self.last_verified_proposal = None
         self.reviewed_proposal = None
         self.draft_target_proposal = None
+        self.drawing_target_proposal = None
         self.task_foreground = None
         self.human_confirmed_focus = False
         self.close_dispatched = False
@@ -257,6 +265,7 @@ class SupervisedController(TaskController):
             "probing": "probe", "deciding": "planning",
             "comparing": "recheck", "verifying": "verification",
             "checking_target": "target_check", "checking_completion": "verification",
+            "checking_drawing_target": "target_check", "checking_launch": "verification",
         }[self.phase]
         job = self.jobs.start(operation)
         self._remember_diagnostic_origin(self.model_diagnostic_origins, job)
@@ -355,9 +364,11 @@ class SupervisedController(TaskController):
             if query:
                 self.launch_query_pending = query
                 self._record('app_launch_stage', stage_name='query_inserted')
-            self.verification_launch_activation = bool(self.launch_query_pending and (
-                action == {'op': 'press', 'key': 'ENTER'} or action.get('op') == 'click'
-            ))
+            self.verification_launch_activation = bool(
+                self.launch_query_pending and app_activation_candidate(self.pending)
+            )
+            if self.verification_launch_activation:
+                self.launch_activation_attempted = True
             if action == {"op": "chord", "keys": ["ALT", "F4"]}:
                 self.close_dispatched = True
             if action["op"] == "click":
@@ -390,9 +401,9 @@ class SupervisedController(TaskController):
             lambda: self._provider(diagnostics, "probing").probe(self.config.model)
         )
 
-    def _schedule_capture(self):
+    def _schedule_capture(self, delay_ms=350):
         self.scheduled_capture = (self.generation, self.phase)
-        self.capture_timer.start(350)
+        self.capture_timer.start(delay_ms)
 
     def _delayed_capture(self):
         expected = self.scheduled_capture
@@ -465,7 +476,7 @@ class SupervisedController(TaskController):
         if self.phase == "verifying_capture":
             retry_scene = self.verification_retry_scene
             if retry_scene is not None and (
-                retry_scene.foreground != observation.foreground
+                (retry_scene.foreground != observation.foreground and not self.verification_launch_activation)
                 or retry_scene.bounds != observation.bounds
                 or retry_scene.displays != observation.displays
             ):
@@ -573,12 +584,51 @@ class SupervisedController(TaskController):
                 "verifying": "Visual action verification",
                 "checking_target": "Draft target check",
                 "checking_completion": "Whole-task visual check",
+                "checking_drawing_target": "Drawing target check",
+                "checking_launch": "App window check",
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
         elif self.phase == "probing":
             self._record("model_compatibility", metadata=asdict(result) if is_dataclass(result) else {})
             self.phase = "observing"
             self._capture()
+        elif self.phase == "checking_launch":
+            self._record("launch_state_observed", observation=self.log_frame,
+                         content={"status": result.status, "evidence": result.evidence},
+                         input_repeated=False)
+            if result.status != "succeeded":
+                self._reject_proposal(
+                    "App search is not completion. The requested app window is still not "
+                    "verified; do not select drawing tools or edit another target.", "completion",
+                )
+                return
+            self.launch_query_pending = None
+            self.launch_activation_attempted = False
+            self.last_verification = result
+            self.last_verified_proposal = None
+            self.recovery_attempts = self.rejected_proposals = 0
+            self.history.append(
+                "A separate read-only observation now verifies the actual requested app window. "
+                "The earlier input failure remains recorded; no input was retried. "
+                "Continue the original task from the current visible canvas/editor."
+            )
+            self.phase = "observing"
+            self._capture()
+        elif self.phase == "checking_drawing_target":
+            if not self._reviewed_proposal_matches():
+                return
+            status, evidence = getattr(result, "status", None), getattr(result, "evidence", None)
+            self._record("drawing_target_result", observation=self.log_frame,
+                         content={"status": status, "evidence": evidence})
+            if (type(status) is not str or status not in {"ready", "wrong_target", "uncertain"}
+                    or type(evidence) is not str or not 1 <= len(evidence.strip()) <= 300):
+                self.fail("Invalid drawing target assessment; no input was dispatched.")
+                return
+            if result.status != "ready":
+                self.fail("Drawing target could not be established: " + result.evidence)
+                return
+            self.drawing_target_proposal = deepcopy(self.pending)
+            self._begin_recheck(restore=False)
         elif self.phase == "checking_completion":
             self._record("completion_verification", observation=self.log_frame,
                          content={"status": result.status, "evidence": result.evidence})
@@ -639,14 +689,20 @@ class SupervisedController(TaskController):
                 f"Step {self.actions} visual verification: {result.status}. "
                 f"Evidence: {result.evidence}"
             )
-            if result.status == 'uncertain' and self.verification_retakes == 0:
-                self.verification_retakes = 1
+            # App launch is asynchronous: a missing window in the first capture
+            # can be temporary. Re-observe without repeating Enter/Open or any input.
+            launch_wait = self.verification_launch_activation and result.status in {"failed", "uncertain"}
+            drawing_wait = self.pending.action.get("op") == "drag" and result.status in {"failed", "uncertain"}
+            retry_limit = 2 if launch_wait else 1
+            if (result.status == "uncertain" or launch_wait or drawing_wait) and self.verification_retakes < retry_limit:
+                self.verification_retakes += 1
                 self.verification_retry_scene = self.observation
                 self._record('verification_reobserve_requested', observation=self.log_frame,
-                             attempt=1, input_repeated=False)
-                self.trace.append('Result unclear; observing once more without repeating input.')
+                             attempt=self.verification_retakes, input_repeated=False,
+                             reason="app_launch_settling" if launch_wait else "drawing_render" if drawing_wait else "uncertain")
+                self.trace.append('Waiting for visible result without repeating input.')
                 self.phase = 'verifying_capture'
-                self._schedule_capture()
+                self._schedule_capture(750 * self.verification_retakes if launch_wait else 350)
                 return
             if self.action_gate:
                 # Keep the receipt awaiting observation during the bounded read-only
@@ -662,6 +718,10 @@ class SupervisedController(TaskController):
                     "The requested one-click input was dispatched, but its visible result "
                     "was not verified. Inspect the desktop; no second input will be attempted."
                 )
+                return
+            if result.status != "succeeded" and self.pending.action.get("op") == "drag":
+                self.fail("Drawing input was dispatched once, but its result could not be verified: "
+                          + result.evidence + " No automatic redraw was attempted.")
                 return
             if result.status != "succeeded" and self.hands_free:
                 self.fail("Visual verification " + result.status + ": " + result.evidence)
@@ -749,6 +809,8 @@ class SupervisedController(TaskController):
                 self.recovery_attempts = self.rejected_proposals = 0
                 if self.verification_launch_activation:
                     self.launch_query_pending = None
+                    self.launch_activation_attempted = False
+                    self.launch_reconciliations = 0
                     self._record('app_launch_stage', stage_name='window_verified')
             self.phase = "observing"
             # Verification can take seconds. Plan from a fresh frame rather than
@@ -765,6 +827,7 @@ class SupervisedController(TaskController):
                     self._effect_event("revoke")
                     self.effect_action_id = None
                 self.draft_target_proposal = None
+                self.drawing_target_proposal = None
                 self.human_confirmed_focus = False
                 self.stale += 1
                 if self.stale > 2:
@@ -796,6 +859,22 @@ class SupervisedController(TaskController):
                     )
                 )
                 return
+            if (self.pending.action.get("op") == "drag" and drawing_requested(self.instruction)
+                    and self.drawing_target_proposal != self.pending):
+                self.phase = "checking_drawing_target"
+                self.state_changed.emit(State.THINKING)
+                self.stage_changed.emit("Checking canvas")
+                diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+                instruction, checked_action, checked_observation = (
+                    self.instruction, deepcopy(self.pending.action), self.observation,
+                )
+                self.job = self._start_model(
+                    lambda: self._provider(diagnostics, "checking_drawing_target", call, step).verify_drawing_target(
+                        self.config.model, instruction, checked_action, checked_observation.png,
+                        checked_observation.bounds.width, checked_observation.bounds.height,
+                    )
+                )
+                return
             if self.action_gate:
                 self._request_effect("dispatch", action=dict(self.pending.action))
             else:
@@ -803,6 +882,7 @@ class SupervisedController(TaskController):
 
         elif self.phase == "deciding":
             self.draft_target_proposal = None
+            self.drawing_target_proposal = None
             self.pending = result
             self._record("proposal", observation=self.planned_frame,
                          content={"proposal": asdict(result)})
@@ -823,6 +903,31 @@ class SupervisedController(TaskController):
                 self.state_changed.emit(State.WAITING)
                 self.clarification_requested.emit(self.question_id, result.summary)
                 self.approval_timer.start(60000)
+                return
+            if (self.launch_query_pending and result.kind == "action"
+                    and application_search_query(self.instruction, result.action)):
+                self._reject_proposal("The app search query was already inserted. Do not retype it or an alias.", "repeat")
+                return
+            if (self.launch_query_pending and self.launch_activation_attempted
+                    and not app_activation_candidate(result)):
+                if self.action_gate:
+                    self.fail("App launch remains unverified; reconcile its effect before continuing.")
+                    return
+                if self.launch_reconciliations >= 2:
+                    self.fail("The requested app window could not be verified after launch. No further input was dispatched.")
+                    return
+                self.launch_reconciliations += 1
+                self.phase = "checking_launch"
+                diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+                observation, instruction = self.observation, self.instruction
+                expected = (f"The requested application {self.launch_query_pending} is visibly open "
+                            "in its own usable foreground window, not a search result or app-details panel.")
+                self.job = self._start_model(
+                    lambda: self._provider(diagnostics, "checking_launch", call, step).verify_action(
+                        self.config.model, instruction, {"op": "screenshot"}, expected,
+                        observation.png, observation.bounds.width, observation.bounds.height,
+                    )
+                )
                 return
             if result.kind == "action":
                 if self.actions >= 10:
@@ -1099,6 +1204,13 @@ class SupervisedController(TaskController):
 
     def _task_context(self):
         text = self.instruction
+        if drawing_requested(self.instruction):
+            text += (
+                '\nDrawing capability: a left-button drag draws a stroke on the verified canvas. '
+                'Inspect the currently selected drawing tool. If it is ready, draw directly '
+                'instead of clicking the same tool again. Tool selection is not a drawn line. '
+                'Never place a drawing drag on toolbars, window borders, or another app.'
+            )
         if self.launch_query_pending:
             text += (
                 f'\nTrusted launch stage: the app-name query {self.launch_query_pending!r} was inserted '
@@ -1223,6 +1335,7 @@ class SupervisedController(TaskController):
         self.observation = self.pending = None
         self.reviewed_proposal = None
         self.draft_target_proposal = None
+        self.drawing_target_proposal = None
 
     def cancel(self):
         if self.phase != "closing" and self.active:

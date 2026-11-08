@@ -71,6 +71,9 @@ class Provider(Protocol):
         height: int,
         before_image: bytes | None = None,
     ) -> Verification: ...
+    async def verify_drawing_target(
+        self, model: str, instruction: str, action: dict, image: bytes, width: int, height: int,
+    ) -> DraftTargetCheck: ...
     async def verify_completion(
         self, model: str, instruction: str, image: bytes, width: int, height: int,
     ) -> Verification: ...

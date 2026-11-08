@@ -209,8 +209,8 @@ def test_failed_activation_remains_incomplete_and_query_cannot_be_retyped(qtbot)
 
     async def verify(*args):
         return Verification(
-            "failed" if args[2].get("key") == "ENTER" else "succeeded",
-            "App window absent" if args[2].get("key") == "ENTER" else "Query visible",
+            "failed" if args[2].get("op") != "text" else "succeeded",
+            "App window absent" if args[2].get("op") != "text" else "Query visible",
         )
 
     model.verify_action = verify
