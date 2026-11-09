@@ -1,5 +1,10 @@
 # V4 slice 1: operational contract compatibility layer
 
+**Current follow-up:** journaled mission execution now requires these contracts;
+see [slice 2a](V4_DURABLE_AUTHORIZATION.md). Standalone execution remains a
+compatibility projection. The description below records the original slice 1
+boundary.
+
 ## Delivered scope
 
 `agent/contracts.py` defines strict, frozen, version-1 records for observations,

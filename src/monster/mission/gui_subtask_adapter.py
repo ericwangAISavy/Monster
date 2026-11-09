@@ -173,6 +173,7 @@ class AsyncGuiSubtaskRunner:
                     expected_text=expected,
                     review_id=packet["review_id"],
                     model_risk=model_risk,
+                    proposal=packet.get("proposal"),
                 )
                 reply.update(effect_id=e.effect_id, risk=e.category, fingerprint=e.fingerprint)
                 if e.status != "approval_pending":
@@ -180,7 +181,7 @@ class AsyncGuiSubtaskRunner:
             elif operation == "approve":
                 self.effects.approve(eid, ctx, review_id=packet["review_id"])
             elif operation == "dispatch":
-                self.effects.dispatch(eid, ctx, packet["action"])
+                self.effects.dispatch(eid, ctx, packet["action"], grounded=packet.get("grounded"))
             elif operation == "receipt":
                 self.effects.receipt(eid, inserted=packet["inserted"])
             elif operation == "started":

@@ -264,6 +264,7 @@ class MissionGuiBridge(QObject):
             "workspace_id": req.workspace_id,
             "objective_ref": req.subtask.objective_ref,
             "generation": req.generation,
+            "controller_generation": self.current["controller_generation"],
             "target_ref": "disposable-editor",
             "observation_ref": observation.id if observation else "unavailable",
             "scene_ref": scene,

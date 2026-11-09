@@ -15,6 +15,7 @@ from monster.agent.contract_adapters import (
     receipt_from_legacy,
     verification_from_legacy,
 )
+from monster.agent.contracts import GroundedAction
 from monster.agent.diagnostics import RunDiagnostics
 from monster.agent.input_bridge import InputBridge
 from monster.agent.keyboard import terminal_window_requested
@@ -910,7 +911,11 @@ class SupervisedController(TaskController):
                 )
                 return
             if self.action_gate:
-                self._request_effect("dispatch", action=dict(self.pending.action))
+                self.grounded_contract = self._mapped_contract(action)
+                if self.grounded_contract is None:
+                    self.fail("Operational contract unavailable; no mission input was authorized.")
+                    return
+                self._request_effect("dispatch", action=dict(self.pending.action), grounded=self.grounded_contract)
             else:
                 self._dispatch_checked_action(action)
 
@@ -1042,7 +1047,8 @@ class SupervisedController(TaskController):
             if self.action_gate and self.phase == "approval":
                 self.effect_review_id = uuid.uuid4().hex
                 self._request_effect("prepare", action=dict(self.pending.action),
-                                     review_id=self.effect_review_id, model_risk=self.pending.risk)
+                                     review_id=self.effect_review_id, model_risk=self.pending.risk,
+                                     proposal=self.pending_contract)
                 return
             self.question_id = uuid.uuid4().hex
             self.state_changed.emit(State.WAITING)
@@ -1050,13 +1056,32 @@ class SupervisedController(TaskController):
             self.approval_timer.start(60000)
 
 
-    def _dispatch_checked_action(self, action):
-        self.contract_handoff_started_at = time.monotonic()
-        self.grounded_contract = self._record_contract("grounded_action_contract", lambda: grounded_from_checked(
+    def _mapped_contract(self, action):
+        return self._record_contract("grounded_action_contract", lambda: grounded_from_checked(
             self.pending_contract, self.observation, action,
             generation=self.generation, frame_ref=self.log_frame,
             effect_ref=self.effect_action_id if self.action_gate else None,
         ))
+
+    def _dispatch_checked_action(self, action):
+        if self.mission_cancel_event is not None and not self.action_gate:
+            self.fail("Mission authorization gate changed; no input was dispatched.")
+            return
+        self.contract_handoff_started_at = time.monotonic()
+        if self.action_gate:
+            try:
+                mapped = GroundedAction.model_validate(self.grounded_contract)
+                if (mapped.physical_action.to_action() != action or mapped.proposal != self.pending_contract
+                        or mapped.effect_ref != self.effect_action_id
+                        or mapped.checked_frame.controller_generation != self.generation
+                        or mapped.checked_frame.capture_ref != self.observation.id
+                        or mapped.checked_frame.image_sha256 != self.observation.sha256):
+                    raise ValueError("Changed handoff")
+            except (ValueError, TypeError):
+                self.fail("Operational contract changed after durable intent; inspect before continuing.")
+                return
+        else:
+            self.grounded_contract = self._mapped_contract(action)
         self.phase = "executing"
         self.state_changed.emit(State.WORKING)
         self.stage_changed.emit("Acting")

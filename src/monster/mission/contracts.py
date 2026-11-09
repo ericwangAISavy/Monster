@@ -144,7 +144,11 @@ class TaskResult(Contract):
 
 
 class Effect(Contract):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
+    action_contract_digest: Ref | None = Field(default=None, exclude_if=lambda value: value is None)
+    action_ref: Ref | None = Field(default=None, exclude_if=lambda value: value is None)
+    task_ref: Ref | None = Field(default=None, exclude_if=lambda value: value is None)
+    controller_generation: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
     action_kind: Ref | None = None
     objective_ref: Ref | None = None
     attempt_id: Ref | None = None
@@ -179,7 +183,7 @@ class Effect(Contract):
 
     @model_validator(mode="after")
     def versioned_binding(self):
-        if self.schema_version == 2 and any(
+        if self.schema_version in (2, 3) and any(
             getattr(self, name) is None
             for name in (
                 "attempt_id",
@@ -196,6 +200,11 @@ class Effect(Contract):
             )
         ):
             raise ValueError("Version2 effect requires immutable security bindings")
+        contract_fields = (self.action_contract_digest, self.action_ref, self.task_ref, self.controller_generation)
+        if self.schema_version == 3 and any(value is None for value in contract_fields):
+            raise ValueError("Version3 effect requires operational contract bindings")
+        if self.schema_version < 3 and any(value is not None for value in contract_fields):
+            raise ValueError("Operational bindings require effect version3")
         return self
 
 

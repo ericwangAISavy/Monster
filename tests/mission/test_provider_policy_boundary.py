@@ -1,20 +1,39 @@
 """Provider-shaped decisions through the live mission adapter and real effect ledger."""
 
 import asyncio
+import hashlib
 import time
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Signal
+from PySide6.QtGui import QColor, QImage
 from test_effects_policy import context
 
+from monster.agent.contract_adapters import grounded_from_checked, proposal_from_decision
+from monster.agent.validation import prepare_action
+from monster.computer.contracts import Bounds
+from monster.computer.screenshot import Observation
 from monster.mission.contracts import Mission, Subtask
 from monster.mission.effects import EffectCoordinator
 from monster.mission.gui_subtask_adapter import AsyncGuiSubtaskRunner
 from monster.mission.repository import Repository
 from monster.mission.runtime import EXPECTED_TEXT
-from monster.providers.base import ProviderError
+from monster.providers.base import Decision, ProviderError
 from monster.providers.decisions import parse_decision
+
+
+def captured_frame():
+    image = QImage(100, 100, QImage.Format.Format_RGB32)
+    image.fill(QColor('white'))
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, 'PNG')
+    png = bytes(data)
+    bounds = Bounds(-100, 0, 100, 100)
+    return Observation('frame1', time.monotonic(), bounds, (bounds,), png,
+                       hashlib.sha256(png).hexdigest(), 77)
 
 
 class PolicyBridge(QObject):
@@ -43,11 +62,35 @@ def boundary(qtbot, tmp_path):
         replies = []
         bridge.policy_completed.connect(replies.append)
 
+        proposals = {}
+        frame = captured_frame()
+        ctx = context(objective_ref='editor-a', controller_generation=3)
+        ctx['scene_ref'] = journal._contract_scene(proposal_from_decision(
+            Decision('action', 'Reviewed marker', {'op': 'text', 'text': EXPECTED_TEXT['editor-a']}),
+            frame, 3, task_ref='provider-task', model='fixture',
+        ).frame)
+
         def call(operation, **fields):
+            if operation == 'prepare' and 'proposal' not in fields:
+                hint = fields.get('model_risk')
+                risk = hint if type(hint) is str and hint in ('routine', 'sensitive', 'uncertain') else None
+                fields['proposal'] = proposal_from_decision(
+                    Decision('action', 'Reviewed marker', fields['action'], risk=risk),
+                    frame, 3, task_ref='provider-task', model='fixture',
+                )
+            if operation == 'dispatch' and 'grounded' not in fields:
+                prior = proposals[fields['effect_id']]
+                fields['grounded'] = grounded_from_checked(
+                    prior, frame, prepare_action(prior.action.to_action(), frame),
+                    generation=3, effect_ref=fields['effect_id'],
+                )
             packet = dict(operation=operation, nonce='nonce', request_key=('attempt', 1),
-                          context=context(objective_ref='editor-a'), **fields)
+                          context=ctx, **fields)
             asyncio.run(runner._policy_operation(packet))
-            return replies[-1]
+            reply = replies[-1]
+            if operation == 'prepare' and 'effect_id' in reply:
+                proposals[reply['effect_id']] = fields['proposal']
+            return reply
 
         yield journal, call
         runner.detach()

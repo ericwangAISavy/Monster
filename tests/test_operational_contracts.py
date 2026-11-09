@@ -333,3 +333,15 @@ def test_keyboard_payload_cannot_claim_model_coordinate_grounding():
     with pytest.raises(ValueError, match='Locator method'):
         GroundedAction(proposal=g.proposal, checked_frame=g.checked_frame,
                        physical_action=g.physical_action, locator_method='legacy_model_coordinates')
+
+
+@pytest.mark.parametrize('hint', ['benign', 'low'])
+def test_legacy_neutral_aliases_project_without_changing_the_provider_parser(hint):
+    frame = observation()
+    p = proposal_from_decision(Decision('action', 'Type marker', {'op': 'text', 'text': 'marker'},
+                                        risk=hint), frame, 4, task_ref='task', model='fixture')
+    assert p.model_risk_hint == 'routine'
+    from monster.providers.base import ProviderError
+    with pytest.raises(ProviderError):
+        parse_decision({'kind': 'action', 'summary': 'Type marker', 'action': {'op': 'text', 'text': 'marker'},
+                        'risk': hint}, 100, 100)

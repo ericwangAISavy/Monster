@@ -52,8 +52,9 @@ def migrate_journal(c):
 
 
 class EffectCoordinator:
-    def __init__(self, connection, *, key=None, clock=time.time, live=False):
+    def __init__(self, connection, *, key=None, clock=time.time, live=False, monotonic=time.monotonic):
         self.c, self.clock, self.live = connection, clock, live
+        self.monotonic = monotonic
         self.key = key or secrets.token_bytes(32)
         self.expected = {}
         self.mission_guard = None
@@ -122,6 +123,7 @@ class EffectCoordinator:
             "active",
             "lease_valid",
             "cleanup_healthy",
+            "controller_generation",
         }
         if type(ctx) is not dict or set(ctx) - allowed:
             raise ValueError("Unsupported permission scope fields")
@@ -136,7 +138,56 @@ class EffectCoordinator:
         if self.live and row is None:
             raise ValueError("No durable mission consent")
 
-    def prepare(self, ctx, action, *, expected_text, review_id, model_risk=None, risk=None):
+    @staticmethod
+    def _contract_scene(frame):
+        geometry = ([vars(b) for b in frame.displays], vars(frame.bounds), frame.foreground_guard)
+        return hashlib.sha256(json.dumps(geometry, sort_keys=True).encode()).hexdigest()
+
+    def _proposal_binding(self, proposal, ctx, action):
+        # Lazy imports keep the fake mission core independent of native/UI modules.
+        from monster.agent.contracts import ActionProposal
+
+        if not isinstance(proposal, ActionProposal):
+            raise ValueError("Missing operational proposal")  # noqa: TRY004 -- authorization refusals use ValueError
+        proposal = ActionProposal.model_validate(proposal)
+        if (proposal.preview_only or proposal.action.to_action() != action
+                or type(ctx.get("controller_generation")) is not int
+                or proposal.frame.controller_generation != ctx.get("controller_generation")
+                or proposal.frame.capture_ref != ctx["observation_ref"]
+                or self._contract_scene(proposal.frame) != ctx["scene_ref"]
+                or proposal.mission_ref not in (None, ctx["mission_id"])
+                or proposal.subtask_ref not in (None, ctx["subtask_id"])):
+            raise ValueError("Operational proposal scope mismatch")
+        return proposal
+
+    def _proposal_digest(self, proposal):
+        # Only this process-keyed digest persists, never transient payload/criteria.
+        return self.digest({"metadata": proposal.model_dump(mode="json"),
+                            "action": proposal.action.to_action(),
+                            "target": proposal.target_description,
+                            "expected": proposal.expected_result,
+                            "foreground": proposal.frame.foreground_guard})
+
+    def _dispatch_contract(self, effect, ctx, action, grounded):
+        from monster.agent.contracts import GroundedAction
+
+        if not isinstance(grounded, GroundedAction):
+            raise ValueError("Missing mapped action contract")  # noqa: TRY004 -- revoke on authorization refusal
+        grounded = GroundedAction.model_validate(grounded)
+        proposal, checked = grounded.proposal, grounded.checked_frame
+        if (grounded.effect_ref != effect.effect_id
+                or type(ctx.get("controller_generation")) is not int
+                or proposal.action_id != effect.action_ref or proposal.task_ref != effect.task_ref
+                or checked.controller_generation != effect.controller_generation
+                or checked.controller_generation != ctx.get("controller_generation")
+                or proposal.action.to_action() != action
+                or self._proposal_digest(proposal) != effect.action_contract_digest
+                or checked.capture_ref != ctx["observation_ref"]
+                or self._contract_scene(checked) != ctx["scene_ref"]
+                or not 0 <= self.monotonic() - checked.captured_at <= 2):
+            raise ValueError("Mapped action does not match the reviewed operational contract")
+
+    def prepare(self, ctx, action, *, expected_text, review_id, model_risk=None, risk=None, proposal=None):
         self._healthy(ctx)
         if any(e.workspace_id == ctx["workspace_id"] for e in self.unresolved()):
             raise ValueError("Unresolved effect requires reconciliation")
@@ -148,7 +199,13 @@ class EffectCoordinator:
         # Explicit risk fixtures are allowed only in non-live policy simulations.
         if risk is not None and self.live:
             assigned = "unknown"
+        contract = self._proposal_binding(proposal, ctx, action) if proposal is not None else None
+        if self.live and contract is None:
+            raise ValueError("Live effects require an operational proposal")
+        if contract and contract.model_risk_hint in ("sensitive", "uncertain"):
+            assigned = "unknown"  # Transport hints cannot erase the proposal's caution.
         decision = evaluate(assigned, active=True, live=self.live)
+        contract_digest = self._proposal_digest(contract) if contract else None
         action_digest = self.digest(action)
         binding = {k: ctx[k] for k in BINDING}
         fingerprint = self.digest(
@@ -158,10 +215,15 @@ class EffectCoordinator:
                 "policy": POLICY_VERSION,
                 "observation": ctx["observation_ref"],
                 "risk": assigned,
+                **({"contract": contract_digest} if contract else {}),
             }
         )
         e = Effect(
-            schema_version=2,
+            schema_version=3 if contract else 2,
+            action_contract_digest=contract_digest,
+            action_ref=contract.action_id if contract else None,
+            task_ref=contract.task_ref if contract else None,
+            controller_generation=contract.frame.controller_generation if contract else None,
             effect_id=uuid4().hex,
             mission_id=ctx["mission_id"],
             subtask_id=ctx["subtask_id"],
@@ -199,6 +261,8 @@ class EffectCoordinator:
         )
         with self.c:
             self.c.execute("BEGIN IMMEDIATE")
+            if contract and any(prior.action_ref == contract.action_id for prior in self.records()):
+                raise ValueError("Operational action was already registered; reobserve with a new proposal")
             self.c.execute(
                 "INSERT INTO action_effects VALUES (?,?,?,?)",
                 (e.effect_id, e.mission_id, e.attempt_id, e.model_dump_json()),
@@ -257,7 +321,7 @@ class EffectCoordinator:
             self._event(e, "approved", "human")
         return e
 
-    def dispatch(self, eid, ctx, action):
+    def dispatch(self, eid, ctx, action, *, grounded=None):
         try:
             with self.c:
                 self.c.execute("BEGIN IMMEDIATE")
@@ -285,6 +349,10 @@ class EffectCoordinator:
                     "allow",
                 ):
                     raise ValueError("Policy denied dispatch")
+                if self.live and e.schema_version != 3:
+                    raise ValueError("Legacy grants require fresh operational review")
+                if e.schema_version == 3:
+                    self._dispatch_contract(e, ctx, action, grounded)
                 # Atomic consumption and intent precede every possible input handoff.
                 a = a.model_copy(update={"consumed_at": self.clock()})
                 self.c.execute(

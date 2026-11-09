@@ -56,12 +56,15 @@ def proposal_from_decision(decision, observation, generation, *, task_ref, model
             raise ValueError('Invalid coordinate provenance') from exc
         if mapped.action != decision.action:
             raise ValueError('Mapped model coordinates changed')
+    hint = decision.risk
+    if type(hint) is str and hint in ('benign', 'low'):
+        hint = 'routine'  # Legacy neutral aliases; never normalize caution away.
     aid = uuid4().hex
     return ActionProposal(
         action_id=aid, task_ref=task_ref, frame=observation_frame(observation, generation, frame_ref=frame_ref),
         action=ActionPayload.from_action(decision.action), target_description=decision.summary,
         expected_result=decision.expected_result or decision.summary, criterion_ref='criterion:' + aid,
-        model_ref=model_reference(model), model_risk_hint=decision.risk, source_coordinate_space=space,
+        model_ref=model_reference(model), model_risk_hint=hint, source_coordinate_space=space,
     )
 
 
