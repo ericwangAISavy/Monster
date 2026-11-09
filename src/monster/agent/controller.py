@@ -9,6 +9,7 @@ from dataclasses import asdict, is_dataclass
 
 from PySide6.QtCore import QTimer, Signal
 
+from monster.agent.admission import admit_action
 from monster.agent.contract_adapters import (
     grounded_from_checked,
     proposal_from_decision,
@@ -33,7 +34,6 @@ from monster.agent.progress import (
     validate_draft_action,
 )
 from monster.agent.validation import (
-    approval_reason,
     prepare_action,
     scene_matches,
     single_click_requested,
@@ -990,14 +990,12 @@ class SupervisedController(TaskController):
                 except (ValueError, TypeError) as exc:
                     self._reject_proposal(str(exc), "action_validation")
                     return
-                reason = (
-                    "Closing a window can discard unsaved work. Confirm the intended window "
-                    "is the current foreground target."
-                    if window_close_requested(self.instruction) else
-                    "Per-step approval is enabled."
-                    if self.config.approve_each_step and not self.hands_free
-                    else approval_reason(result, self.instruction)
+                admission = admit_action(
+                    result, self.instruction,
+                    approve_each_step=self.config.approve_each_step,
+                    hands_free=self.config.hands_free, action_gate=self.action_gate,
                 )
+                reason = admission.reason
                 text = (
                     "REAL INPUT · "
                     + (reason or "Review target desktop.")
@@ -1013,10 +1011,10 @@ class SupervisedController(TaskController):
                 ))
                 self.reviewed_proposal = deepcopy(result)
                 self.phase = "approval"
-                if self.hands_free and reason is not None:
+                if admission.disposition == "stop":
                     self.fail("Automatic mode stopped because this action requires review: " + reason)
                     return
-                if (self.hands_free or not self.config.approve_each_step) and reason is None:
+                if admission.disposition == "automatic":
                     self._begin_recheck(restore=False)
                     return
             else:

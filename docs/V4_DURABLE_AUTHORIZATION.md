@@ -95,3 +95,31 @@ mode-specific policy preservation, followed by bounded Worker extraction. Native
 Windows qualification, grounding/verification benchmarks, cloud-egress grants and
 ADR006 guest-native integration remain separate gates. Existing unknown DPI,
 worker-generation and session metadata are not made known by this change.
+
+## Standalone migration prerequisite: explicit review admission
+
+The controller now routes action proposals through `agent.admission.admit_action`
+instead of selecting automatic/review/stop inline. This is the production review
+path for both modes, using host configuration and the existing deterministic
+`approval_reason` rules. The immutable result records `controller-review-v1`;
+it is not a grant or proof of action safety. The controller still validates input
+and intent first, and still performs scene/target checks before handoff.
+
+The policy preserves routine Enter, Start, clicks, text and navigation in automatic
+mode, per-step review in supervised mode, and stop-on-review in hands-free mode.
+Mission gating disables hands-free overrides. Explicit close-window requests,
+sensitive summaries, uncertain model assessments, drawing intent and shortcut
+review retain their previous behavior. Non-boolean host settings and non-action
+proposals are rejected. Provider output cannot select a mode.
+
+This change is a bounded policy-extraction prerequisite, **not standalone durable
+execution**. Standalone actions still have no durable intent. Connecting their
+admission result to the shared journal requires a runtime lifecycle that does not
+open a second ledger owner, plus an explicit automatic-authorization source that
+cannot masquerade as human approval. The mission demo's narrow scratch policy
+remains unchanged; no automatic grants are synthesized by this extraction.
+
+Policy tests exercise every combination of per-step review, hands-free and mission
+gating, with routine launch actions and sensitive/uncertain escalations. Existing
+controller, hands-free and durable mission integration tests verify the actual
+execution path separately.
