@@ -11,8 +11,10 @@ chat, uploaded files, local caches, or cloud environment instance.
 - Prior checkpoint: `d3c5eaf`; first Worker extraction: `d0773b1`.
 - Prior visual-check implementation/checkpoint: `fb60812` / `d89734f`.
 - Prior correlated Worker/finalization implementation: `c191266`.
-- Current implementation: the stage 3 read-only benchmark commit containing this
-  checkpoint, on `work`; see [stage 3](V4_STAGE3_RELIABILITY_BENCHMARKS.md) and
+- Prior stage 3 benchmark tooling: `23b1af1`.
+- Current implementation: the stage 4 per-attempt evidence-assessment commit
+  containing this checkpoint, on `work`; see [stage 4](V4_STAGE4_NATIVE_TRIALS.md),
+  [stage 3](V4_STAGE3_RELIABILITY_BENCHMARKS.md) and
   [the extraction boundary](V4_BOUNDED_WORKER.md).
 - At checkpoint creation, the implementation was committed and pushed, with no
   unfinished code changes. No merge into `main` was performed.
@@ -132,7 +134,8 @@ effect. The **Review uncertain effects** control is the explicit handoff.
 ## Next recommended implementation
 
 All seven operational Worker result phases now require correlated typed outcomes.
-Stage 3 tooling now exists; next run labelled real-model measurements and native
+Stage 3 tooling and stage 4 per-attempt evidence assessment now exist; next run
+labelled real-model measurements and native
 Windows qualification against the actual source/model/configuration. Measure
 wrong-target actions, duplicate attempts, false completion, verification
 false-positive/negative cases and latency; distinguish model, tool and executor
@@ -240,7 +243,8 @@ reset unresolved effects to force compatibility.
 > `e4dafcf`; all operational Worker replies are now correlated and standalone
 > finalization distinguishes resolved history from uncertainty. Inspect the branch
 > and changes first. Stage 3 read-only benchmark tooling and synthetic replay are
-> implemented. Next recommended work is live selected-model measurements on
+> implemented, alongside the stage 4 per-attempt native evidence assessor.
+> Next recommended work is live selected-model measurements on
 > labelled fixtures/held-out data, followed by native Windows qualification,
 > preserving shared durable admission, current automatic/review policy and all
 > input/cleanup checks. Do not merge `main` or expand native/guest permissions as
@@ -288,3 +292,69 @@ All three previously failing tests passed. Full per-test diagnostics are at
 not needed to reproduce the checked-in tests and are not qualification evidence.
 This is the final authoritative regression run for this slice, while the earlier
 intermittent failures remain documented above.
+
+## Stage 4 per-attempt evidence slice
+
+`src/monster/benchmarks/native_trials.py` adds a read-only template and assessor
+for the focused/unfocused × approval on/off unsent Slack draft matrix. It reuses
+`qualification.assess_native` and existing explicitly exported JSON run reports;
+no controller, executor, authorization, model settings or ledger changes.
+
+The default template contains 12 unmeasured slots (three per case). Reports bind
+by local confined path, SHA-256 and unique run ID. Exact protocol instruction,
+full configuration, runtime/source/worker provenance, idle terminal status and
+cleanup must agree. Independent operator observations establish visible outcomes;
+failed and unknown attempts block review. Unknown incident counts remain null.
+Changed configurations cannot be pooled. Output includes metadata-only counts,
+per-trial operation wait totals and operator-reported failure attribution/stop
+outcomes, with no raw task/action text, screenshots or model evidence.
+
+The inventory is operator-reported, not attested. It never grants execution or
+sets native/model qualification. Windows preflight in this workspace again
+reported `unavailable`; no native input or desktop capture was performed. Real
+selected-model benchmark measurements, Windows tool/DPI/focus/stop checks and the
+actual repeated draft trials remain pending. **Do not proceed to broader step 5
+execution based on these synthetic tests.** See the stage 4 document for exact
+Windows commands, local report handling and the observations to collect.
+
+Test-first implementation: 38 new cases initially failed because the module did
+not exist, then passed. Additional edge/review tests reproduced unknown counts
+being reported as zero, oversized-file CLI errors, incomplete configuration and
+contradictory cleanup/running metadata. These were repaired without changing
+execution or production limits. Focused qualification/diagnostics/stage 3/new
+regressions: **115 passed in 17.12 seconds**, including **59 new assessor cases**.
+Independent source review's two important findings (configuration completeness and
+cleanup/phase contradictions) were covered by failing tests and fixed. Synthetic
+Windows-shaped records are validator fixtures, not native evidence.
+
+The executor disconnected near the end of the first stage 4 full run. After
+reconnection, its retained log showed **1,310 passed, 3 skipped, 2 failed in
+442.51 seconds**. The failures were:
+
+- `tests/workspaces/test_control.py::test_session_scope_changes_invalidate_existing_approvals[RESTORE_SNAPSHOT]`
+  (`LinkError: delivery_or_authentication_unconfirmed`).
+- `tests/workspaces/test_workspace_ui.py::test_host_application_keeps_personal_default_and_routes_guest_review`
+  (8-second Qt wait timeout).
+
+Both complete affected modules passed unchanged after recovery: **91 passed in
+20.32 seconds**. This does not establish the disconnect as their root cause;
+the failures remain documented. Logs are `/tmp/native-trials-full.txt` and
+`/tmp/native-trials-recovery-focused.txt` in this workspace. No production code,
+limits or test timeouts changed in response. Frozen setup, lint, compilation,
+formatting, staged diff checks and startup smoke passed after recovery; smoke
+emitted only expected offscreen tray/raise warnings. The staged source and docs
+survived the disconnect intact.
+
+Final post-recovery serial confirmation: **1,312 passed, 3 skipped in 265.45
+seconds**, using the checkpoint's frozen Linux offscreen command with per-test
+progress and `faulthandler_timeout=30`. Both prior failures passed. The log is
+`/tmp/native-trials-final-confirmation.txt` in this workspace. This is the final
+regression evidence for this slice; the earlier failures remain documented above.
+A direct CLI template → assess smoke returned the expected blocked inventory:
+12 planned, 0 attempted, 0 successful, review ineligible, execution unauthorized,
+native qualification false, exit 1. No native input or capture occurred.
+
+Completed changes are committed/pushed to `work` in the commit containing this
+checkpoint; `main` is untouched. Next work requires actual selected-model and
+Windows evidence using the linked stage 3/4 protocols, not another executor or
+permission expansion. Preserve uncertain effects and current qualification gates.

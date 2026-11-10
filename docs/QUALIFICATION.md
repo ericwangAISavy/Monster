@@ -5,6 +5,8 @@ UI-Venus is not hosted in the current environment; native Windows input is not
 available here. No model is installed, selected, downloaded or silently switched.
 The existing Ollama/controller/worker and approval behavior are preserved.
 
+For V4 repeated draft trials, also use the [per-attempt native evidence workflow](V4_STAGE4_NATIVE_TRIALS.md). It reuses this checklist and does not grant execution permission.
+
 ## 1. Preflight and native acceptance
 
 Run on the Windows desktop that will perform tasks:

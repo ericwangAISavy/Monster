@@ -119,3 +119,7 @@ Final Linux offscreen regression confirmation: **1,253 passed, 3 skipped** in
 passed. An earlier run had three existing timing failures; all affected modules
 passed unchanged on rerun and the complete confirmation then passed. The
 [checkpoint](WORKSPACE_CHECKPOINT.md) preserves that evidence and limitations.
+
+Stage 4 now has a [per-attempt native evidence assessor](V4_STAGE4_NATIVE_TRIALS.md)
+for the four approval/focus cases. Tooling availability does not complete native
+qualification; actual Windows and selected-model evidence remains pending.
