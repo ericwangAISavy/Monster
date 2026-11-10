@@ -298,7 +298,7 @@ def test_real_bridge_discards_cancelled_startup_and_disarms_after_action(qtbot):
 
 
 def test_post_approval_exception_has_stage_and_never_dispatches(qtbot, monkeypatch):
-    import monster.agent.controller as module
+    import monster.agent.worker as module
 
     engine, bridge, _ = controller([Decision("action", "Type", {"op": "text", "text": "Hello"})])
     questions, failures = [], []

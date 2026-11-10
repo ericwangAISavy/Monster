@@ -1,9 +1,9 @@
 # V4 slice 1: operational contract compatibility layer
 
 **Current follow-up:** journaled mission execution now requires these contracts;
-see [slice 2a](V4_DURABLE_AUTHORIZATION.md). Standalone execution remains a
-compatibility projection. The description below records the original slice 1
-boundary.
+see [slice 2a and standalone slice 2b](V4_DURABLE_AUTHORIZATION.md).
+[Bounded Worker slice 2c](V4_BOUNDED_WORKER.md) reuses these records for read-only
+operations. The description below records the original slice 1 boundary.
 
 ## Delivered scope
 
@@ -93,8 +93,9 @@ instances. Boolean/string versions, unknown fields and future versions fail
 validation. No ledger/checkpointer, provider endpoint, policy version, permission,
 mission state or primitive allowlist was changed.
 
-The next slice is shared durable authorization and Worker-boundary consolidation.
-It must supply actual mission/session/approval bindings, retain the existing
-SQLite effect authority, and define the contract admission rules. Windows/DPI,
+Shared durable authorization now supplies actual mission/session/approval
+bindings through the existing SQLite effect authority. The first bounded Worker
+extraction reuses these bindings without changing their admission rules. Further
+target/completion request extraction remains incremental. Windows/DPI,
 physical stop/cleanup, semantic grounding and model reliability still need native
 qualification and benchmark evidence. ADR006 and guest-native gates are unchanged.

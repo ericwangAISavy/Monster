@@ -11,15 +11,12 @@ from PySide6.QtCore import QTimer, Signal
 
 from monster.agent.admission import admit_action
 from monster.agent.contract_adapters import (
-    grounded_from_checked,
     proposal_from_decision,
     receipt_from_legacy,
-    verification_from_legacy,
 )
 from monster.agent.contracts import GroundedAction
 from monster.agent.diagnostics import RunDiagnostics
 from monster.agent.input_bridge import InputBridge
-from monster.agent.keyboard import terminal_window_requested
 from monster.agent.metrics import OperationTimings
 from monster.agent.progress import (
     action_description,
@@ -34,12 +31,10 @@ from monster.agent.progress import (
     validate_draft_action,
 )
 from monster.agent.validation import (
-    prepare_action,
-    scene_matches,
     single_click_requested,
-    validate_proposal_intent,
     window_close_requested,
 )
+from monster.agent.worker import BoundedWorker, ProposalRequest, VerificationRequest, VisualContext
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import OllamaProvider
@@ -56,6 +51,8 @@ class SupervisedController(TaskController):
     def __init__(self, config, provider_factory=OllamaProvider, input_bridge=None, parent=None):
         super().__init__(parent)
         self.config, self.provider_factory = config, provider_factory
+        self.worker = BoundedWorker()
+        self.worker_binding = None
         self.timings = OperationTimings()
         self.run_diagnostics = None
         self.log_frame = self.planned_frame = None
@@ -313,6 +310,11 @@ class SupervisedController(TaskController):
         self._record("model_requested", job=job, operation=stage)
         return job
 
+    def _start_worker(self, operation, config):
+        job = self._start_model(operation)
+        self.worker_binding = (job, config)
+        return job
+
     def _start_input(self, operation, *args):
         if operation == "execute":
             self.input_may_have_occurred = True
@@ -435,8 +437,8 @@ class SupervisedController(TaskController):
             self.phase = "verifying_capture"
             self._schedule_capture()
 
-    def _provider(self, diagnostics, stage, call=0, step=0):
-        provider = self.provider_factory(self.config)
+    def _provider(self, diagnostics, stage, call=0, step=0, *, config=None):
+        provider = self.provider_factory(self.config if config is None else config)
         if isinstance(provider, OllamaProvider):
             provider.diagnostic_callback = lambda event, details, content=None: diagnostics.add(
                 event, stage, content=content, planning_call=call, step=step, **details
@@ -517,12 +519,9 @@ class SupervisedController(TaskController):
             self.scene_details = details
             self._record("scene_recheck_requested", before=previous_frame, after=self.log_frame)
 
-            async def compare():
-                # ProviderJobs already executes off the Qt thread. A second
-                # thread pool is unnecessary for this bounded comparison.
-                return scene_matches(before, observation, action, diagnostics=details)
-
-            self.job = self._start_model(compare)
+            self.job = self._start_model(
+                lambda: self.worker.compare(before, observation, action, diagnostics=details)
+            )
             return
         if self.phase == "verifying_capture":
             retry_scene = self.verification_retry_scene
@@ -560,17 +559,19 @@ class SupervisedController(TaskController):
             self.state_changed.emit(State.THINKING)
             self.stage_changed.emit("Verifying")
             diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
-            self.job = self._start_model(
-                lambda: self._provider(diagnostics, "verifying", call, step).verify_action(
-                    self.config.model,
-                    instruction,
-                    action,
-                    expected,
-                    observation.png,
-                    observation.bounds.width,
-                    observation.bounds.height,
-                    before_image,
+            config = self.config
+            try:
+                request = VerificationRequest.from_action(
+                    VisualContext(config.model, instruction, observation), action, expected,
+                    before_image=before_image,
                 )
+            except (ValueError, TypeError):
+                self.fail("Invalid visual verification request; inspect the result. No input was retried.")
+                return
+            self.job = self._start_worker(
+                lambda: self.worker.verify(
+                    self._provider(diagnostics, "verifying", call, step, config=config), request,
+                ), config,
             )
             return
         if self.phase != "observing":
@@ -593,15 +594,12 @@ class SupervisedController(TaskController):
         self.state_changed.emit(State.THINKING)
         self.stage_changed.emit("Thinking")
         diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
-        self.job = self._start_model(
-            lambda: self._provider(diagnostics, "deciding", call, step).decide(
-                self.config.model,
-                instruction,
-                observation.png,
-                observation.bounds.width,
-                observation.bounds.height,
-                history=history,
-            )
+        config = self.config
+        request = ProposalRequest(VisualContext(config.model, instruction, observation), history)
+        self.job = self._start_worker(
+            lambda: self.worker.propose(
+                self._provider(diagnostics, "deciding", call, step, config=config), request,
+            ), config,
         )
 
     def _model_result(self, job, result, error):
@@ -611,6 +609,13 @@ class SupervisedController(TaskController):
         if job != self.job or not self.active or self.paused:
             self._record("model_result_ignored", source_job=job)
             return
+        if self.worker_binding is not None and self.worker_binding[0] == job:
+            _, submitted_config = self.worker_binding
+            self.worker_binding = None
+            if self.config != submitted_config:
+                self._record("worker_result_rejected", reason="configuration_changed")
+                self.fail("Worker configuration changed while queued or running; no further input authorized.")
+                return
         self.jobs.futures.pop(job, None)
         self.timings.finish(("model", job), "failed" if error else "completed")
         self._record("model_result", job=job, completed=not bool(error),
@@ -731,7 +736,7 @@ class SupervisedController(TaskController):
         elif self.phase == "verifying":
             self.last_verification = result
             self.last_verified_proposal = deepcopy(self.pending)
-            self._record_contract("verification_contract", lambda: verification_from_legacy(
+            self._record_contract("verification_contract", lambda: self.worker.assess(
                 self.grounded_contract, result, self.observation, generation=self.generation,
                 model=self.config.model, expected_result=self.verification_expected or self.pending.expected_result or self.pending.summary,
                 evidence_ref=f"{self.run_diagnostics.run_id}:verification-{self.verification_calls}",
@@ -1077,7 +1082,7 @@ class SupervisedController(TaskController):
 
 
     def _mapped_contract(self, action):
-        return self._record_contract("grounded_action_contract", lambda: grounded_from_checked(
+        return self._record_contract("grounded_action_contract", lambda: self.worker.ground(
             self.pending_contract, self.observation, action,
             generation=self.generation, frame_ref=self.log_frame,
             effect_ref=self.effect_action_id if (self.action_gate or self.standalone_run) else None,
@@ -1334,21 +1339,12 @@ class SupervisedController(TaskController):
             )
 
     def _prepare_action(self, action, observation):
-        validate_proposal_intent(self.pending, self.instruction)
-        if self.single_click_policy:
-            if self.single_click_dispatched:
-                raise ValueError("The requested one-click input was already dispatched; no further input.")
-            if action.get("op") not in {"move", "click"}:
-                raise ValueError("A one-click request permits pointer movement and one click only; no substitutes.")
-            if action.get("op") == "click" and action.get("count", 1) != 1:
-                raise ValueError("The request permits one click only, not a double click.")
-        closing = window_close_requested(self.instruction)
-        if closing and (self.close_dispatched or action != {"op": "chord", "keys": ["ALT", "F4"]}):
-            raise ValueError(
-                "Current-window closing supports one reviewed Alt+F4 only; no guessed clicks or retry."
-            )
-        return prepare_action(action, observation, allow_window_close=closing,
-                              allow_terminal_window=terminal_window_requested(self.instruction))
+        return self.worker.prepare(
+            self.pending, action, observation, self.instruction,
+            single_click_policy=self.single_click_policy,
+            single_click_dispatched=self.single_click_dispatched,
+            close_dispatched=self.close_dispatched,
+        )
 
     def _reviewed_proposal_matches(self):
         if self.reviewed_proposal is None or self.pending != self.reviewed_proposal:
@@ -1482,6 +1478,7 @@ class SupervisedController(TaskController):
         if self.job:
             self.jobs.cancel(self.job)
         self.job = None
+        self.worker_binding = None
         self.deadline.stop()
         self.approval_timer.stop()
         self.question_id = None

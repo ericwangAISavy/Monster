@@ -88,9 +88,9 @@ a separate SQLite connection confirms that the bound intent is already committed
 Missing contracts, changed post-intent contracts and changed gate mode all produce
 zero input. These tests do not qualify physical Windows behavior.
 
-Remaining slice 2 work includes bounded Worker extraction after the standalone
-admission described below. Native
-Windows qualification, grounding/verification benchmarks, cloud-egress grants and
+The standalone admission described below and the first
+[bounded Worker extraction](V4_BOUNDED_WORKER.md) are implemented. Further Worker
+request extraction, native Windows qualification, grounding/verification benchmarks, cloud-egress grants and
 ADR006 guest-native integration remain separate gates. Existing unknown DPI,
 worker-generation and session metadata are not made known by this change.
 
@@ -179,5 +179,7 @@ automatic versus actual review provenance, blocked operations, stale or changed
 contracts, duplicate IDs, lock/write failures, late observation failure,
 cancellation/shutdown with queued intent, restart uncertainty and reconciliation.
 They do not qualify native Windows input or improve model visual recognition.
-Bounded Worker extraction, grounding benchmarks and Windows qualification remain
-next architecture work.
+The first bounded Worker extraction is implemented in [slice 2c](V4_BOUNDED_WORKER.md).
+It moves one-shot read-only operations while preserving this authorization path.
+Further target/completion extraction, grounding benchmarks and Windows qualification
+remain next architecture work.
