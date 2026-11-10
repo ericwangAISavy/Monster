@@ -8,8 +8,8 @@ chat, uploaded files, local caches, or cloud environment instance.
 - Repository: `https://github.com/ericwangAISavy/Monster.git`
 - Development branch: `work` (do not assume these changes are on `main`).
 - Prior implementation baseline: `e4dafcf` — Journal standalone input before native dispatch.
-- Prior checkpoint: `d3c5eaf`.
-- Current implementation: the bounded Worker extraction commit containing this checkpoint,
+- Prior checkpoint: `d3c5eaf`; first Worker extraction: `d0773b1`.
+- Current implementation: the bound visual-check Worker follow-up commit containing this checkpoint,
   on `work`; see [the extraction boundary](V4_BOUNDED_WORKER.md).
 - At checkpoint creation, the implementation was committed and pushed, with no
   unfinished code changes. No merge into `main` was performed.
@@ -71,6 +71,11 @@ requires requirements beyond this recorded scope.
    operations. The controller retains lifecycle, reviews, durable intent, dispatch,
    result interpretation and cleanup. Queued requests pin model/configuration and
    reject changed host settings. See [slice 2c](V4_BOUNDED_WORKER.md).
+7. **Bound target/completion checks:** slice 2d moves draft/canvas readiness,
+   app-launch observation and whole-task visual inference into one-shot Worker
+   checks. Strict advisory outcomes bind the exact request, task, operation, model,
+   captured frame and generation. Host checks configuration, phase and current
+   observation; missing/forged bindings stop before input or completion.
 
 Standalone uses one serialized metadata worker and the existing repository's
 exclusive `runtime.lock`; it does not introduce another database, scheduler or
@@ -101,6 +106,7 @@ effect. The **Review uncertain effects** control is the explicit handoff.
 | Qt app, manual workspace lease, runtime switching | `src/monster/app.py` |
 | Qt lifecycle, authorization and input handoff | `src/monster/agent/controller.py` |
 | Bounded read-only inference, comparison and grounding | `src/monster/agent/worker.py` |
+| Bound target/completion requests and advisory outcomes | `src/monster/agent/worker_checks.py` |
 | Host review policy | `src/monster/agent/admission.py`, `validation.py` |
 | Standalone serialized journal lifecycle | `src/monster/agent/standalone_journal.py` |
 | Immutable operational contracts and legacy adapters | `src/monster/agent/contracts.py`, `contract_adapters.py` |
@@ -113,16 +119,17 @@ effect. The **Review uncertain effects** control is the explicit handoff.
 
 ## Next recommended implementation
 
-The first **bounded Worker extraction** is implemented. The next small slice is
-moving target-readiness and whole-task visual requests behind the same immutable
-snapshot boundary, with typed outcome envelopes and stale-result tests. Inspect
-`agent/worker.py` and the controller's remaining target/completion paths first.
-Do not restart the architecture migration or replace the shared journal.
+The first Worker extraction and its **bound target/completion check** follow-up
+are implemented. The next small slice is consistent typed request/result
+correlation for existing proposal, action-verification and scene-comparison Worker
+operations. Those still use legacy Decision/Verification/bool returns under the
+host job/configuration guards. Reuse the new advisory envelope pattern without
+replacing operational proposals, exact grants, effect receipts or the journal.
 
 The Worker remains stateless and read-only; the controller is the Qt lifecycle/UI
-adapter and LangGraph remains the outer orchestrator. Probe, readiness, task-wide
-completion interpretation, history/limits and all execution authority remain
-outside the Worker in this slice. No new worker thread or executor was added.
+adapter and LangGraph remains the outer orchestrator. Probe remains a controller
+compatibility operation; task interpretation, history/limits and all execution
+authority remain outside the Worker. No new worker thread or executor was added.
 
 Preserve these invariants during the extraction:
 
@@ -172,8 +179,10 @@ Change cache/config roots if `/workspace` is not writable in the new environment
 Preserve `uv.lock`; do not refresh dependencies just to resume development.
 
 Checkpoint baseline `d3c5eaf`: **1,155 passed, 3 skipped** in 149.49 seconds.
-Current extraction validation: **1,167 passed, 3 skipped** in 156.21 seconds
-(`uv run --frozen pytest -q`, Linux offscreen Qt). All 12 new Worker tests passed.
+Prior Worker extraction `d0773b1`: **1,167 passed, 3 skipped** in 156.21 seconds.
+Current visual-check follow-up: FINAL_CHECK_VALIDATION_PENDING.
+All 35 new visual-check tests passed; focused controller/hands-free/drawing/launch/
+standalone/mission-dispatch regressions passed 286 tests.
 `ruff check src tests`, compilation, startup smoke, new-file formatting and
 `git diff --check` passed. Startup emitted only the expected offscreen tray/raise
 warnings. Independent source review found no critical or important issues.
@@ -200,9 +209,9 @@ reset unresolved effects to force compatibility.
 
 > Continue Monster from branch `work`. Read `docs/WORKSPACE_CHECKPOINT.md` and the
 > linked V4 contract/authorization documents. Implementation baseline is
-> `e4dafcf`; bounded Worker extraction is now implemented in the commit containing
-> this checkpoint. Inspect the current branch and changes first. Next recommended
-> slice is bounded target/completion request extraction and typed outcomes,
+> `e4dafcf`; Worker extraction and bound target/completion checks are implemented.
+> Inspect the current branch and changes first. Next recommended slice is extending
+> typed Worker correlation to proposal/action-verification/scene-comparison results,
 > preserving shared durable admission, current automatic/review policy and all
 > input/cleanup checks. Do not merge `main` or expand native/guest permissions as
 > part of this handoff. Verify the implementation with the relevant existing

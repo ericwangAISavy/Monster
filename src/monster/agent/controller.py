@@ -35,6 +35,7 @@ from monster.agent.validation import (
     window_close_requested,
 )
 from monster.agent.worker import BoundedWorker, ProposalRequest, VerificationRequest, VisualContext
+from monster.agent.worker_checks import CHECK_PHASES, VisualCheckRequest, VisualCheckResult
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import OllamaProvider
@@ -310,10 +311,29 @@ class SupervisedController(TaskController):
         self._record("model_requested", job=job, operation=stage)
         return job
 
-    def _start_worker(self, operation, config):
+    def _start_worker(self, operation, config, *, check_request=None):
         job = self._start_model(operation)
-        self.worker_binding = (job, config)
+        self.worker_binding = (job, config, check_request)
         return job
+
+    def _start_check(self, operation, instruction, observation, *, action=None, expected=None):
+        config = self.config
+        try:
+            request = VisualCheckRequest.create(operation,
+                VisualContext(config.model, instruction, observation), generation=self.generation,
+                task_ref=self.run_diagnostics.run_id, action=action, expected=expected)
+            if CHECK_PHASES[operation] != self.phase:
+                raise ValueError("Changed check phase")
+        except (ValueError, TypeError, AttributeError, KeyError):
+            self.fail("Invalid read-only visual check request; no further input authorized.")
+            return None
+        self._record("visual_check_requested", contract=request.binding.model_dump(mode="json"))
+        diagnostics, stage, call, step = self.run_diagnostics, self.phase, self.calls, self.actions
+        return self._start_worker(
+            lambda: self.worker.check(
+                self._provider(diagnostics, stage, call, step, config=config), request),
+            config, check_request=request)
+
 
     def _start_input(self, operation, *args):
         if operation == "execute":
@@ -501,14 +521,7 @@ class SupervisedController(TaskController):
         if self.phase == "completion_capture":
             self.observation = observation
             self.phase = "checking_completion"
-            diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
-            instruction = self.instruction
-            self.job = self._start_model(
-                lambda: self._provider(diagnostics, "checking_completion", call, step).verify_completion(
-                    self.config.model, instruction, observation.png,
-                    observation.bounds.width, observation.bounds.height,
-                )
-            )
+            self.job = self._start_check("completion", self.instruction, observation)
             return
         if self.phase == "rechecking":
             before, action = self.observation, dict(self.pending.action)
@@ -609,13 +622,34 @@ class SupervisedController(TaskController):
         if job != self.job or not self.active or self.paused:
             self._record("model_result_ignored", source_job=job)
             return
+        if self.phase in CHECK_PHASES.values() and (
+            self.worker_binding is None or self.worker_binding[0] != job
+            or self.worker_binding[2] is None
+        ):
+            self.fail("Visual check request binding unavailable; no further input authorized.")
+            return
         if self.worker_binding is not None and self.worker_binding[0] == job:
-            _, submitted_config = self.worker_binding
+            _, submitted_config, check_request = self.worker_binding
             self.worker_binding = None
             if self.config != submitted_config:
                 self._record("worker_result_rejected", reason="configuration_changed")
                 self.fail("Worker configuration changed while queued or running; no further input authorized.")
                 return
+            if check_request is not None and not error:
+                try:
+                    result = VisualCheckResult.model_validate(result)
+                    binding = check_request.binding
+                    if (result.binding != binding
+                            or binding.frame.controller_generation != self.generation
+                            or binding.task_ref != self.run_diagnostics.run_id
+                            or CHECK_PHASES[binding.operation] != self.phase
+                            or check_request.context.observation != self.observation):
+                        raise ValueError("Changed visual check")
+                except (ValueError, TypeError, AttributeError, KeyError):
+                    self._record("worker_result_rejected", reason="visual_check_binding")
+                    self.fail("Visual check result binding changed; no further input authorized.")
+                    return
+                self._record("visual_check_result", contract=result.model_dump(mode="json"))
         self.jobs.futures.pop(job, None)
         self.timings.finish(("model", job), "failed" if error else "completed")
         self._record("model_result", job=job, completed=not bool(error),
@@ -910,32 +944,16 @@ class SupervisedController(TaskController):
                 self.stage_changed.emit("Target check")
                 self._record("draft_target_requested", observation=self.log_frame,
                              content={"action": self.pending.action})
-                diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
-                instruction, checked_action, checked_observation = (
-                    self._task_context(), deepcopy(self.pending.action), self.observation,
-                )
-                self.job = self._start_model(
-                    lambda: self._provider(diagnostics, "checking_target", call, step).verify_draft_target(
-                        self.config.model, instruction, checked_action, checked_observation.png,
-                        checked_observation.bounds.width, checked_observation.bounds.height,
-                    )
-                )
+                self.job = self._start_check("draft_target", self._task_context(),
+                    self.observation, action=self.pending.action)
                 return
             if (self.pending.action.get("op") == "drag" and drawing_requested(self.instruction)
                     and self.drawing_target_proposal != self.pending):
                 self.phase = "checking_drawing_target"
                 self.state_changed.emit(State.THINKING)
                 self.stage_changed.emit("Checking canvas")
-                diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
-                instruction, checked_action, checked_observation = (
-                    self.instruction, deepcopy(self.pending.action), self.observation,
-                )
-                self.job = self._start_model(
-                    lambda: self._provider(diagnostics, "checking_drawing_target", call, step).verify_drawing_target(
-                        self.config.model, instruction, checked_action, checked_observation.png,
-                        checked_observation.bounds.width, checked_observation.bounds.height,
-                    )
-                )
+                self.job = self._start_check("drawing_target", self.instruction,
+                    self.observation, action=self.pending.action)
                 return
             if self.action_gate:
                 self.grounded_contract = self._mapped_contract(action)
@@ -986,16 +1004,10 @@ class SupervisedController(TaskController):
                     return
                 self.launch_reconciliations += 1
                 self.phase = "checking_launch"
-                diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
-                observation, instruction = self.observation, self.instruction
                 expected = (f"The requested application {self.launch_query_pending} is visibly open "
                             "in its own usable foreground window, not a search result or app-details panel.")
-                self.job = self._start_model(
-                    lambda: self._provider(diagnostics, "checking_launch", call, step).verify_action(
-                        self.config.model, instruction, {"op": "screenshot"}, expected,
-                        observation.png, observation.bounds.width, observation.bounds.height,
-                    )
-                )
+                self.job = self._start_check("app_launch", self.instruction,
+                    self.observation, expected=expected)
                 return
             if result.kind == "action":
                 if self.actions >= 10:

@@ -27,9 +27,9 @@ still an assessment, not an independent proof or an authorization.
 The Qt controller continues to own the task deadline, counters, phase changes,
 latest capture, rejected/duplicate action history, draft/canvas target checks,
 manual focus confirmation, review policy, queued job identity, cancellation and
-terminal outcomes. Probe, readiness and whole-task completion operations remain
-in the controller for a later incremental extraction. LangGraph remains the outer
-mission orchestrator.
+terminal outcomes. Slice 2d below moves readiness and whole-task visual inference
+behind the Worker; their interpretation remains with the controller. Provider
+probing remains a compatibility operation. LangGraph remains the outer orchestrator.
 
 ## Requests and configuration binding
 
@@ -93,8 +93,48 @@ or mocked/offscreen. It establishes no physical Windows or real-model accuracy.
 
 ## Next small slice
 
-Move target-readiness and whole-task visual requests behind the same bounded
-snapshot boundary, with explicit typed outcome envelopes and late-result tests.
+After slice 2d, extend the same typed request/result correlation to the existing
+proposal, action-verification and scene-comparison operations, which still return
+legacy Decision/Verification/bool values under host job/configuration guards.
 Keep host interpretation, action authorization and final completion separate.
 Grounding/verification benchmarks and native Windows qualification remain
 necessary before broader architecture or reliability claims.
+
+## Slice 2d: bound target and completion checks
+
+The follow-up extraction adds `BoundedWorker.check` for four explicit, read-only
+operations: draft readiness, drawing/canvas readiness, app-launch observation and
+whole-task visual assessment. The last two use the existing verification provider
+methods; app-launch observation supplies an application-owned `screenshot` marker
+to that read-only provider method, never to the input executor. Provider probing
+remains a compatibility operation in the controller.
+
+`agent/worker_checks.py` defines an immutable RAM request plus version-1 strict
+binding and result records. A unique request reference binds task, operation,
+hashed model identity and the captured ObservationFrame, including controller
+generation and foreground/display metadata. Target action/criterion text and PNG
+bytes stay in RAM. Result evidence is excluded from default serialization and
+representation. Exported results are explicitly `model_assessment` with
+`execution_authority=none`; they are not journal outcomes or approval grants.
+
+The controller captures the model/configuration and request before queueing. It
+requires the current job's binding to exist, then revalidates the returned
+schema, request/task/operation/model/frame binding, current generation, phase,
+configuration and exact observation before interpreting readiness/completion.
+Missing bindings do not fall back to legacy raw result handling. Unknown fields,
+future/bool versions, grant-like fields and operation-incompatible status values
+fail closed. A success from another request cannot authorize input or finish a
+task. Late replies after cancellation retain the existing job/active-state gate.
+
+Draft/canvas check failures still stop before intent; successful readiness still
+requires the existing fresh scene recheck. Whole-task success remains a host
+interpretation subject to existing journal finalization and cleanup barriers.
+No screenshot, input operation, provider routing, native permission, journal
+schema or guest qualification was added or relaxed.
+
+The 35 new tests cover all four calls, immutable action snapshots, status/schema
+rejection, private evidence omission, exact host bindings (including private
+foreground guards), missing-binding refusal, no-intent/no-input failures,
+forged completion, cancellation and a late completion claim. Existing hands-free,
+launch, drawing, draft and durable authorization regressions remain applicable.
+Final full-suite evidence is recorded in the checkpoint.

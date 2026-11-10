@@ -181,5 +181,6 @@ cancellation/shutdown with queued intent, restart uncertainty and reconciliation
 They do not qualify native Windows input or improve model visual recognition.
 The first bounded Worker extraction is implemented in [slice 2c](V4_BOUNDED_WORKER.md).
 It moves one-shot read-only operations while preserving this authorization path.
-Further target/completion extraction, grounding benchmarks and Windows qualification
-remain next architecture work.
+Bound target/completion checks are now extracted in slice 2d of the same document.
+Consistent typed correlation for the remaining legacy Worker returns, grounding
+benchmarks and Windows qualification remain next architecture work.

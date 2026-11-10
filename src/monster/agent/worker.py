@@ -17,7 +17,9 @@ from monster.agent.validation import (
     validate_proposal_intent,
     window_close_requested,
 )
+from monster.agent.worker_checks import VisualCheckRequest, VisualCheckResult
 from monster.computer.screenshot import Observation
+from monster.providers.base import ProviderError
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,52 @@ class BoundedWorker:
             frame.bounds.height,
             request.before_image,
         )
+
+    async def check(self, provider, request: VisualCheckRequest):
+        ctx = request.context
+        frame = ctx.observation
+        # Explicit read-only operations, never model-selected method dispatch.
+        operation = request.binding.operation
+        if operation == "draft_target":
+            result = await provider.verify_draft_target(
+                ctx.model,
+                ctx.instruction,
+                request.action.to_action(),
+                frame.png,
+                frame.bounds.width,
+                frame.bounds.height,
+            )
+        elif operation == "drawing_target":
+            result = await provider.verify_drawing_target(
+                ctx.model,
+                ctx.instruction,
+                request.action.to_action(),
+                frame.png,
+                frame.bounds.width,
+                frame.bounds.height,
+            )
+        elif operation == "app_launch":
+            result = await provider.verify_action(
+                ctx.model,
+                ctx.instruction,
+                {"op": "screenshot"},
+                request.expected,
+                frame.png,
+                frame.bounds.width,
+                frame.bounds.height,
+            )
+        elif operation == "completion":
+            result = await provider.verify_completion(
+                ctx.model, ctx.instruction, frame.png, frame.bounds.width, frame.bounds.height
+            )
+        else:
+            raise ProviderError("Unsupported read-only Worker operation.")
+        try:
+            return VisualCheckResult(
+                binding=request.binding, status=result.status, evidence=result.evidence
+            )
+        except (ValueError, TypeError, AttributeError):
+            raise ProviderError("Model returned an invalid read-only visual assessment.") from None
 
     async def compare(self, before, after, action, *, diagnostics=None):
         # Runs on the same ProviderJobs thread as before; no nested thread pool.
