@@ -11,11 +11,10 @@ from pydantic import Field, field_validator, model_validator
 from monster.agent.contract_adapters import observation_frame
 from monster.agent.contracts import (
     ActionPayload,
-    ObservationFrame,
     Record,
-    Reference,
     model_reference,
 )
+from monster.agent.worker_results import WorkerBinding
 
 if TYPE_CHECKING:
     from monster.agent.worker import VisualContext
@@ -29,12 +28,8 @@ CHECK_PHASES = {
 }
 
 
-class VisualCheckBinding(Record):
-    request_ref: Reference
-    task_ref: Reference
+class VisualCheckBinding(WorkerBinding):
     operation: CheckOperation
-    model_ref: Reference
-    frame: ObservationFrame
 
 
 @dataclass(frozen=True)

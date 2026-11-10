@@ -34,8 +34,20 @@ from monster.agent.validation import (
     single_click_requested,
     window_close_requested,
 )
-from monster.agent.worker import BoundedWorker, ProposalRequest, VerificationRequest, VisualContext
+from monster.agent.worker import (
+    BoundedWorker,
+    ProposalRequest,
+    SceneRequest,
+    VerificationRequest,
+    VisualContext,
+)
 from monster.agent.worker_checks import CHECK_PHASES, VisualCheckRequest, VisualCheckResult
+from monster.agent.worker_results import (
+    WORKER_PHASES,
+    ActionVerificationResult,
+    ProposalResult,
+    SceneResult,
+)
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import OllamaProvider
@@ -311,9 +323,9 @@ class SupervisedController(TaskController):
         self._record("model_requested", job=job, operation=stage)
         return job
 
-    def _start_worker(self, operation, config, *, check_request=None):
+    def _start_worker(self, operation, config, *, request):
         job = self._start_model(operation)
-        self.worker_binding = (job, config, check_request)
+        self.worker_binding = (job, config, request)
         return job
 
     def _start_check(self, operation, instruction, observation, *, action=None, expected=None):
@@ -332,7 +344,7 @@ class SupervisedController(TaskController):
         return self._start_worker(
             lambda: self.worker.check(
                 self._provider(diagnostics, stage, call, step, config=config), request),
-            config, check_request=request)
+            config, request=request)
 
 
     def _start_input(self, operation, *args):
@@ -532,9 +544,14 @@ class SupervisedController(TaskController):
             self.scene_details = details
             self._record("scene_recheck_requested", before=previous_frame, after=self.log_frame)
 
-            self.job = self._start_model(
-                lambda: self.worker.compare(before, observation, action, diagnostics=details)
-            )
+            config = self.config
+            try:
+                request = SceneRequest.create(VisualContext(config.model, self.instruction, observation),
+                    before, action, generation=self.generation, task_ref=self.run_diagnostics.run_id)
+            except (ValueError, TypeError, AttributeError):
+                self.fail("Invalid Worker scene request; no further input authorized.")
+                return
+            self.job = self._start_worker(lambda: self.worker.compare(request), config, request=request)
             return
         if self.phase == "verifying_capture":
             retry_scene = self.verification_retry_scene
@@ -576,6 +593,7 @@ class SupervisedController(TaskController):
             try:
                 request = VerificationRequest.from_action(
                     VisualContext(config.model, instruction, observation), action, expected,
+                    generation=self.generation, task_ref=self.run_diagnostics.run_id,
                     before_image=before_image,
                 )
             except (ValueError, TypeError):
@@ -584,7 +602,7 @@ class SupervisedController(TaskController):
             self.job = self._start_worker(
                 lambda: self.worker.verify(
                     self._provider(diagnostics, "verifying", call, step, config=config), request,
-                ), config,
+                ), config, request=request,
             )
             return
         if self.phase != "observing":
@@ -608,11 +626,16 @@ class SupervisedController(TaskController):
         self.stage_changed.emit("Thinking")
         diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
         config = self.config
-        request = ProposalRequest(VisualContext(config.model, instruction, observation), history)
+        try:
+            request = ProposalRequest.create(VisualContext(config.model, instruction, observation),
+                generation=self.generation, task_ref=self.run_diagnostics.run_id, history=history)
+        except (ValueError, TypeError, AttributeError):
+            self.fail("Invalid Worker proposal request; no input authorized.")
+            return
         self.job = self._start_worker(
             lambda: self.worker.propose(
                 self._provider(diagnostics, "deciding", call, step, config=config), request,
-            ), config,
+            ), config, request=request,
         )
 
     def _model_result(self, job, result, error):
@@ -622,34 +645,58 @@ class SupervisedController(TaskController):
         if job != self.job or not self.active or self.paused:
             self._record("model_result_ignored", source_job=job)
             return
-        if self.phase in CHECK_PHASES.values() and (
+        if self.phase in WORKER_PHASES.values() and (
             self.worker_binding is None or self.worker_binding[0] != job
             or self.worker_binding[2] is None
         ):
-            self.fail("Visual check request binding unavailable; no further input authorized.")
+            self.fail("Worker request binding unavailable; no further input authorized.")
             return
         if self.worker_binding is not None and self.worker_binding[0] == job:
-            _, submitted_config, check_request = self.worker_binding
+            _, submitted_config, request = self.worker_binding
             self.worker_binding = None
             if self.config != submitted_config:
                 self._record("worker_result_rejected", reason="configuration_changed")
                 self.fail("Worker configuration changed while queued or running; no further input authorized.")
                 return
-            if check_request is not None and not error:
+            if not error:
                 try:
-                    result = VisualCheckResult.model_validate(result)
-                    binding = check_request.binding
-                    if (result.binding != binding
+                    if isinstance(request, ProposalRequest):
+                        outcome = ProposalResult.model_validate(result)
+                    elif isinstance(request, VerificationRequest):
+                        outcome = ActionVerificationResult.model_validate(result)
+                    elif isinstance(request, SceneRequest):
+                        outcome = SceneResult.model_validate(result)
+                    elif isinstance(request, VisualCheckRequest):
+                        outcome = VisualCheckResult.model_validate(result)
+                    else:
+                        raise TypeError("Unknown Worker request")
+                    binding = request.binding
+                    if (outcome.binding != binding
                             or binding.frame.controller_generation != self.generation
                             or binding.task_ref != self.run_diagnostics.run_id
-                            or CHECK_PHASES[binding.operation] != self.phase
-                            or check_request.context.observation != self.observation):
-                        raise ValueError("Changed visual check")
+                            or WORKER_PHASES[binding.operation] != self.phase
+                            or request.context.observation != self.observation):
+                        raise ValueError("Changed Worker request")
+                    if isinstance(request, (VerificationRequest, SceneRequest)) and (
+                        self.pending is None or request.action.to_action() != self.pending.action
+                    ):
+                        raise ValueError("Changed Worker action")
+                    if isinstance(request, VerificationRequest) and request.expected != self.verification_expected:
+                        raise ValueError("Changed Worker criterion")
                 except (ValueError, TypeError, AttributeError, KeyError):
-                    self._record("worker_result_rejected", reason="visual_check_binding")
-                    self.fail("Visual check result binding changed; no further input authorized.")
+                    self._record("worker_result_rejected", reason="request_binding")
+                    self.fail("Worker result binding changed; no further input authorized.")
                     return
-                self._record("visual_check_result", contract=result.model_dump(mode="json"))
+                self._record("worker_result_contract", contract=outcome.model_dump(mode="json"))
+                if isinstance(outcome, ProposalResult):
+                    result = outcome.to_decision()
+                elif isinstance(outcome, ActionVerificationResult):
+                    result = outcome.to_verification()
+                elif isinstance(outcome, SceneResult):
+                    self.scene_details = outcome.details()
+                    result = outcome.matched
+                else:
+                    result = outcome
         self.jobs.futures.pop(job, None)
         self.timings.finish(("model", job), "failed" if error else "completed")
         self._record("model_result", job=job, completed=not bool(error),

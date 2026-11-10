@@ -182,5 +182,7 @@ They do not qualify native Windows input or improve model visual recognition.
 The first bounded Worker extraction is implemented in [slice 2c](V4_BOUNDED_WORKER.md).
 It moves one-shot read-only operations while preserving this authorization path.
 Bound target/completion checks are now extracted in slice 2d of the same document.
-Consistent typed correlation for the remaining legacy Worker returns, grounding
+Slice 2e adds consistent typed correlation for all operational Worker returns.
+It also corrects standalone finalization to query actual unresolved effects,
+rather than treating all retained history as uncertainty. Grounding/verification
 benchmarks and Windows qualification remain next architecture work.

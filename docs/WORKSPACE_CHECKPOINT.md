@@ -9,7 +9,8 @@ chat, uploaded files, local caches, or cloud environment instance.
 - Development branch: `work` (do not assume these changes are on `main`).
 - Prior implementation baseline: `e4dafcf` — Journal standalone input before native dispatch.
 - Prior checkpoint: `d3c5eaf`; first Worker extraction: `d0773b1`.
-- Current implementation: `fb60812` — bound visual-check Worker follow-up,
+- Prior visual-check implementation/checkpoint: `fb60812` / `d89734f`.
+- Current implementation: the correlated Worker/finalization commit containing this checkpoint,
   on `work`; see [the extraction boundary](V4_BOUNDED_WORKER.md).
 - At checkpoint creation, the implementation was committed and pushed, with no
   unfinished code changes. No merge into `main` was performed.
@@ -76,6 +77,14 @@ requires requirements beyond this recorded scope.
    checks. Strict advisory outcomes bind the exact request, task, operation, model,
    captured frame and generation. Host checks configuration, phase and current
    observation; missing/forged bindings stop before input or completion.
+8. **Correlated operational outcomes:** slice 2e extends the same bindings to
+   proposal, action-verification and both-frame scene-comparison results. Private
+   proposal JSON snapshots retain exact risk/provenance without mutable payloads
+   or raw exports. Host action/criterion comparisons precede interpretation.
+9. **Resolved finalization:** standalone completion now queries actual unresolved
+   effects after `finish_attempt`; its returned history list is not an uncertainty
+   flag. Known-success records no longer cause false incomplete results. Unknown
+   effects, cleanup and failed-write barriers remain unchanged.
 
 Standalone uses one serialized metadata worker and the existing repository's
 exclusive `runtime.lock`; it does not introduce another database, scheduler or
@@ -107,6 +116,7 @@ effect. The **Review uncertain effects** control is the explicit handoff.
 | Qt lifecycle, authorization and input handoff | `src/monster/agent/controller.py` |
 | Bounded read-only inference, comparison and grounding | `src/monster/agent/worker.py` |
 | Bound target/completion requests and advisory outcomes | `src/monster/agent/worker_checks.py` |
+| Common bindings and typed operational result envelopes | `src/monster/agent/worker_results.py` |
 | Host review policy | `src/monster/agent/admission.py`, `validation.py` |
 | Standalone serialized journal lifecycle | `src/monster/agent/standalone_journal.py` |
 | Immutable operational contracts and legacy adapters | `src/monster/agent/contracts.py`, `contract_adapters.py` |
@@ -119,17 +129,22 @@ effect. The **Review uncertain effects** control is the explicit handoff.
 
 ## Next recommended implementation
 
-The first Worker extraction and its **bound target/completion check** follow-up
-are implemented. The next small slice is consistent typed request/result
-correlation for existing proposal, action-verification and scene-comparison Worker
-operations. Those still use legacy Decision/Verification/bool returns under the
-host job/configuration guards. Reuse the new advisory envelope pattern without
-replacing operational proposals, exact grants, effect receipts or the journal.
+All seven operational Worker result phases now require correlated typed outcomes.
+Next prioritize a labelled grounding/verification benchmark harness and native
+Windows qualification against the actual source/model/configuration. Measure
+wrong-target actions, duplicate attempts, false completion, verification
+false-positive/negative cases and latency; distinguish model, tool and executor
+errors. Use synthetic/private opt-in fixtures without default content persistence.
+Start with the focused unsent Slack draft workflow and disposable editor/canvas
+checks already described in the qualification documents. Do not enable guest or
+unrestricted desktop execution to demonstrate the architecture.
 
-The Worker remains stateless and read-only; the controller is the Qt lifecycle/UI
-adapter and LangGraph remains the outer orchestrator. Probe remains a controller
-compatibility operation; task interpretation, history/limits and all execution
-authority remain outside the Worker. No new worker thread or executor was added.
+The Worker remains stateless and read-only; Qt retains host interpretation,
+limits, lifecycle and authorization, and LangGraph remains the outer orchestrator.
+Provider probing is still a controller compatibility operation. Any further
+phase-handler consolidation must preserve this authority split. Later interactive
+orchestration, egress credentials and declarative skill work requires its own
+scope/qualification review; do not claim all of V4 is complete from these slices.
 
 Preserve these invariants during the extraction:
 
@@ -180,16 +195,23 @@ Preserve `uv.lock`; do not refresh dependencies just to resume development.
 
 Checkpoint baseline `d3c5eaf`: **1,155 passed, 3 skipped** in 149.49 seconds.
 Prior Worker extraction `d0773b1`: **1,167 passed, 3 skipped** in 156.21 seconds.
-Current visual-check follow-up: **1,202 passed, 3 skipped** in 161.57 seconds
-(`uv run --frozen pytest -q`, Linux offscreen Qt).
-All 35 new visual-check tests passed; focused controller/hands-free/drawing/launch/
-standalone/mission-dispatch regressions passed 286 tests.
+Prior visual-check follow-up: **1,202 passed, 3 skipped** in 161.57 seconds.
+Current correlation/finalization validation: **1,229 passed, 3 skipped** in
+397.96 seconds using `uv run --frozen pytest -vv -o faulthandler_timeout=30`
+(Linux offscreen Qt, serial process). All 27 new correlation/finalization cases
+passed within that run. This wall time is not a native/model latency benchmark.
+Prior slice 2d visual-check tests: 35 passed; its focused controller/hands-free/
+drawing/launch/standalone/mission-dispatch regressions passed 286 tests.
+Current slice 2e adds 27 correlation/finalization cases. Standalone/new-correlation
+regressions passed 57 tests before the final coverage additions; mission, drawing
+and grounding regressions passed 37 tests after compatibility/fixture fixes.
 `ruff check src tests`, compilation, startup smoke, new-file formatting and
 `git diff --check` passed. Startup emitted only the expected offscreen tray/raise
-warnings. Independent source review found no critical or important issues.
-Its constructor consistency finding was repaired with a RED-to-GREEN regression:
-mutable binding dictionaries are refused at construction, preserving the typed
-immutable request boundary.
+warnings. Independent source review of slice 2e found no critical or important
+issues and confirmed the finalization predicate. Its pending-action coverage
+suggestion was added for both verification and scene comparison. Slice 2d
+constructor consistency coverage remains intact: mutable binding dictionaries
+are refused at construction.
 The dedicated standalone journal tests cover committed intent at fake input
 handoff, real review provenance, privacy, blocked operations, duplicate IDs,
 stale/changed bindings, failed writes, finalization, cancellation/shutdown,
@@ -213,9 +235,10 @@ reset unresolved effects to force compatibility.
 
 > Continue Monster from branch `work`. Read `docs/WORKSPACE_CHECKPOINT.md` and the
 > linked V4 contract/authorization documents. Implementation baseline is
-> `e4dafcf`; Worker extraction and bound target/completion checks are implemented.
-> Inspect the current branch and changes first. Next recommended slice is extending
-> typed Worker correlation to proposal/action-verification/scene-comparison results,
+> `e4dafcf`; all operational Worker replies are now correlated and standalone
+> finalization distinguishes resolved history from uncertainty. Inspect the branch
+> and changes first. Next recommended work is labelled grounding/verification
+> benchmarks and native Windows qualification,
 > preserving shared durable admission, current automatic/review policy and all
 > input/cleanup checks. Do not merge `main` or expand native/guest permissions as
 > part of this handoff. Verify the implementation with the relevant existing

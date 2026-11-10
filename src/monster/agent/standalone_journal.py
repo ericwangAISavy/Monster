@@ -125,7 +125,8 @@ class StandaloneJournal(QObject):
         unresolved = False
         try:
             if self.effects is not None and self.session is not None:
-                unresolved = bool(self.effects.finish_attempt(self.session.task_ref))
+                self.effects.finish_attempt(self.session.task_ref)
+                unresolved = bool(self.effects.unresolved(self.session.task_ref))
         finally:
             if self.repository is not None:
                 self.repository.__exit__()

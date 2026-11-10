@@ -93,12 +93,12 @@ or mocked/offscreen. It establishes no physical Windows or real-model accuracy.
 
 ## Next small slice
 
-After slice 2d, extend the same typed request/result correlation to the existing
-proposal, action-verification and scene-comparison operations, which still return
-legacy Decision/Verification/bool values under host job/configuration guards.
-Keep host interpretation, action authorization and final completion separate.
-Grounding/verification benchmarks and native Windows qualification remain
-necessary before broader architecture or reliability claims.
+Slice 2e completes typed correlation for all operational Worker replies. Next,
+prioritize labelled grounding/verification benchmarks and native Windows
+qualification of the actual model/build/configuration. Keep host interpretation,
+action authorization and final completion separate. Further host phase-handler
+consolidation must not move authority into the Worker. Broader V4 capability work
+remains separately gated; this is not a declaration that all of V4 is complete.
 
 ## Slice 2d: bound target and completion checks
 
@@ -138,3 +138,74 @@ foreground guards), missing-binding refusal, no-intent/no-input failures,
 forged completion, cancellation and a late completion claim. Existing hands-free,
 launch, drawing, draft and durable authorization regressions remain applicable.
 Final full-suite evidence is recorded in the checkpoint.
+
+## Slice 2e: correlation for every operational Worker result
+
+Proposal, action verification and scene comparison now use the same correlation
+pattern as visual checks. `agent/worker_results.py` defines a shared versioned
+binding and strict advisory outcome types. `VisualCheckBinding` specializes that
+binding for its existing four-operation allowlist. No durable record/schema or
+authorization service is replaced.
+
+- `ProposalRequest.create` captures the exact model/frame/task/generation and
+  bounded history. `ProposalResult` stores a canonical, immutable RAM-only JSON
+  snapshot of the existing Decision fields. Risk hints, normalized-coordinate
+  provenance and the existing `done` completion alias are preserved exactly.
+  The provider JSON allowlist is unchanged; this preserves the legacy projection. Each host read yields a fresh Decision and
+  independent payload dictionaries. Neither raw action, summary, expectation nor
+  provenance is added to default result serialization.
+- `VerificationRequest` binds the image action and expected result. The binding
+  fingerprints optional reference-image bytes; this does not invent a missing
+  capture identity or claim independent verification. The host compares the
+  submitted action and criterion with its pending action/expectation before
+  interpreting `ActionVerificationResult`. Evidence remains a model assessment.
+- `SceneRequest` binds both actual captured frames and an immutable image action,
+  including both drag endpoints. `SceneResult` contains bounded, typed local
+  comparison metadata. The controller retains the existing two-second freshness,
+  reviewed-proposal, target and durable dispatch checks. A scene match is not a
+  semantic target proof or input grant.
+
+All seven operational result phases require the matching current request. Missing
+bindings and legacy raw Decision/Verification/bool fallbacks are refused. Exact
+nonce, task, phase/operation, model/configuration, generation and frame binding
+checks run before host interpretation. Changed pending actions or criteria also
+fail closed. Provider compatibility probing remains outside the operational
+Worker boundary; its migration is not claimed here.
+
+ProviderJobs still owns the single model/comparison thread. Worker calls remain
+one-shot, with no internal retries, scheduling or input authority. Capture-only
+`screenshot` proposals retain their previous read-only behavior and do not consume
+an input transaction. Existing proposal validation, original risk-alias checks,
+exact HMAC bindings, intent commits, receipts and cleanup barriers are unchanged.
+
+### Corrected standalone finalization
+
+A new end-to-end test exposed a pre-existing false-incomplete result. The shared
+coordinator's `finish_attempt()` returns **all retained attempt records**, including
+resolved successes. Standalone finalization incorrectly treated a non-empty
+return as unresolved. The ledger already contained `observed_success`, but the
+application reported that the action remained uncertain.
+
+Finalization now calls `finish_attempt()` and queries the same coordinator's
+`unresolved(task_ref)` predicate. It does not rewrite records, manufacture success,
+clear uncertainty or replay input. Verified outcomes can complete only after the
+existing host confirmation/visual conditions, journal finalization and cleanup.
+Unknown effects and failed writes still block completion. Regression coverage
+exercises automatic, reviewed and hands-free paths alongside existing explicit
+uncertain-effect/reconciliation tests.
+
+### Validation limits
+
+Tests cover private snapshot immutability, exact risk/provenance preservation,
+raw/missing/forged outcome refusal, both-frame scene correlation, pending-action
+and criterion changes, capture-only behavior, and resolved versus uncertain
+finalization. Detailed frozen-suite results are in the checkpoint. An initial
+focused cleanup timeout and an overlapping Qt run's native crash were preserved
+under `/tmp/correlation-debug.txt` and `/tmp/correlation-wide.txt` during this
+workspace session; they are not native qualification evidence. The serial run
+then exposed legacy `done` projection rejection, which was repaired without
+broadening provider permissions. A drawing fixture now timestamps each simulated
+capture freshly rather than reusing an aged prebuilt frame. Mission/drawing/
+grounding regressions passed 37 tests after these fixes. Final authoritative
+validation uses one serial process with per-test progress and stall tracebacks.
+No production limits or execution safeguards were increased to pass.

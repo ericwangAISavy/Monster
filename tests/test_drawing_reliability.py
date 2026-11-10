@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -146,7 +147,7 @@ def test_failed_early_launch_observes_later_window_and_draws_without_repeating_e
         frame = initial
         if engine.actions >= 2:
             frame = loading if engine.verification_launch_activation and engine.verification_retakes == 0 else ready
-        engine.observation_ready(frame, engine.generation)
+        engine.observation_ready(replace(frame, captured_at=time.monotonic()), engine.generation)
 
     model.verify_action = verify
     model.verify_drawing_target = target

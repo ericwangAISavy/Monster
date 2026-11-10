@@ -15,7 +15,9 @@ def test_worker_proposes_once_from_private_snapshot():
 
     frame = observation()
     context = VisualContext("original-model", "PRIVATE TASK", frame)
-    request = ProposalRequest(context, ("PRIVATE HISTORY",))
+    request = ProposalRequest.create(
+        context, generation=1, task_ref="task", history=("PRIVATE HISTORY",)
+    )
 
     class Provider:
         def __init__(self):
@@ -27,7 +29,7 @@ def test_worker_proposes_once_from_private_snapshot():
 
     provider = Provider()
     result = asyncio.run(BoundedWorker().propose(provider, request))
-    assert result.action == {"op": "press", "key": "ENTER"}
+    assert result.to_decision().action == {"op": "press", "key": "ENTER"}
     assert provider.calls == [
         ("original-model", "PRIVATE TASK", frame.png, 100, 100, ("PRIVATE HISTORY",))
     ]
@@ -44,6 +46,8 @@ def test_verification_snapshot_does_not_retain_mutable_action():
         VisualContext("model", "PRIVATE", observation()),
         action,
         "PRIVATE RESULT",
+        generation=1,
+        task_ref="task",
         before_image=b"before",
     )
     action["keys"].append("F4")
@@ -80,7 +84,10 @@ def test_worker_cancellation_propagates_without_retry():
         provider = Provider()
         task = asyncio.create_task(
             BoundedWorker().propose(
-                provider, ProposalRequest(VisualContext("model", "test", observation()))
+                provider,
+                ProposalRequest.create(
+                    VisualContext("model", "test", observation()), generation=1, task_ref="task"
+                ),
             )
         )
         await entered.wait()
@@ -211,8 +218,11 @@ def test_controller_worker_proposal_is_not_authority(qtbot, tmp_path):
     class ReadOnlyWorker(BoundedWorker):
         async def propose(self, provider, request):
             # A valid model result cannot skip the host's current per-step review.
-            return Decision(
-                "action", "Press Enter", {"op": "press", "key": "ENTER"}, risk="routine"
+            from monster.agent.worker_results import ProposalResult
+
+            return ProposalResult.from_decision(
+                request.binding,
+                Decision("action", "Press Enter", {"op": "press", "key": "ENTER"}, risk="routine"),
             )
 
     engine.worker = ReadOnlyWorker()
@@ -237,16 +247,18 @@ def test_worker_scene_comparison_and_model_assessment_do_not_assert_success():
 
     worker = BoundedWorker()
     frame = observation()
-    diagnostics = {}
-    assert not asyncio.run(
-        worker.compare(
-            frame,
-            replace(frame, foreground=88),
-            {"op": "press", "key": "ENTER"},
-            diagnostics=diagnostics,
-        )
+    from monster.agent.worker import SceneRequest, VisualContext
+
+    request = SceneRequest.create(
+        VisualContext("model", "task", replace(frame, foreground=88)),
+        frame,
+        {"op": "press", "key": "ENTER"},
+        generation=4,
+        task_ref="task",
     )
-    assert diagnostics
+    scene = asyncio.run(worker.compare(request))
+    assert scene.matched is False
+    assert scene.details()["reason"] == "foreground_changed_or_missing"
     decision = Decision(
         "action", "Press Enter", {"op": "press", "key": "ENTER"}, expected_result="Dialog closed"
     )
@@ -290,7 +302,10 @@ def test_worker_provider_failure_propagates_once():
     with pytest.raises(ConnectionError):
         asyncio.run(
             BoundedWorker().propose(
-                provider, ProposalRequest(VisualContext("model", "test", observation()))
+                provider,
+                ProposalRequest.create(
+                    VisualContext("model", "test", observation()), generation=1, task_ref="task"
+                ),
             )
         )
     assert provider.calls == 1
