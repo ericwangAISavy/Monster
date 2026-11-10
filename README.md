@@ -2,6 +2,10 @@
 
 **Universal AI Computer-Using Agent**
 
+Continuing development in another workspace? Read the
+[workspace checkpoint](docs/WORKSPACE_CHECKPOINT.md) for the current branch,
+verified implementation state, setup commands and next V4 step.
+
 Monster is an AI-powered desktop agent that can visually understand and autonomously operate Windows applications using screenshots, mouse movements, and keyboard interactions.
 
 Its mission is simple:
