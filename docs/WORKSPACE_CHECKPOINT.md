@@ -9,7 +9,7 @@ chat, uploaded files, local caches, or cloud environment instance.
 - Development branch: `work` (do not assume these changes are on `main`).
 - Prior implementation baseline: `e4dafcf` — Journal standalone input before native dispatch.
 - Prior checkpoint: `d3c5eaf`; first Worker extraction: `d0773b1`.
-- Current implementation: the bound visual-check Worker follow-up commit containing this checkpoint,
+- Current implementation: `fb60812` — bound visual-check Worker follow-up,
   on `work`; see [the extraction boundary](V4_BOUNDED_WORKER.md).
 - At checkpoint creation, the implementation was committed and pushed, with no
   unfinished code changes. No merge into `main` was performed.
@@ -180,12 +180,16 @@ Preserve `uv.lock`; do not refresh dependencies just to resume development.
 
 Checkpoint baseline `d3c5eaf`: **1,155 passed, 3 skipped** in 149.49 seconds.
 Prior Worker extraction `d0773b1`: **1,167 passed, 3 skipped** in 156.21 seconds.
-Current visual-check follow-up: FINAL_CHECK_VALIDATION_PENDING.
+Current visual-check follow-up: **1,202 passed, 3 skipped** in 161.57 seconds
+(`uv run --frozen pytest -q`, Linux offscreen Qt).
 All 35 new visual-check tests passed; focused controller/hands-free/drawing/launch/
 standalone/mission-dispatch regressions passed 286 tests.
 `ruff check src tests`, compilation, startup smoke, new-file formatting and
 `git diff --check` passed. Startup emitted only the expected offscreen tray/raise
 warnings. Independent source review found no critical or important issues.
+Its constructor consistency finding was repaired with a RED-to-GREEN regression:
+mutable binding dictionaries are refused at construction, preserving the typed
+immutable request boundary.
 The dedicated standalone journal tests cover committed intent at fake input
 handoff, real review provenance, privacy, blocked operations, duplicate IDs,
 stale/changed bindings, failed writes, finalization, cancellation/shutdown,

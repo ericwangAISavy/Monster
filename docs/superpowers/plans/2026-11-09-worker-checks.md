@@ -20,11 +20,28 @@ Copied request IDs with changed frame/model/generation must fail. Ready/succeede
 
 ## Steps
 
-- [ ] Write failing Worker tests for each explicit operation, immutable action snapshots, result schema/status/privacy and cancellation.
-- [ ] Implement typed visual-check request/binding/result and one-shot Worker dispatch with explicit allowlisted operations.
-- [ ] Write host binding-refusal tests, then delegate draft/canvas/launch/completion checks through the same ProviderJobs thread and configuration binding.
-- [ ] Run controller, hands-free, drawing, app-launch and durable authorization regressions; fix reproducible failures.
-- [ ] Run full frozen suite, lint/compile/startup/diff checks; independent review and meaningful regression fixes.
-- [ ] Update checkpoint and boundary docs; commit and push work normally without merging main.
+- [x] Write failing Worker tests for each explicit operation, immutable action snapshots, result schema/status/privacy and cancellation.
+- [x] Implement typed visual-check request/binding/result and one-shot Worker dispatch with explicit allowlisted operations.
+- [x] Write host binding-refusal tests, then delegate draft/canvas/launch/completion checks through the same ProviderJobs thread and configuration binding.
+- [x] Run controller, hands-free, drawing, app-launch and durable authorization regressions; fix reproducible failures.
+- [x] Run full frozen suite, lint/compile/startup/diff checks; independent review and meaningful regression fixes.
+- [x] Update checkpoint and boundary docs; commit and push work normally without merging main.
 
 User authorized this concrete next incremental slice. No additional design approval round is required.
+
+## Verification ledger
+
+Baseline: d0773b1, 1,167 passed / 3 skipped. New operations first failed because
+VisualCheckRequest/check were absent, then passed. Host lost-binding regression
+reproduced actual fake text input before the refusal gate and now yields zero
+intent/input. Independent review reported no critical/important findings; its
+constructor consistency observation was fixed with a failing-then-passing strict
+type regression. New checks: 35 passed. Focused controller/launch/drawing/hands-free/
+standalone/mission-dispatch tests: 286 passed. Final frozen suite after all fixes:
+1,202 passed, 3 skipped in 161.57s. Frozen sync, lint, formatting, compileall,
+startup smoke and diff checks passed. Native/model qualification remains pending.
+
+No new scheduler, executor, ledger, schema migration or permission was introduced.
+The user's standing delivery instruction selects a normal push to work without
+a merge to main. Code commit: fb60812; checkpoint validation saved in the
+following documentation commit.
