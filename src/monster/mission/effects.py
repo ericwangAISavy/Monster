@@ -368,6 +368,73 @@ class EffectCoordinator:
                 self.revoke(eid)
             raise
 
+    def standalone_intent(self, ctx, grounded, *, instruction, approve_each_step, hands_free, decision,
+                          reviewed_digest=None, reviewed_ref=None):
+        """Commit one host-admitted standalone effect; never creates mission approval."""
+        from types import SimpleNamespace
+
+        from monster.agent.admission import admit_action
+        from monster.agent.contracts import GroundedAction
+        from monster.agent.keyboard import terminal_window_requested
+        from monster.agent.validation import (
+            prepare_action,
+            validate_proposal_intent,
+            window_close_requested,
+        )
+        from monster.providers.base import Decision
+
+        grounded = GroundedAction.model_validate(grounded)
+        proposal = grounded.proposal
+        if (proposal.preview_only or proposal.mission_ref is not None or proposal.subtask_ref is not None
+                or proposal.task_ref != ctx['mission_id']
+                or proposal.frame.controller_generation != ctx['controller_generation']
+                or not all(ctx.get(k) is True for k in ('active', 'lease_valid', 'cleanup_healthy'))):
+            raise ValueError('Standalone task admission mismatch')
+        action = proposal.action.to_action()
+        if (not isinstance(decision, Decision) or decision.kind != 'action'
+                or decision.action != action or decision.summary != proposal.target_description
+                or (decision.expected_result or decision.summary) != proposal.expected_result
+                or ('routine' if decision.risk in ('low', 'benign') else decision.risk) != proposal.model_risk_hint):
+            raise ValueError('Standalone proposal changed before admission')
+        validate_proposal_intent(decision, instruction)
+        checked = grounded.checked_frame
+        physical = prepare_action(action, SimpleNamespace(bounds=checked.bounds,
+                                  displays=checked.displays, foreground=checked.foreground_guard),
+                                  allow_window_close=window_close_requested(instruction),
+                                  allow_terminal_window=terminal_window_requested(instruction))
+        if physical != grounded.physical_action.to_action():
+            raise ValueError('Standalone physical action changed')
+        admission = admit_action(decision, instruction, approve_each_step=approve_each_step,
+                                 hands_free=hands_free, action_gate=False)
+        digest = self._proposal_digest(proposal)
+        if admission.disposition == 'stop' or (admission.disposition == 'review' and (reviewed_digest != digest or not reviewed_ref)):
+            raise ValueError('Standalone exact review is unavailable')
+        source = 'standalone_human' if admission.disposition == 'review' else 'standalone_automatic'
+        e = Effect(schema_version=4, authorization_source=source,
+                   authorization_ref=reviewed_ref if source == 'standalone_human' else proposal.task_ref,
+                   effect_id=grounded.effect_ref, mission_id=proposal.task_ref, subtask_id='standalone',
+                   attempt_id=ctx['attempt_id'], workspace_id=ctx['workspace_id'], generation=ctx['generation'],
+                   target_ref=ctx['target_ref'], category='unknown', status='dispatch_intent_recorded',
+                   action_contract_digest=digest, action_ref=proposal.action_id, task_ref=proposal.task_ref,
+                   controller_generation=checked.controller_generation, action_kind=action['op'],
+                   objective_ref='standalone-task', action_digest=self.digest(action),
+                   observation_ref=checked.capture_ref, scene_ref=ctx['scene_ref'],
+                   policy_version=admission.policy_version, created_at=self.clock(), expires_at=self.clock()+2,
+                   fingerprint=self.digest({'contract': digest, 'source': source, 'context': ctx,
+                                            'instruction': instruction, 'risk': decision.risk, 'review_ref': reviewed_ref,
+                                            'approve_each_step': approve_each_step, 'hands_free': hands_free}))
+        self._dispatch_contract(e, ctx, action, grounded)
+        with self.c:
+            self.c.execute('BEGIN IMMEDIATE')
+            if any(prior.workspace_id == e.workspace_id for prior in self.unresolved()):
+                raise ValueError('Unresolved effect requires reconciliation')
+            if any(prior.action_ref == e.action_ref for prior in self.records()):
+                raise ValueError('Operational action already registered')
+            self.c.execute('INSERT INTO action_effects VALUES (?,?,?,?)',
+                           (e.effect_id, e.mission_id, e.attempt_id, e.model_dump_json()))
+            self._event(e, 'dispatch_intent_recorded', source)
+        return e
+
     def revoke(self, eid, *, decision="revoked"):
         if decision not in ("revoked", "denied", "expired"):
             raise ValueError("Invalid revocation decision")
@@ -381,6 +448,11 @@ class EffectCoordinator:
                 "not_dispatched",
                 "uncertain",
             ):
+                return e
+            if e.schema_version == 4:
+                e = e.model_copy(update={'status': 'uncertain' if e.status in UNRESOLVED else 'not_dispatched'})
+                self._save(e)
+                self._event(e, e.status)
                 return e
             existing = self.approval(eid)
             resolved_decision = "expired" if existing.expires_at <= self.clock() else decision

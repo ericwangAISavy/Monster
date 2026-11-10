@@ -82,6 +82,13 @@ class SupervisedController(TaskController):
         self.generation = 0
         self.phase = "idle"
         self.mission_cancel_event = None
+        self.standalone_lease_valid = lambda: False
+        self.standalone_journal = None
+        self.standalone_run = False
+        self.standalone_nonce = None
+        self.standalone_finish_nonce = None
+        self.standalone_cleanup_result = None
+        self.standalone_finished = False
         self.action_gate = False
         self.mission_review_limit = None
         self.review_count = 0
@@ -164,6 +171,15 @@ class SupervisedController(TaskController):
         self.active, self.paused = True, False
         self.generation += 1
         self.run_generation = self.generation
+        self.standalone_run = self.standalone_journal is not None and not self.action_gate
+        self.standalone_nonce = None
+        self.standalone_finished = False
+        self.standalone_finish_nonce = self.standalone_cleanup_result = None
+        if self.standalone_run:
+            from monster.agent.standalone_journal import StandaloneSession
+            self.standalone_journal.begin(StandaloneSession(
+                self.run_diagnostics.run_id, self.generation, self.instruction,
+                self.config.approve_each_step, self.config.hands_free))
         self.history = []
         self.failed_actions = []
         self.inserted_text = set()
@@ -257,7 +273,7 @@ class SupervisedController(TaskController):
         self._bound_diagnostic(event, self.model_diagnostic_origins, event.get("job"), "model")
 
     def _worker_diagnostic(self, event):
-        if self.action_gate and event.get("event") == "dispatch_to_worker" and event.get("job") == self.input_job:
+        if (self.action_gate or self.standalone_run) and event.get("event") == "dispatch_to_worker" and event.get("job") == self.input_job:
             self._effect_event("started")
         self._bound_diagnostic(event, self.input_diagnostic_origins,
                                event.get("job", event.get("source_open_job")), "input")
@@ -310,6 +326,12 @@ class SupervisedController(TaskController):
         if job != self.input_job:
             self._record("input_result_ignored", source_job=job)
             return
+        if self.phase == 'closing' and self.standalone_run and not self.standalone_finished:
+            if self.standalone_finish_nonce is None:
+                self.standalone_cleanup_result = (job, result, error)
+                self.standalone_finish_nonce = uuid.uuid4().hex
+                self.standalone_journal.finish(self.generation, self.standalone_finish_nonce)
+            return
         receipt = (
             {key: result[key] for key in ("status", "events", "error", "error_source", "cleanup_ok", "cursor_physical_after", "cursor_observation_error") if key in result}
             if isinstance(result, dict) else {"confirmed": bool(result)}
@@ -322,7 +344,7 @@ class SupervisedController(TaskController):
                 self.grounded_contract, result, job, error=bool(error),
                 started_at=self.contract_handoff_started_at, received_at=time.monotonic(),
             ))
-        if self.phase == "executing" and self.action_gate:
+        if self.phase == "executing" and (self.action_gate or self.standalone_run):
             self._effect_event("receipt", inserted=not error and isinstance(result, dict)
                                and result.get("status") == "inserted")
         if self.phase == "executing":
@@ -739,7 +761,7 @@ class SupervisedController(TaskController):
                 self.phase = 'verifying_capture'
                 self._schedule_capture(750 * self.verification_retakes if launch_wait else 350)
                 return
-            if self.action_gate:
+            if self.action_gate or self.standalone_run:
                 # Keep the receipt awaiting observation during the bounded read-only
                 # recheck. Once finalized, uncertainty still requires reconciliation.
                 self._effect_event("observe", status=result.status,
@@ -1058,7 +1080,7 @@ class SupervisedController(TaskController):
         return self._record_contract("grounded_action_contract", lambda: grounded_from_checked(
             self.pending_contract, self.observation, action,
             generation=self.generation, frame_ref=self.log_frame,
-            effect_ref=self.effect_action_id if self.action_gate else None,
+            effect_ref=self.effect_action_id if (self.action_gate or self.standalone_run) else None,
         ))
 
     def _dispatch_checked_action(self, action):
@@ -1066,7 +1088,24 @@ class SupervisedController(TaskController):
             self.fail("Mission authorization gate changed; no input was dispatched.")
             return
         self.contract_handoff_started_at = time.monotonic()
-        if self.action_gate:
+        if self.standalone_journal is not None and not self.action_gate and not self.standalone_run:
+            self.fail('Standalone authorization gate changed; no input dispatched.')
+            return
+        if self.standalone_run and (self.action_gate or not self.standalone_lease_valid()):
+            self.fail('Standalone desktop lease or mode changed; no input authorized.')
+            return
+        if self.standalone_run and self.phase != 'standalone_authorized':
+            self.effect_action_id = uuid.uuid4().hex
+            self.grounded_contract = self._mapped_contract(action)
+            if self.grounded_contract is None:
+                self.fail('Operational contract unavailable; no input authorized.')
+                return
+            self.standalone_nonce = uuid.uuid4().hex
+            self.phase = 'standalone_intent'
+            self.stage_changed.emit('Checking action')
+            self.standalone_journal.intent(self.grounded_contract, self.standalone_nonce, deepcopy(self.pending))
+            return
+        if self.action_gate or self.standalone_run:
             try:
                 mapped = GroundedAction.model_validate(self.grounded_contract)
                 if (mapped.physical_action.to_action() != action or mapped.proposal != self.pending_contract
@@ -1097,7 +1136,54 @@ class SupervisedController(TaskController):
             list(self.observation.displays),
         )
 
+    def standalone_reply(self, reply):
+        if (self.phase == 'closing' and self.standalone_finish_nonce is not None
+                and reply.get('nonce') == self.standalone_finish_nonce
+                and reply.get('generation') == self.generation):
+            self.standalone_finished = True
+            self.standalone_finish_nonce = None
+            unresolved_completion = (reply.get('unresolved') and self.terminal and self.terminal[0] == 'complete')
+            if not reply.get('allowed') or unresolved_completion:
+                from dataclasses import replace
+                message = ('Stopped incomplete: an action remains uncertain; review its effect before continuing.'
+                           if unresolved_completion else
+                           'Stopped incomplete: journal update failed; inspect unresolved effects before continuing.')
+                self.terminal = ('error', message)
+                if self.terminal_report is not None:
+                    self.terminal_report = replace(self.terminal_report, terminal_kind='error')
+                if self.run_diagnostics is not None:
+                    self.run_diagnostics.outcome.update(status='error', stage='closing', reason=message)
+            result, self.standalone_cleanup_result = self.standalone_cleanup_result, None
+            self._input_result(*result)
+            return
+        if not self.active or reply.get('generation') != self.generation or not self.standalone_run:
+            return
+        if not reply.get('allowed'):
+            self.fail('Journal unavailable or authorization refused. No new input authorized; inspect unresolved effects.')
+            return
+        if reply.get('nonce') is None:
+            return
+        if self.phase != 'standalone_intent' or reply.get('nonce') != self.standalone_nonce:
+            return
+        if (self.paused or not self.standalone_lease_valid() or reply.get('effect_id') != self.effect_action_id
+                or self.observation is None or not 0 <= time.monotonic()-self.observation.captured_at <= 2
+                or not self._reviewed_proposal_matches()):
+            self.fail('Task changed while recording intent; inspect before continuing.')
+            return
+        try:
+            action = self._prepare_action(self.pending.action, self.observation)
+            self._validate_draft_proposal()
+        except (ValueError, TypeError):
+            self.fail('Action changed after durable intent.')
+            return
+        self.standalone_nonce = None
+        self.phase = 'standalone_authorized'
+        self._dispatch_checked_action(action)
+
     def _effect_event(self, operation, **data):
+        if self.standalone_run and self.effect_action_id:
+            self.standalone_journal.event(operation, self.effect_action_id, self.generation, **data)
+            return
         if self.effect_action_id:
             self.effect_requested.emit({"operation": operation, "effect_id": self.effect_action_id,
                                         "nonce": None, **data})
@@ -1180,6 +1266,8 @@ class SupervisedController(TaskController):
             return
         if self.phase == "clarifying":
             self.instruction = (self.instruction + "\nUser clarification: " + answer[:1000])[:3000]
+            if self.standalone_run:
+                self.standalone_journal.clarify(self.instruction, self.generation)
             self.restore_focus = self.observation.foreground
             self.phase = "observing"
             self._capture()
@@ -1230,6 +1318,11 @@ class SupervisedController(TaskController):
             self.human_result_confirmed = True
             self._terminate("complete", "Completed · visible result confirmed by you")
         elif self.phase == "approval":
+            if self.standalone_run:
+                if not self._reviewed_proposal_matches() or self.pending_contract is None:
+                    self.fail('Exact review contract unavailable.')
+                    return
+                self.standalone_journal.review(self.pending_contract, request_id)
             self._begin_recheck(restore=True)
 
     def _validate_draft_proposal(self):
@@ -1367,7 +1460,7 @@ class SupervisedController(TaskController):
             self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
-        if self.action_gate:
+        if self.action_gate or self.standalone_run:
             self._effect_event("revoke")
         from monster.agent.terminal import ExecutionReport
         self.terminal_report = ExecutionReport(
@@ -1420,3 +1513,5 @@ class SupervisedController(TaskController):
         self.cancel()
         self.jobs.close()
         self.input.shutdown()
+        if self.standalone_journal is not None:
+            self.standalone_journal.close()

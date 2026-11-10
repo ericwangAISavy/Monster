@@ -1,4 +1,4 @@
-# V4 slice 2a: durable operational binding for mission input
+# V4 shared durable action authorization
 
 ## Delivered boundary
 
@@ -7,11 +7,9 @@ fresh mapped action from slice 1. The existing `EffectCoordinator`, approval
 service, SQLite ledger, Qt bridge and input worker remain the execution path.
 There is no second ledger, scheduler, grant authority or cursor owner.
 
-This is the mission-side prerequisite of the shared-authority migration, not a
-claim that standalone execution has been migrated. Standalone tasks retain their
-existing policy and projection behavior. Their different routine-action vocabulary
-must be admitted explicitly in the next migration; the narrow mission policy is
-not silently imposed on them or widened to match them.
+Slice 2a established the mission-side prerequisite. The standalone migration below
+now admits its different routine-action vocabulary explicitly; the narrow mission
+policy is not imposed on standalone tasks or widened to match them.
 
 ## Preparation and exact review
 
@@ -90,8 +88,8 @@ a separate SQLite connection confirms that the bound intent is already committed
 Missing contracts, changed post-intent contracts and changed gate mode all produce
 zero input. These tests do not qualify physical Windows behavior.
 
-Remaining slice 2 work includes standalone durable task admission and explicit
-mode-specific policy preservation, followed by bounded Worker extraction. Native
+Remaining slice 2 work includes bounded Worker extraction after the standalone
+admission described below. Native
 Windows qualification, grounding/verification benchmarks, cloud-egress grants and
 ADR006 guest-native integration remain separate gates. Existing unknown DPI,
 worker-generation and session metadata are not made known by this change.
@@ -112,14 +110,74 @@ sensitive summaries, uncertain model assessments, drawing intent and shortcut
 review retain their previous behavior. Non-boolean host settings and non-action
 proposals are rejected. Provider output cannot select a mode.
 
-This change is a bounded policy-extraction prerequisite, **not standalone durable
-execution**. Standalone actions still have no durable intent. Connecting their
-admission result to the shared journal requires a runtime lifecycle that does not
-open a second ledger owner, plus an explicit automatic-authorization source that
-cannot masquerade as human approval. The mission demo's narrow scratch policy
+The extraction was a prerequisite; the following migration connects it to durable
+standalone execution. It requires a runtime lifecycle that does not open a second
+ledger owner and an automatic-authorization source that cannot masquerade as
+human approval. The mission demo's narrow scratch policy
 remains unchanged; no automatic grants are synthesized by this extraction.
 
 Policy tests exercise every combination of per-step review, hands-free and mission
 gating, with routine launch actions and sensitive/uncertain escalations. Existing
 controller, hands-free and durable mission integration tests verify the actual
 execution path separately.
+
+
+## Slice 2b: standalone durable dispatch
+
+The application attaches `StandaloneJournal` to its supervised controller using
+that application's existing `missions/ledger.sqlite3`. A serialized background
+worker opens the existing `Repository` and `EffectCoordinator`; SQLite never runs
+on the Qt thread. The repository's exclusive `runtime.lock` remains the authority
+for ledger ownership. An inactive mission runtime is closed before manual work;
+if retirement is pending the application asks the user to retry shortly. A busy
+ledger refuses input. There is no second database, scheduler or input executor.
+
+A host-created, immutable standalone session pins task identity, controller
+generation, instruction and review-mode settings. Provider decisions cannot
+select a session or change its mode. User clarification updates the in-memory
+instruction and clears old review proofs. Exact human action review records the
+bound proposal digest and request reference; automatic admission creates no
+human approval record. Existing validation and `controller-review-v1` execute
+again on the journal worker against the original decision, including legacy risk
+aliases, so canonical risk normalization cannot weaken review. Draft/canvas,
+scene, operation and physical input checks remain in their existing paths.
+
+After grounding, the controller requests intent for a fresh mapped contract. The
+shared coordinator verifies the session, exact proposal/decision, native mapping,
+fresh observation and review policy. Within one immediate transaction it rejects
+unresolved effects or reused action IDs and inserts the bound intent. Only the
+matching asynchronous reply can reach input, after another check of the desktop
+lease, task generation, scene age and reviewed proposal. Cancellation, changed
+contracts, failed writes and unavailable storage produce no new input. A commit
+followed by cancellation is conservatively uncertain; it is never replayed.
+
+Version 4 effects add `authorization_source` (`standalone_automatic` or
+`standalone_human`) and an `authorization_ref` (task submission or exact review
+request). The fingerprint also binds the instruction, original risk and mode
+settings through a process-keyed digest. Raw instructions, actions, screenshots,
+target descriptions and criteria remain outside the ledger. `category=unknown`
+avoids claiming semantic safety from the existing routine-action review policy.
+Mission version 3 effects and exact approval rules are unchanged. SQL schema 6
+and the existing action-effect/audit tables remain in use; standalone does not
+synthesize mission rows or mission approvals. Older versions of the application
+cannot read version 4 records; the full-state backup/rollback requirements above
+also apply here. Unknown record versions and missing authorization sources fail
+closed.
+
+Worker receipts and final visual observations use the existing journal methods.
+The controller waits for queued journal finalization and input cleanup before
+reporting completion or releasing its workspace lease. A final write failure
+reports an incomplete task and retains unresolved intent. Restart recovery also
+leaves possibly dispatched effects uncertain. The existing **Review uncertain
+effects** control opens the shared reconciliation flow; human attestation does
+not restart or repeat input. Default standalone diagnostic export behavior is
+unchanged; the durable journal itself is content-free.
+
+Tests use the real controller and shared SQLite service with synthetic frames and
+fake input. They check committed intent from a separate connection at handoff,
+automatic versus actual review provenance, blocked operations, stale or changed
+contracts, duplicate IDs, lock/write failures, late observation failure,
+cancellation/shutdown with queued intent, restart uncertainty and reconciliation.
+They do not qualify native Windows input or improve model visual recognition.
+Bounded Worker extraction, grounding benchmarks and Windows qualification remain
+next architecture work.

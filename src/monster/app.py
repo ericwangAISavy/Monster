@@ -170,6 +170,12 @@ class CompanionApp:
                 ]
             )
         if isinstance(controller, SupervisedController):
+            from monster.agent.standalone_journal import StandaloneJournal
+            controller.standalone_journal = StandaloneJournal(self.config_path.parent / 'missions', controller)
+            controller.standalone_journal.replied.connect(controller.standalone_reply)
+            controller.standalone_lease_valid = lambda: (
+                self.manual_lease is not None and self.workspace_gate.current == self.manual_lease
+                and not self.workspace_gate.quarantined and self.manual_generation == controller.run_generation)
             bindings.append((controller.worker_owned, self._worker_ownership))
             bindings.append((controller.terminal_ready, self._manual_terminal))
         for signal, callback in bindings:
@@ -461,6 +467,12 @@ class CompanionApp:
         if self.mission_runtime and self.mission_runtime.engaged:
             self.notice("Mission owns this task · stop it before starting another.")
             return
+        if self.mission_runtime and getattr(self.controller, 'is_supervised', False):
+            self.mission_runtime.close()
+            if self.mission_runtime.thread.is_alive():
+                self.notice('Previous mission journal is closing · retry shortly.')
+                return
+            self.mission_runtime = None
         if (self.isolation.busy or self.active or not instruction.strip()
                 or getattr(self.controller, "phase", None) == "closing"):
             return

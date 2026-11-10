@@ -144,7 +144,10 @@ class TaskResult(Contract):
 
 
 class Effect(Contract):
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
+    authorization_ref: Ref | None = Field(default=None, exclude_if=lambda value: value is None)
+    authorization_source: Literal['standalone_automatic', 'standalone_human'] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
     action_contract_digest: Ref | None = Field(default=None, exclude_if=lambda value: value is None)
     action_ref: Ref | None = Field(default=None, exclude_if=lambda value: value is None)
     task_ref: Ref | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -183,7 +186,7 @@ class Effect(Contract):
 
     @model_validator(mode="after")
     def versioned_binding(self):
-        if self.schema_version in (2, 3) and any(
+        if self.schema_version in (2, 3, 4) and any(
             getattr(self, name) is None
             for name in (
                 "attempt_id",
@@ -201,10 +204,13 @@ class Effect(Contract):
         ):
             raise ValueError("Version2 effect requires immutable security bindings")
         contract_fields = (self.action_contract_digest, self.action_ref, self.task_ref, self.controller_generation)
-        if self.schema_version == 3 and any(value is None for value in contract_fields):
+        if self.schema_version >= 3 and any(value is None for value in contract_fields):
             raise ValueError("Version3 effect requires operational contract bindings")
         if self.schema_version < 3 and any(value is not None for value in contract_fields):
             raise ValueError("Operational bindings require effect version3")
+        if ((self.schema_version == 4) != (self.authorization_source is not None)
+                or (self.schema_version == 4) != (self.authorization_ref is not None)):
+            raise ValueError('Standalone source requires effect version4')
         return self
 
 
