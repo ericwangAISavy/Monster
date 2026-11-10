@@ -274,3 +274,5 @@ See [workspace architecture / ADR006](docs/PHASE6_WORKSPACE_ARCHITECTURE.md),
 [manual VM guide](docs/PHASE6_VM_SETUP.md), [security review](docs/PHASE6_SECURITY_MODEL.md),
 [operations and recovery](docs/PHASE6_OPERATIONS_AND_RECOVERY.md), and
 [native qualification](docs/WINDOWS_PHASE6_QUALIFICATION.md).
+
+V4 stage 3: [read-only grounding and verification benchmarks](docs/V4_STAGE3_RELIABILITY_BENCHMARKS.md), with replay and opt-in selected-model measurement kept separate from native qualification.

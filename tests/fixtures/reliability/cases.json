@@ -1,0 +1,505 @@
+{
+  "version": 1,
+  "split": "synthetic",
+  "label_source": "application_owned_synthetic",
+  "cases": [
+    {
+      "id": "focused-type",
+      "scenario": "editor-focused",
+      "operation": "grounding",
+      "instruction": "Type \"Hello from Monster\" in the focused composer. Do not send.",
+      "image": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          -1000,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "oracle": {
+        "kind": "action",
+        "op": "text",
+        "text_sha256": "78a653831bb890add69ce52879ddc01ebf87ca4c560a553996fead76f911c465"
+      },
+      "recorded_response": "{\"kind\": \"action\", \"summary\": \"Synthetic recorded proposal\", \"action\": {\"op\": \"text\", \"text\": \"Hello from Monster\"}, \"risk\": \"routine\", \"expected_result\": \"Requested visible step\"}"
+    },
+    {
+      "id": "visible-target",
+      "scenario": "editor-visible",
+      "operation": "grounding",
+      "instruction": "Click once on the Message placeholder text in the composer. Do not click Send.",
+      "image": {
+        "path": "empty-150.png",
+        "sha256": "c30dbd35cd9b935025de1fb2339484c17bf5786831b6abafd7f8e057509ddb90",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 150
+      },
+      "oracle": {
+        "kind": "action",
+        "op": "click",
+        "region_px": [
+          322,
+          765,
+          180,
+          62
+        ],
+        "button": "left",
+        "count": 1
+      },
+      "recorded_response": "{\"kind\": \"action\", \"summary\": \"Synthetic recorded proposal\", \"action\": {\"op\": \"click\", \"x\": 75, \"y\": 975, \"button\": \"left\", \"count\": 1}, \"risk\": \"routine\", \"expected_result\": \"Requested visible step\"}"
+    },
+    {
+      "id": "duplicate-proposal",
+      "scenario": "duplicate-text",
+      "operation": "grounding",
+      "instruction": "Type \"Hello from Monster\" once in the focused composer. Do not send.",
+      "image": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "oracle": {
+        "kind": "action",
+        "op": "text",
+        "text_sha256": "78a653831bb890add69ce52879ddc01ebf87ca4c560a553996fead76f911c465"
+      },
+      "recorded_response": "{\"kind\": \"action\", \"summary\": \"Synthetic recorded proposal\", \"action\": {\"op\": \"text\", \"text\": \"Hello from MonsterHello from Monster\"}, \"risk\": \"routine\", \"expected_result\": \"Requested visible step\"}"
+    },
+    {
+      "id": "drag-target",
+      "scenario": "canvas-drag",
+      "operation": "grounding",
+      "instruction": "Drag from the center of marker A to the center of marker B inside the canvas.",
+      "image": {
+        "path": "canvas-targets-125.png",
+        "sha256": "2b3fcf34697dd2f6a7cb1f00f0551e9134bf22aeae37f384642c70a1dc3c3239",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 125
+      },
+      "oracle": {
+        "kind": "action",
+        "op": "drag",
+        "region_px": [
+          360,
+          360,
+          30,
+          30
+        ],
+        "end_region_px": [
+          835,
+          485,
+          30,
+          30
+        ]
+      },
+      "recorded_response": "{\"kind\": \"action\", \"summary\": \"Synthetic recorded proposal\", \"action\": {\"op\": \"drag\", \"x\": 375, \"y\": 375, \"end_x\": 625, \"end_y\": 125}, \"risk\": \"routine\", \"expected_result\": \"Requested visible step\"}"
+    },
+    {
+      "id": "obscured-target",
+      "scenario": "ambiguous-composer",
+      "operation": "grounding",
+      "instruction": "Type \"Hello from Monster\" in the composer. Do not send.",
+      "image": {
+        "path": "obscured-100.png",
+        "sha256": "6fce6f3660e3ce36449d7d16ccfa8ee7f7fc2c23e1bbd821e8f3f88cb363a452",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "oracle": {
+        "kind": "needs_user"
+      },
+      "recorded_response": "{\"kind\": \"clarify\", \"summary\": \"Target is obscured\"}"
+    },
+    {
+      "id": "search-not-done",
+      "scenario": "app-search",
+      "operation": "grounding",
+      "instruction": "Press Enter once to open the highlighted Notepad application result.",
+      "image": {
+        "path": "search-100.png",
+        "sha256": "45807c44f2acce5894fa6e729828a2ecbfc4399687596202eecc94e94aed0839",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "oracle": {
+        "kind": "action",
+        "op": "press",
+        "key": "ENTER"
+      },
+      "recorded_response": "{\"kind\": \"complete\", \"summary\": \"Notepad is open\"}"
+    },
+    {
+      "id": "exact-draft",
+      "scenario": "exact-draft",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "exact-100.png",
+        "sha256": "ea1081fbebe43f12c61bc980e63dc8135c4d5d25b34beb11bd7759794c162ec3",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "text",
+        "text": "Hello from Monster"
+      },
+      "expected": "Exactly one Hello from Monster is visible in the intended composer, unsent.",
+      "truth": "succeeded",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "empty-draft",
+      "scenario": "empty-draft",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "text",
+        "text": "Hello from Monster"
+      },
+      "expected": "Exactly one Hello from Monster is visible in the intended composer, unsent.",
+      "truth": "failed",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "wrong-field",
+      "scenario": "wrong-field",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "wrong-field-150.png",
+        "sha256": "972e43e5e656407f8780632835e976866cd069407aa452cbf63ae5106e24c02d",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 150
+      },
+      "before": {
+        "path": "focused-150.png",
+        "sha256": "4ff74424107ab7cfe7d530ae085d8d12c8e5e4caea0e6ae65b9d9301522db73f",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 150
+      },
+      "action": {
+        "op": "text",
+        "text": "Hello from Monster"
+      },
+      "expected": "Exactly one Hello from Monster is visible in the intended composer, unsent.",
+      "truth": "failed",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "duplicate-draft",
+      "scenario": "duplicate-draft",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "duplicate-100.png",
+        "sha256": "6dceb91e6342a3b158ea349285bc8eaaff9784de09bad5b8f003c11b936128eb",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "text",
+        "text": "Hello from Monster"
+      },
+      "expected": "Exactly one Hello from Monster is visible in the intended composer, unsent.",
+      "truth": "failed",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "sent-message",
+      "scenario": "sent-instead-of-draft",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "sent-100.png",
+        "sha256": "d8deed17b47eefbe13675fe25925f528367b92d4e5179eb12a004ae743d7a89b",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "text",
+        "text": "Hello from Monster"
+      },
+      "expected": "Exactly one Hello from Monster is visible in the intended composer, unsent.",
+      "truth": "failed",
+      "recorded_response": "{\"status\": \"uncertain\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "obscured-draft",
+      "scenario": "ambiguous-composer",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "obscured-100.png",
+        "sha256": "6fce6f3660e3ce36449d7d16ccfa8ee7f7fc2c23e1bbd821e8f3f88cb363a452",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "text",
+        "text": "Hello from Monster"
+      },
+      "expected": "Exactly one Hello from Monster is visible in the intended composer, unsent.",
+      "truth": "uncertain",
+      "recorded_response": "{\"status\": \"uncertain\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "focus-click",
+      "scenario": "focus-only",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "focused-100.png",
+        "sha256": "36cc96d238ef09d3612adc16caff1fa780a96b1f461b6a7d4818aff132352dba",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "empty-100.png",
+        "sha256": "cfa5c7081d03b28e12c47bad372d788a2d13c5830b014cb0a012d4aab8b66b59",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "click",
+        "x": 420,
+        "y": 540,
+        "button": "left",
+        "count": 1
+      },
+      "expected": "The intended composer gained focus, with a visible caret. No text insertion is required for this click.",
+      "truth": "succeeded",
+      "recorded_response": "{\"status\": \"failed\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "weather-click",
+      "scenario": "wrong-target",
+      "operation": "action_verification",
+      "instruction": "Type \"Hello from Monster\" into the currently open composer. Do not send.",
+      "image": {
+        "path": "weather-100.png",
+        "sha256": "bf28faddaf8edfe89196d2bd9fd3dba520ced86ebb2da89a74d66a2de9ebbe95",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "empty-100.png",
+        "sha256": "cfa5c7081d03b28e12c47bad372d788a2d13c5830b014cb0a012d4aab8b66b59",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "click",
+        "x": 70,
+        "y": 660,
+        "button": "left",
+        "count": 1
+      },
+      "expected": "The intended message composer gained focus.",
+      "truth": "failed",
+      "recorded_response": "{\"status\": \"failed\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "canvas-line",
+      "scenario": "canvas-correct",
+      "operation": "action_verification",
+      "instruction": "Draw one line inside the open canvas.",
+      "image": {
+        "path": "canvas-line-200.png",
+        "sha256": "71d1b26a5bbaaab42a9f8258b3827eebdfbc3431ac58378205e28b870e6906a9",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 200
+      },
+      "before": {
+        "path": "canvas-empty-200.png",
+        "sha256": "d78c70ed1f3d60583c0761ce25e30422f7be56b804af472b14d7655bb0321ee5",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 200
+      },
+      "action": {
+        "op": "drag",
+        "x": 600,
+        "y": 600,
+        "end_x": 1360,
+        "end_y": 800
+      },
+      "expected": "One line is visible inside the intended canvas.",
+      "truth": "succeeded",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "canvas-toolbar",
+      "scenario": "canvas-wrong-target",
+      "operation": "action_verification",
+      "instruction": "Draw one line inside the open canvas.",
+      "image": {
+        "path": "canvas-wrong-100.png",
+        "sha256": "fd4f577dc53fde458d96a831f01108f130968a359bb945909f941cf69ea087b9",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "before": {
+        "path": "canvas-empty-100.png",
+        "sha256": "c1dfebe4e82790cc851d799d0ee6606a55d6d735c39dd4be96a3bf0217c4d072",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "action": {
+        "op": "drag",
+        "x": 300,
+        "y": 300,
+        "end_x": 680,
+        "end_y": 400
+      },
+      "expected": "One line is visible inside the intended canvas.",
+      "truth": "failed",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "search-only",
+      "scenario": "app-window",
+      "operation": "completion",
+      "instruction": "Open Notepad in its own usable foreground window, not merely a search result.",
+      "image": {
+        "path": "search-100.png",
+        "sha256": "45807c44f2acce5894fa6e729828a2ecbfc4399687596202eecc94e94aed0839",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "truth": "failed",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    },
+    {
+      "id": "window-open",
+      "scenario": "app-window",
+      "operation": "completion",
+      "instruction": "Open Notepad in its own usable foreground window, not merely a search result.",
+      "image": {
+        "path": "editor-100.png",
+        "sha256": "ae42715afd5b845bb450031cf27fe682cef434d6679f47b1dce4210b3ce24347",
+        "origin_px": [
+          0,
+          0
+        ],
+        "dpi_percent": 100
+      },
+      "truth": "succeeded",
+      "recorded_response": "{\"status\": \"succeeded\", \"evidence\": \"Recorded synthetic assessment\"}"
+    }
+  ]
+}

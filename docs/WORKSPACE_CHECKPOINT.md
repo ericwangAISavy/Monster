@@ -10,8 +10,10 @@ chat, uploaded files, local caches, or cloud environment instance.
 - Prior implementation baseline: `e4dafcf` — Journal standalone input before native dispatch.
 - Prior checkpoint: `d3c5eaf`; first Worker extraction: `d0773b1`.
 - Prior visual-check implementation/checkpoint: `fb60812` / `d89734f`.
-- Current implementation: the correlated Worker/finalization commit containing this checkpoint,
-  on `work`; see [the extraction boundary](V4_BOUNDED_WORKER.md).
+- Prior correlated Worker/finalization implementation: `c191266`.
+- Current implementation: the stage 3 read-only benchmark commit containing this
+  checkpoint, on `work`; see [stage 3](V4_STAGE3_RELIABILITY_BENCHMARKS.md) and
+  [the extraction boundary](V4_BOUNDED_WORKER.md).
 - At checkpoint creation, the implementation was committed and pushed, with no
   unfinished code changes. No merge into `main` was performed.
 
@@ -130,7 +132,7 @@ effect. The **Review uncertain effects** control is the explicit handoff.
 ## Next recommended implementation
 
 All seven operational Worker result phases now require correlated typed outcomes.
-Next prioritize a labelled grounding/verification benchmark harness and native
+Stage 3 tooling now exists; next run labelled real-model measurements and native
 Windows qualification against the actual source/model/configuration. Measure
 wrong-target actions, duplicate attempts, false completion, verification
 false-positive/negative cases and latency; distinguish model, tool and executor
@@ -162,7 +164,7 @@ Preserve these invariants during the extraction:
 - Retain screenshots/mouse/keyboard interaction. Do not add DOM, app APIs,
   clipboard automation or shell-command execution as a shortcut.
 
-Later work includes grounding/verification benchmarks and Windows qualification,
+Remaining evidence work includes live grounding/verification measurements and Windows qualification,
 then separately qualified interactive orchestration, provider/egress credentials
 and declarative skills. Guest-native execution remains blocked by ADR006 transport
 and qualification prerequisites; do not bypass the simulation-only guest boundary.
@@ -196,7 +198,7 @@ Preserve `uv.lock`; do not refresh dependencies just to resume development.
 Checkpoint baseline `d3c5eaf`: **1,155 passed, 3 skipped** in 149.49 seconds.
 Prior Worker extraction `d0773b1`: **1,167 passed, 3 skipped** in 156.21 seconds.
 Prior visual-check follow-up: **1,202 passed, 3 skipped** in 161.57 seconds.
-Current correlation/finalization validation: **1,229 passed, 3 skipped** in
+Prior correlation/finalization validation: **1,229 passed, 3 skipped** in
 397.96 seconds using `uv run --frozen pytest -vv -o faulthandler_timeout=30`
 (Linux offscreen Qt, serial process). All 27 new correlation/finalization cases
 passed within that run. This wall time is not a native/model latency benchmark.
@@ -237,9 +239,52 @@ reset unresolved effects to force compatibility.
 > linked V4 contract/authorization documents. Implementation baseline is
 > `e4dafcf`; all operational Worker replies are now correlated and standalone
 > finalization distinguishes resolved history from uncertainty. Inspect the branch
-> and changes first. Next recommended work is labelled grounding/verification
-> benchmarks and native Windows qualification,
+> and changes first. Stage 3 read-only benchmark tooling and synthetic replay are
+> implemented. Next recommended work is live selected-model measurements on
+> labelled fixtures/held-out data, followed by native Windows qualification,
 > preserving shared durable admission, current automatic/review policy and all
 > input/cleanup checks. Do not merge `main` or expand native/guest permissions as
 > part of this handoff. Verify the implementation with the relevant existing
 > controller, standalone journal and mission authorization tests.
+
+## Stage 3 read-only measurement slice
+
+`src/monster/benchmarks/reliability.py` reuses the existing BoundedWorker and
+OllamaProvider without capture, input, ledger or permission changes.
+`reliability_cases.py` validates bounded hashed PNG manifests; synthetic cases,
+recordings and their reproducible generator live in `tests/fixtures/reliability`.
+Run commands and metric semantics are in the linked stage 3 document.
+
+The 54-trial replay completed and detected intentional recording faults. It is
+not a model benchmark or Windows qualification. The read-only private Ollama
+access probe returned HTTP 403, so availability was not established; no live
+inference or configuration change was performed. Native qualification remains
+pending. Metadata reports keep replay/injected/live modes separate and leave
+unmeasured native/executor metrics null.
+
+One initial full-suite run stalled in the existing mission graph compiler before
+reaching the new benchmark tests and was terminated; its faulthandler traceback
+was preserved at `/tmp/stage3-full.txt` in this workspace. A preliminary overlapping
+focused controller run also had three cleanup wait timeouts. These runs are not
+counted as passing evidence. No production limits or checks were loosened.
+
+Stage 3 verification: `uv sync --frozen`, `ruff check src tests`, formatting of
+all four new Python files, compilation, startup smoke and staged diff checks
+passed. Linux read-only native preflight reported unavailable, with no capture
+or input. The first completed full run reported **1,250 passed, 3 skipped,
+3 failed** in 414.37 seconds. Failures were existing launch-review cleanup,
+UI-Venus deadline timing and guest-stop timing tests. All three complete affected
+modules then passed together: **31 passed in 18.24 seconds**, with no code or
+limit changes between runs. All **24 new benchmark tests** passed both in isolation
+(18.08 seconds) and in the completed full run. Preserve these intermittent failures
+rather than claiming every run passed. Logs remain under `/tmp/stage3-full-final.txt`
+and `/tmp/stage3-timing-rerun.txt` in this workspace.
+
+Final serial confirmation, with no production code or timeout changes after the
+prior run: **1,253 passed, 3 skipped in 307.29 seconds** using
+`uv run --frozen pytest -vv -o faulthandler_timeout=30` (Linux offscreen Qt).
+All three previously failing tests passed. Full per-test diagnostics are at
+`/tmp/stage3-full-confirmation.txt` in this workspace. Those temporary logs are
+not needed to reproduce the checked-in tests and are not qualification evidence.
+This is the final authoritative regression run for this slice, while the earlier
+intermittent failures remain documented above.

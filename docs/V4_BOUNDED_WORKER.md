@@ -94,8 +94,8 @@ or mocked/offscreen. It establishes no physical Windows or real-model accuracy.
 ## Next small slice
 
 Slice 2e completes typed correlation for all operational Worker replies. Next,
-prioritize labelled grounding/verification benchmarks and native Windows
-qualification of the actual model/build/configuration. Keep host interpretation,
+use the stage 3 read-only benchmark tooling for labelled real-model measurements,
+then native Windows qualification of the actual model/build/configuration. Keep host interpretation,
 action authorization and final completion separate. Further host phase-handler
 consolidation must not move authority into the Worker. Broader V4 capability work
 remains separately gated; this is not a declaration that all of V4 is complete.
@@ -209,3 +209,9 @@ capture freshly rather than reusing an aged prebuilt frame. Mission/drawing/
 grounding regressions passed 37 tests after these fixes. Final authoritative
 validation uses one serial process with per-test progress and stall tracebacks.
 No production limits or execution safeguards were increased to pass.
+
+## Next stage
+
+[Stage 3 benchmark tooling](V4_STAGE3_RELIABILITY_BENCHMARKS.md) measures this same
+Worker boundary without input authority. Real-model measurements and stage 4
+Windows qualification remain pending; the benchmark never changes execution gates.
