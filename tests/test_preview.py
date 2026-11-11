@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from PySide6.QtCore import QTimer
 
 from monster.computer.contracts import Bounds
@@ -433,6 +434,57 @@ def test_settings_check_report_identifies_internal_runtime_exception(qtbot):
         assert "internal_exception" in report
         assert "RuntimeError" in report
         assert "private payload" not in report
+        assert dialog.probed_config is None
+    finally:
+        dialog.jobs.close()
+
+
+@pytest.mark.parametrize("fresh_probe", [True, False])
+@pytest.mark.parametrize("initial_hands_free", [True, False])
+def test_hands_free_policy_saves_without_invalidating_model_check(qtbot, fresh_probe, initial_hands_free):
+    from dataclasses import replace
+    cfg = replace(config(), mode="supervised", hands_free=initial_hands_free)
+    dialog = ProviderSettings(cfg, provider_factory=FakeProvider)
+    qtbot.addWidget(dialog)
+    saved = []
+    dialog.saved.connect(saved.append)
+    try:
+        if fresh_probe:
+            dialog.probe()
+            qtbot.waitUntil(lambda: dialog.pending is None)
+        dialog.hands_free.setChecked(not initial_hands_free)
+        dialog.apply()
+        assert len(saved) == 1
+        assert saved[0].hands_free is not initial_hands_free
+        if saved[0].hands_free:
+            assert saved[0].approve_each_step is False
+        dialog.context_size.setValue(cfg.context_size + 512)
+        dialog.apply()
+        assert len(saved) == 1  # Actual model settings still require a fresh check.
+    finally:
+        dialog.jobs.close()
+
+
+@pytest.mark.parametrize("negative", ["vision", "structured", "model", "none", "boolean"])
+def test_settings_rejects_negative_or_wrong_model_probe_results(qtbot, negative):
+    from dataclasses import replace
+    class InvalidProvider(FakeProvider):
+        async def probe(self, model):
+            if negative == "none":
+                return None
+            if negative == "boolean":
+                return True
+            return ProbeResult("another-model" if negative == "model" else model,
+                               "abc", "test", negative != "vision", negative != "structured")
+    dialog = ProviderSettings(replace(config(), mode="supervised"), provider_factory=InvalidProvider)
+    qtbot.addWidget(dialog)
+    saved = []
+    dialog.saved.connect(saved.append)
+    try:
+        dialog.probe()
+        qtbot.waitUntil(lambda: dialog.pending is None)
+        dialog.apply()
+        assert not saved
         assert dialog.probed_config is None
     finally:
         dialog.jobs.close()

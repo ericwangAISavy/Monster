@@ -748,3 +748,43 @@ def test_unknown_cleanup_quarantine_survives_guest_restart(tmp_path):
             assert not g.runner.calls
 
     asyncio.run(scenario())
+
+
+def test_resume_after_stop_projects_current_review_and_running_state(tmp_path):
+    async def scenario():
+        async with GuestService(tmp_path, descriptor(), clock=FakeClock()) as g:
+            h = await client(g)
+            await h.start()
+            await h.stop()
+            assert h.stop_state == "confirmed"
+            assert "Stop confirmed" in h.projection()["message"]
+            await h.resume(g.mission_id)
+            assert h.challenge is not None
+            assert h.stop_state == "not_requested"
+            assert "Waiting for your approval" in h.projection()["message"]
+            await h.approve(human_choice="approve")
+            assert "Stop confirmed" not in h.projection()["message"]
+            await g._mission_task
+    asyncio.run(scenario())
+
+
+def test_session_change_status_is_not_hidden_by_historical_stop(tmp_path):
+    async def scenario():
+        async with GuestService(tmp_path, descriptor(), clock=FakeClock()) as g:
+            h = await client(g)
+            await h.stop()
+            h.status = h.status.model_copy(update={"reason": "session_changed"})
+            assert "requalification" in h.projection()["message"]
+    asyncio.run(scenario())
+
+
+def test_refused_new_work_preserves_confirmed_stop(tmp_path):
+    async def scenario():
+        async with GuestService(tmp_path, descriptor(), clock=FakeClock()) as g:
+            h = await client(g)
+            await h.stop()
+            g.session_ready = False
+            result = await h.start()
+            assert result.result == "error"
+            assert h.stop_state == "confirmed"
+    asyncio.run(scenario())

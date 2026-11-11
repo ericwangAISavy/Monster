@@ -165,6 +165,10 @@ class InputExecutor:
                 confirm_arrival(target)
             if op == "click":
                 for i in range(action.get("count", 1)):
+                    # Arrival was checked above for the first click. A user may
+                    # take over during the inter-click wait; never steer back.
+                    if i:
+                        confirm_arrival(target)
                     button_down()
                     emit("mouse", button, False)
                     if i == 0 and action.get("count") == 2:

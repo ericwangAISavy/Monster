@@ -13,8 +13,10 @@ chat, uploaded files, local caches, or cloud environment instance.
 - Prior correlated Worker/finalization implementation: `c191266`.
 - Prior stage 3 benchmark tooling: `23b1af1`.
 - Prior stage 4 evidence assessor: `0980901` (confirmed on remote `work`).
-- Current implementation: the correlated compatibility-probe follow-up commit
-  containing this checkpoint, on `work`; see [stage 4](V4_STAGE4_NATIVE_TRIALS.md),
+- Prior correlated compatibility probe: `950b6a6`.
+- Current implementation: the whole-branch review/repair commit containing this
+  checkpoint, on `work`; see [review findings](REVIEW_2026_11_11.md),
+  [stage 4](V4_STAGE4_NATIVE_TRIALS.md),
   [stage 3](V4_STAGE3_RELIABILITY_BENCHMARKS.md) and
   [the extraction boundary](V4_BOUNDED_WORKER.md).
 - At checkpoint creation, the implementation was committed and pushed, with no
@@ -397,3 +399,28 @@ Final frozen serial suite for the compatibility follow-up: **1,336 passed,
 new-file formatting, startup smoke and diff checks passed. Startup emitted only
 expected offscreen tray/raise warnings. Commit/push target remains `work`, with
 no merge into `main`. Actual Windows and live-model qualification remain pending.
+
+## Whole-branch review and repairs
+
+See `docs/REVIEW_2026_11_11.md` for inspected scope and concrete reproductions.
+Repairs cover four defects: settings compatibility policy comparison, invalid UI
+probe acceptance/cache, pointer takeover between double-click events, and stale
+host guest-stop projection after resumed work/session changes. Existing shared
+ledger/intent, cleanup, review/hands-free policies and native/guest gates remain
+intact. No settings/model fallback, timeout/limit increase or new execution path.
+
+Affected-module confirmation: **175 passed in 38.37s**. Probe/forged-envelope
+coverage: **27 passed in 0.52s**; the prior deferred forged flag/metadata/authority
+variants are now covered and refused before desktop capture. Independent final
+repair review found no important issues. Earlier focused transport/Qt/input
+failures and the corrected start-versus-resume fixture are documented in the
+review report. No failed run is represented as passing. Native Windows and
+actual-model grounding/verification evidence remain pending.
+
+Final review-repair frozen serial suite: **1,353 passed, 3 skipped in 360.38
+seconds** (`uv run --frozen pytest -vv -o faulthandler_timeout=30`, Linux offscreen
+Qt). Log: `/tmp/whole-review-full.txt`. Frozen setup, lint, compilation, startup
+smoke and diff checks passed. Source review and synthetic regressions do not
+qualify physical Windows or actual model reliability. Exact earlier focused
+failure names are retained in the review report. Changes are committed/pushed
+to `work` in the commit containing this checkpoint; no merge into `main`.

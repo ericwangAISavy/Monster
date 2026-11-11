@@ -84,6 +84,13 @@ class HostWorkspaceClient:
                 self.stop_state = (
                     "confirmed" if reply.status.cleanup == "confirmed" else "cleanup_unknown"
                 )
+            elif (
+                command.op in ("START_MISSION", "RESUME_MISSION", "APPROVAL_RESPONSE")
+                and reply.result in ("challenge", "accepted")
+                and reply.error == "none"
+            ):
+                # A prior stop acknowledged a prior execution cycle, not this one.
+                self.stop_state = "not_requested"
             self.audit.append({"operation": command.op, "result": reply.result})
             return reply
         except Exception:  # noqa: BLE001 -- arbitrary transport exceptions may contain secrets.
@@ -174,6 +181,14 @@ class HostWorkspaceClient:
             self.status and self.status.cleanup == "unknown"
         ):
             text = "Unknown cleanup; inspect VM before reuse"
+        elif self.status and self.status.reason in (
+            "session_changed",
+            "display_changed",
+            "provider_changed",
+            "restored",
+            "clock_changed",
+        ):
+            text = "Guest session unavailable; requalification required"
         elif self.stop_state == "confirmed":
             text = (
                 "Stop confirmed by simulated guest; unresolved action requires reconciliation"
@@ -184,14 +199,6 @@ class HostWorkspaceClient:
             text = "Waiting for your approval · simulation"
         elif self.status and self.status.unresolved:
             text = "Unresolved action; reconciliation required"
-        elif self.status and self.status.reason in (
-            "session_changed",
-            "display_changed",
-            "provider_changed",
-            "restored",
-            "clock_changed",
-        ):
-            text = "Guest session unavailable; requalification required"
         elif self.status and self.status.state == "paused":
             text = "Paused · simulated guest disarmed"
         else:

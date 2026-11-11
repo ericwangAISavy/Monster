@@ -23,9 +23,15 @@ from PySide6.QtWidgets import (
 )
 
 from monster.agent.diagnostics import RUNTIME
+from monster.agent.worker_probe import CompatibilityResult, ProbeRequest
 from monster.providers.config import OllamaConfig
 from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import PROBE_STAGES, OllamaProvider
+
+
+def compatibility_config(config):
+    """Model compatibility is independent of local execution/review policy."""
+    return replace(config, mode="demo", approve_each_step=True, hands_free=False)
 
 
 class ProviderSettings(QDialog):
@@ -59,7 +65,7 @@ class ProviderSettings(QDialog):
         # Existing active configurations are checked again by the task controller.
         # Saving only local execution policy should not require another UI probe.
         self.probed_config = (
-            replace(config, mode="demo", approve_each_step=True)
+            compatibility_config(config)
             if config.mode in {"preview", "supervised"}
             else None
         )
@@ -392,7 +398,7 @@ class ProviderSettings(QDialog):
             **self.inference_values(),
         )
         config.validate()
-        return config
+        return compatibility_config(config)
 
     def probe(self):
         try:
@@ -413,6 +419,13 @@ class ProviderSettings(QDialog):
             return
         self.jobs.futures.pop(job, None)
         operation = self.operation
+        if operation == "probe" and not error:
+            try:
+                request = ProbeRequest.create(self._probe_value, generation=self.request_serial,
+                                              task_ref="settings-compatibility")
+                CompatibilityResult.from_probe(request, result)
+            except (ValueError, TypeError, AttributeError):
+                error = "Vision + JSON probe failed: invalid or mismatched compatibility result."
         self._check_record("failed" if error else "completed", error or operation)
         self.cancel_request()
         if error:
@@ -444,9 +457,8 @@ class ProviderSettings(QDialog):
             config = self.value()
             if self.pending:
                 raise ValueError("Wait for the current check or cancel it before saving.")
-            if config.mode in {"preview", "supervised"} and self.probed_config != replace(
-                config, mode="demo", approve_each_step=True
-            ):
+            if (config.mode in {"preview", "supervised"}
+                    and self.probed_config != compatibility_config(config)):
                 raise ValueError(
                     "Run and pass the vision + JSON probe for these exact settings first."
                 )

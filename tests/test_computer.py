@@ -407,3 +407,29 @@ def test_drag_final_pointer_takeover_is_partial_and_releases_owned_button():
     assert result['status'] == 'partial_or_unknown'
     assert backend.events[-1] == ('mouse', 'left', False)
     assert not executor.owned and not executor.armed
+
+
+def test_pointer_takeover_between_double_clicks_prevents_second_down_without_replay():
+    backend, executor, generation = armed()
+    backend.cursor = (10, 10)
+    downs = []
+    def takeover():
+        if backend.events[-1] == ("mouse", "left", True):
+            downs.append(backend.cursor)
+        if backend.events[-1] == ("mouse", "left", False):
+            backend.cursor = (90, 90)
+    backend.on_event = takeover
+    result = executor.execute({"op": "click", "x": 10, "y": 10, "count": 2}, generation)
+    assert result["status"] == "partial_or_unknown"
+    assert downs == [(10, 10)]
+    assert backend.cursor == (90, 90)  # Never steer back after human takeover.
+    assert not executor.armed and not executor.owned and result["cleanup_ok"]
+
+
+def test_stable_double_click_keeps_two_complete_clicks():
+    backend, executor, generation = armed()
+    backend.cursor = (10, 10)
+    result = executor.execute({"op": "click", "x": 10, "y": 10, "count": 2}, generation)
+    assert result["status"] == "inserted"
+    assert [e for e in backend.events if e[0] == "mouse"] == [("mouse", "left", True), ("mouse", "left", False)] * 2
+    assert not executor.owned

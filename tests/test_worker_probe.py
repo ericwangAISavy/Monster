@@ -133,7 +133,19 @@ def test_controller_rejects_error_free_invalid_probe_before_capture(qtbot, value
 
 
 @pytest.mark.parametrize(
-    "mutation", ["nonce", "raw", "lost", "config", "generation", "task", "phase"]
+    "mutation",
+    [
+        "nonce",
+        "raw",
+        "lost",
+        "config",
+        "generation",
+        "task",
+        "phase",
+        "forged_flag",
+        "forged_metadata",
+        "forged_authority",
+    ],
 )
 def test_controller_refuses_stale_probe_results(qtbot, mutation):
     from test_supervised import controller
@@ -145,6 +157,12 @@ def test_controller_refuses_stale_probe_results(qtbot, mutation):
 
     async def altered(provider, request):
         result = await original(provider, request)
+        if mutation == "forged_flag":
+            return result.model_copy(update={"vision_verified": 1})
+        if mutation == "forged_metadata":
+            return result.model_copy(update={"server_version": " "})
+        if mutation == "forged_authority":
+            return result.model_copy(update={"execution_authority": "granted"})
         if mutation == "nonce":
             return result.model_copy(
                 update={"binding": result.binding.model_copy(update={"request_ref": "wrong"})}
