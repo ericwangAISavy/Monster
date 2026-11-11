@@ -169,8 +169,8 @@ All seven operational result phases require the matching current request. Missin
 bindings and legacy raw Decision/Verification/bool fallbacks are refused. Exact
 nonce, task, phase/operation, model/configuration, generation and frame binding
 checks run before host interpretation. Changed pending actions or criteria also
-fail closed. Provider compatibility probing remains outside the operational
-Worker boundary; its migration is not claimed here.
+fail closed. Provider compatibility probing was outside this boundary at slice 2e. The
+compatibility follow-up below now binds the operational controller path.
 
 ProviderJobs still owns the single model/comparison thread. Worker calls remain
 one-shot, with no internal retries, scheduling or input authority. Capture-only
@@ -215,3 +215,42 @@ No production limits or execution safeguards were increased to pass.
 [Stage 3 benchmark tooling](V4_STAGE3_RELIABILITY_BENCHMARKS.md) measures this same
 Worker boundary without input authority. Real-model measurements and stage 4
 Windows qualification remain pending; the benchmark never changes execution gates.
+
+## Correlated compatibility-probe follow-up
+
+The operational controller now submits compatibility checks through the same
+stateless BoundedWorker and ProviderJobs queue. `worker_probe.py` supplies an
+immutable request/config snapshot and a strict no-frame result. It binds nonce,
+task, controller generation, selected model and the full configuration digest.
+No desktop observation is fabricated for this synthetic-image operation.
+
+Previously, any error-free object (including None/True, negative flags or a result
+for another model) advanced to desktop capture. The queued provider closure also
+read current controller configuration instead of its submitted snapshot. A
+regression reproduced the provider being constructed with changed settings.
+
+The Worker now requires the existing ProbeResult type, exact selected model,
+explicit true boolean vision/structured checks, and bounded metadata. The host
+requires the matching current request, config, task, generation and probing phase
+before capture. Lost, raw or changed results fail closed and retain ordinary
+cancellation/cleanup. The legacy metadata projection follows validated conversion;
+no execution grant or native/model qualification is created. The result's evidence
+kind is explicitly a synthetic compatibility check, not control reliability.
+
+The provider's existing random synthetic image, schema check, HTTP behavior,
+timeout, diagnostics and cancellation remain intact. There are no internal retries
+or model/settings changes. Settings-dialog connection/vision testing is still its
+separate existing UI path; this slice changes the operational controller only.
+No executor, durable ledger, permission, routine Enter/click or review policy changed.
+Source changes require fresh matching qualification evidence as usual.
+
+Focused frozen regressions passed 251 tests, including 24 new probe cases. The
+queued-config regression failed with the old closure, then passed with the exact
+snapshot restored. Existing supervised tests cover successful capture, original
+foreground binding and cancellation. Independent source review found no critical
+or important findings. An optional forged-envelope constructor test gap is
+recorded in the checkpoint. Native Windows and real-model validation remain pending.
+
+Final compatibility follow-up regression suite: **1,336 passed, 3 skipped in
+169.11 seconds** (Linux offscreen, fake providers/input). Lint, compilation and
+startup checks passed. These are portable regression results only.

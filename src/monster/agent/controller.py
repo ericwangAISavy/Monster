@@ -42,6 +42,7 @@ from monster.agent.worker import (
     VisualContext,
 )
 from monster.agent.worker_checks import CHECK_PHASES, VisualCheckRequest, VisualCheckResult
+from monster.agent.worker_probe import CompatibilityResult, ProbeRequest
 from monster.agent.worker_results import (
     WORKER_PHASES,
     ActionVerificationResult,
@@ -482,8 +483,16 @@ class SupervisedController(TaskController):
         self.state_changed.emit(State.THINKING)
         self.stage_changed.emit("Model check")
         diagnostics = self.run_diagnostics
-        self.job = self._start_model(
-            lambda: self._provider(diagnostics, "probing").probe(self.config.model)
+        config = self.config
+        try:
+            request = ProbeRequest.create(config, generation=self.generation,
+                                          task_ref=diagnostics.run_id)
+        except (ValueError, TypeError, AttributeError):
+            self.fail("Invalid Worker compatibility request; no capture or further input authorized.")
+            return
+        self.job = self._start_worker(
+            lambda: self.worker.probe(self._provider(diagnostics, "probing", config=config), request),
+            config, request=request,
         )
 
     def _schedule_capture(self, delay_ms=350):
@@ -645,7 +654,7 @@ class SupervisedController(TaskController):
         if job != self.job or not self.active or self.paused:
             self._record("model_result_ignored", source_job=job)
             return
-        if self.phase in WORKER_PHASES.values() and (
+        if (self.phase == "probing" or self.phase in WORKER_PHASES.values()) and (
             self.worker_binding is None or self.worker_binding[0] != job
             or self.worker_binding[2] is None
         ):
@@ -660,23 +669,32 @@ class SupervisedController(TaskController):
                 return
             if not error:
                 try:
-                    if isinstance(request, ProposalRequest):
-                        outcome = ProposalResult.model_validate(result)
-                    elif isinstance(request, VerificationRequest):
-                        outcome = ActionVerificationResult.model_validate(result)
-                    elif isinstance(request, SceneRequest):
-                        outcome = SceneResult.model_validate(result)
-                    elif isinstance(request, VisualCheckRequest):
-                        outcome = VisualCheckResult.model_validate(result)
+                    if isinstance(request, ProbeRequest):
+                        outcome = CompatibilityResult.model_validate(result)
+                        binding = request.binding
+                        if (outcome.binding != binding
+                                or binding.controller_generation != self.generation
+                                or binding.task_ref != self.run_diagnostics.run_id
+                                or self.phase != "probing"):
+                            raise ValueError("Changed Worker compatibility request")
                     else:
-                        raise TypeError("Unknown Worker request")
-                    binding = request.binding
-                    if (outcome.binding != binding
-                            or binding.frame.controller_generation != self.generation
-                            or binding.task_ref != self.run_diagnostics.run_id
-                            or WORKER_PHASES[binding.operation] != self.phase
-                            or request.context.observation != self.observation):
-                        raise ValueError("Changed Worker request")
+                        if isinstance(request, ProposalRequest):
+                            outcome = ProposalResult.model_validate(result)
+                        elif isinstance(request, VerificationRequest):
+                            outcome = ActionVerificationResult.model_validate(result)
+                        elif isinstance(request, SceneRequest):
+                            outcome = SceneResult.model_validate(result)
+                        elif isinstance(request, VisualCheckRequest):
+                            outcome = VisualCheckResult.model_validate(result)
+                        else:
+                            raise TypeError("Unknown Worker request")
+                        binding = request.binding
+                        if (outcome.binding != binding
+                                or binding.frame.controller_generation != self.generation
+                                or binding.task_ref != self.run_diagnostics.run_id
+                                or WORKER_PHASES[binding.operation] != self.phase
+                                or request.context.observation != self.observation):
+                            raise ValueError("Changed Worker request")
                     if isinstance(request, (VerificationRequest, SceneRequest)) and (
                         self.pending is None or request.action.to_action() != self.pending.action
                     ):
@@ -688,7 +706,9 @@ class SupervisedController(TaskController):
                     self.fail("Worker result binding changed; no further input authorized.")
                     return
                 self._record("worker_result_contract", contract=outcome.model_dump(mode="json"))
-                if isinstance(outcome, ProposalResult):
+                if isinstance(outcome, CompatibilityResult):
+                    result = outcome.to_probe_result(submitted_config.model)
+                elif isinstance(outcome, ProposalResult):
                     result = outcome.to_decision()
                 elif isinstance(outcome, ActionVerificationResult):
                     result = outcome.to_verification()

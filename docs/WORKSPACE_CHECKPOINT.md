@@ -12,7 +12,8 @@ chat, uploaded files, local caches, or cloud environment instance.
 - Prior visual-check implementation/checkpoint: `fb60812` / `d89734f`.
 - Prior correlated Worker/finalization implementation: `c191266`.
 - Prior stage 3 benchmark tooling: `23b1af1`.
-- Current implementation: the stage 4 per-attempt evidence-assessment commit
+- Prior stage 4 evidence assessor: `0980901` (confirmed on remote `work`).
+- Current implementation: the correlated compatibility-probe follow-up commit
   containing this checkpoint, on `work`; see [stage 4](V4_STAGE4_NATIVE_TRIALS.md),
   [stage 3](V4_STAGE3_RELIABILITY_BENCHMARKS.md) and
   [the extraction boundary](V4_BOUNDED_WORKER.md).
@@ -133,7 +134,8 @@ effect. The **Review uncertain effects** control is the explicit handoff.
 
 ## Next recommended implementation
 
-All seven operational Worker result phases now require correlated typed outcomes.
+All seven visual Worker result phases and the operational compatibility check
+now require correlated typed outcomes.
 Stage 3 tooling and stage 4 per-attempt evidence assessment now exist; next run
 labelled real-model measurements and native
 Windows qualification against the actual source/model/configuration. Measure
@@ -146,7 +148,8 @@ unrestricted desktop execution to demonstrate the architecture.
 
 The Worker remains stateless and read-only; Qt retains host interpretation,
 limits, lifecycle and authorization, and LangGraph remains the outer orchestrator.
-Provider probing is still a controller compatibility operation. Any further
+Operational provider probing now uses the same bounded Worker via a no-frame
+request/result contract; the settings-dialog probe remains separate. Any further
 phase-handler consolidation must preserve this authority split. Later interactive
 orchestration, egress credentials and declarative skill work requires its own
 scope/qualification review; do not claim all of V4 is complete from these slices.
@@ -358,3 +361,39 @@ Completed changes are committed/pushed to `work` in the commit containing this
 checkpoint; `main` is untouched. Next work requires actual selected-model and
 Windows evidence using the linked stage 3/4 protocols, not another executor or
 permission expansion. Preserve uncertain effects and current qualification gates.
+
+## Correlated operational compatibility check
+
+The next portable implementation slice closes the remaining operational probe
+boundary. New `agent/worker_probe.py` binds a frozen config and selected model to
+a nonce/task/controller generation without a desktop frame. The existing Worker
+performs the provider check once; the controller accepts only the exact positive,
+current typed result before capture. It no longer treats arbitrary error-free
+objects as compatibility success, and queued provider creation uses submitted
+settings rather than current mutable host settings. Input authorization, ledger,
+worker ownership, review/hands-free behavior, native/guest gates, model settings,
+provider probe schema/timeouts and UI are unchanged. This does not fix or diagnose
+private-server timeouts or prove model/Windows control reliability.
+
+Fail-first tests reproduced missing result validation; a separate queue regression
+failed with the old provider closure and passed with the frozen snapshot. Focused
+Worker/correlation/visual/supervised regressions passed **251 tests in 41.96
+seconds**, including **24 new probe tests**. A preliminary test pass had 11 fixture
+cleanup errors because the new tests called nonexistent `shutdown()` instead of
+`close()`; corrected in tests, with no production cleanup/timeout changes.
+Independent source review found no critical or important findings. Its sandboxed
+async test attempt encountered known wakeup timeouts; authoritative controller
+validation uses the escalated serial process. Minor deferred coverage: direct
+forged CompatibilityResult `model_construct`/invalid `model_copy` fields; the
+shared Record revalidates instances, and nonce/raw-result refusal is covered.
+
+Native Windows qualification and live-model grounding/verification measurements
+remain pending. This follow-up does not authorize broader step 5 execution.
+
+Final frozen serial suite for the compatibility follow-up: **1,336 passed,
+3 skipped in 169.11 seconds**, using `uv run --frozen pytest -vv
+-o faulthandler_timeout=30` on Linux offscreen Qt. Log:
+`/tmp/worker-probe-full.txt` in this workspace. Frozen setup, lint, compilation,
+new-file formatting, startup smoke and diff checks passed. Startup emitted only
+expected offscreen tray/raise warnings. Commit/push target remains `work`, with
+no merge into `main`. Actual Windows and live-model qualification remain pending.

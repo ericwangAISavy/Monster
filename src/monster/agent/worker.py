@@ -24,6 +24,7 @@ from monster.agent.validation import (
     window_close_requested,
 )
 from monster.agent.worker_checks import VisualCheckRequest, VisualCheckResult
+from monster.agent.worker_probe import CompatibilityResult, ProbeRequest
 from monster.agent.worker_results import (
     ActionVerificationResult,
     ProposalResult,
@@ -143,6 +144,13 @@ class SceneRequest:
 
 class BoundedWorker:
     """Stateless operations only. Returned proposals/assessments grant no input."""
+
+    async def probe(self, provider, request: ProbeRequest):
+        result = await provider.probe(request.config.model)
+        try:
+            return CompatibilityResult.from_probe(request, result)
+        except (ValueError, TypeError, AttributeError):
+            raise ProviderError("Model returned an invalid Worker compatibility result.") from None
 
     async def propose(self, provider, request: ProposalRequest):
         ctx = request.context
