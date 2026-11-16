@@ -91,10 +91,18 @@ class OllamaConfig:
             raise ValueError("Select a model and confirm local-only server operation for preview.")
 
 
+# The saved-settings default for the Approval choice is "No approval" (hands-free). The
+# dataclass default stays False so code building a config explicitly opts in.
+DEFAULT_HANDS_FREE = True
+
+
 def load(path: Path) -> OllamaConfig:
     if not path.exists():
-        return OllamaConfig()
-    config = OllamaConfig(**json.loads(path.read_text(encoding="utf-8")))
+        return OllamaConfig(hands_free=DEFAULT_HANDS_FREE)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if type(data) is dict:
+        data.setdefault("hands_free", DEFAULT_HANDS_FREE)
+    config = OllamaConfig(**data)
     config.validate()
     return config
 

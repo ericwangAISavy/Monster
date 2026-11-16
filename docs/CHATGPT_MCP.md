@@ -1,23 +1,26 @@
 # Control Monster from ChatGPT (MCP)
 
 Monster can expose its tools as an MCP server so you can give commands from a ChatGPT
-chat while sitting at the laptop. **Every desktop action is still approved by you in
-Monster's pill on the laptop**, and **Ctrl+Alt+X** stops input at any time.
+chat while sitting at the laptop. The **Approval** setting (AI model & automation) decides
+whether you review actions: **No approval** (default) runs tasks and raw actions without
+prompts, **Laptop approval** asks in Monster's pill. **Ctrl+Alt+X** stops input at any time.
 
 ## Tools
 
 | Tool | ChatGPT treats as | What it does |
 | --- | --- | --- |
-| `monster_status` | read-only | Mode, running task, whether the laptop is waiting for a review |
+| `monster_status` | read-only | Mode, running task, whether the laptop is waiting for a review, and `approval` (`none` or `laptop`) |
 | `run_task(instruction)` | write | Starts a task with Monster's supervised agent (its own model, rechecks, limits and reviews) |
 | `task_status(task_id, wait_seconds)` | read-only | Task state; waits up to 45 s for a change. A completed task includes `result`: what the agent reported (e.g. information read from the screen) |
 | `stop()` | write | Stops the task or cancels a pending raw action |
 | `screenshot(display)` | read-only | JPEG of the screen (overlays hidden) and a `screenshot_id` |
-| `click`, `scroll` | write | Pixel coordinates of a specific `screenshot_id` (max 2 min old); laptop approval each time |
-| `type_text`, `press_keys` | write | Into the focused window; laptop approval each time |
+| `click`, `scroll` | write | Pixel coordinates of a specific `screenshot_id` (max 2 min old) |
+| `drag(screenshot_id, points, duration)` | write | One left-button stroke through 2-26 points of a `screenshot_id` (curves for drawing) |
+| `type_text`, `press_keys` | write | Into the focused window |
 
-ChatGPT will also ask you to confirm each write tool call in the chat. That is in
-addition to, not instead of, the approval on the laptop.
+With **Laptop approval**, each raw action and task step is reviewed in Monster's pill.
+ChatGPT may also ask you to confirm each write tool call in the chat; that is separate
+from Monster's setting.
 
 ## Setup
 

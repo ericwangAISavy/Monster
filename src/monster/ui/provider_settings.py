@@ -114,22 +114,27 @@ class ProviderSettings(QDialog):
         self.approve_each_step.setEnabled(config.mode == "supervised")
         self.mode.currentIndexChanged.connect(
             lambda _: self.approve_each_step.setEnabled(
-                self.mode.currentData() == "supervised" and not self.hands_free.isChecked()
+                self.mode.currentData() == "supervised" and not self.no_approval()
             )
         )
         form.addRow(self.approve_each_step)
-        self.hands_free = QCheckBox("Hands-free: no approval prompts")
-        self.hands_free.setChecked(config.hands_free)
-        self.hands_free.setToolTip("Runs routine actions and verifies completion automatically. Stops if review or clarification is required.")
-        form.addRow(self.hands_free)
-        self.hands_free.toggled.connect(
-            lambda enabled: self.approve_each_step.setEnabled(
-                self.mode.currentData() == "supervised" and not enabled
+        self.approval = QComboBox()
+        self.approval.addItem("No approval", True)
+        self.approval.addItem("Laptop approval", False)
+        self.approval.setCurrentIndex(self.approval.findData(config.hands_free))
+        self.approval.setToolTip(
+            "No approval: tasks and remote (ChatGPT/Claude) actions run without prompts; a task "
+            "verifies completion itself and stops if review or clarification is required. "
+            "Laptop approval: you review on the laptop.")
+        form.addRow("Approval", self.approval)
+        self.approval.currentIndexChanged.connect(
+            lambda _: self.approve_each_step.setEnabled(
+                self.mode.currentData() == "supervised" and not self.no_approval()
             )
         )
         self.approve_each_step.setEnabled(config.mode == "supervised" and not config.hands_free)
         approval_hint = QLabel(
-            "With hands-free disabled, unchecking per-step approval lets routine actions, "
+            "With Laptop approval, unchecking per-step approval lets routine actions, "
             "including clearly benign clicks and Enter, run "
             "automatically after a screen recheck. Sensitive, uncertain or unclassified actions "
             "still ask and explain why. Final completion confirmation stays on."
@@ -224,6 +229,9 @@ class ProviderSettings(QDialog):
             signal.connect(self.invalidate)
         self.finished.connect(self._closed)
 
+    def no_approval(self):
+        return self.approval.currentData() is True
+
     def value(self):
         config = OllamaConfig(
             self.url.text().strip(),
@@ -232,8 +240,8 @@ class ProviderSettings(QDialog):
             self.http.isChecked(),
             self.local.isChecked(),
             self.mode.currentData(),
-            approve_each_step=self.approve_each_step.isChecked() and not self.hands_free.isChecked(),
-            hands_free=self.hands_free.isChecked(),
+            approve_each_step=self.approve_each_step.isChecked() and not self.no_approval(),
+            hands_free=self.no_approval(),
             **self.inference_values(),
         )
         config.validate()

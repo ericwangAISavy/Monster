@@ -407,3 +407,31 @@ def test_drag_final_pointer_takeover_is_partial_and_releases_owned_button():
     assert result['status'] == 'partial_or_unknown'
     assert backend.events[-1] == ('mouse', 'left', False)
     assert not executor.owned and not executor.armed
+
+
+def test_drag_path_passes_through_every_point_with_one_held_button():
+    backend, executor, generation = armed()
+    action = {"op": "drag", "x": 10, "y": 10, "end_x": 10, "end_y": 50, "duration": 0.3,
+              "path": [[50, 10], [50, 50]]}
+    assert executor.execute(action, generation)["status"] == "inserted"
+    moves = [event[1:] for event in backend.events if event[0] == "move"]
+    assert (50, 10) in moves and (50, 50) in moves and moves[-1] == (10, 50)
+    buttons = [event for event in backend.events if event[0] == "mouse"]
+    assert buttons == [("mouse", "left", True), ("mouse", "left", False)]
+    assert not executor.owned
+
+
+@pytest.mark.parametrize("path", [[], [[5]], [[5, 5]] * 25, [[500, 5]], "nope"])
+def test_invalid_drag_paths_are_rejected(path):
+    with pytest.raises(ValueError):
+        validate_action({"op": "drag", "x": 1, "y": 1, "end_x": 5, "end_y": 5, "path": path},
+                        [Bounds(0, 0, 200, 100)])
+
+
+def test_drag_path_that_would_exceed_hold_limit_never_presses():
+    backend, executor, generation = armed()
+    path = [[10 + (i % 2) * 150, 10 + i * 3] for i in range(24)]
+    action = {"op": "drag", "x": 10, "y": 5, "end_x": 10, "end_y": 90, "duration": 2.0,
+              "path": path}
+    assert executor.execute(action, generation)["status"] == "rejected"
+    assert not any(event[0] == "mouse" for event in backend.events)

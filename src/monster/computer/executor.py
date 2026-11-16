@@ -1,11 +1,35 @@
 """Serial allowlisted actions with expiring permission and owned-input cleanup."""
 
+import math
 import threading
 import time
 
 from monster.agent.diagnostics import exception_evidence
 from monster.computer.contracts import validate_action
 from monster.computer.motion import motion_plan
+
+
+MAX_DRAG_HOLD_S = 1.8  # Below the watchdog's 2 s held-input limit.
+
+
+def drag_plan(action, geometry):
+    """Plan the whole stroke before any button goes down: one timed path through all points."""
+    points = [(action["x"], action["y"]), *(tuple(p) for p in action.get("path", ())),
+              (action["end_x"], action["end_y"])]
+    if len(points) == 2:
+        return motion_plan(points[0], points[1], geometry, action.get("duration", .4))
+    total = action.get("duration", 1.0)
+    lengths = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])]
+    span = sum(lengths) or 1.0
+    plan, offset = [], 0.0
+    for (a, b), length in zip(zip(points, points[1:]), lengths):
+        seconds = max(.05, total * length / span)
+        for at, point in motion_plan(a, b, geometry, seconds):
+            plan.append((offset + at, point))
+        offset += seconds
+    if offset > MAX_DRAG_HOLD_S:
+        raise ValueError("Drag path would hold the button too long; use fewer points or less time.")
+    return tuple(plan)
 
 
 class Disarmed(RuntimeError):
@@ -158,8 +182,7 @@ class InputExecutor:
                 target = (action["x"], action["y"])
                 approach = motion_plan(start, target, self.geometry)
                 if op == "drag":
-                    drag = motion_plan(target, (action["end_x"], action["end_y"]),
-                                       self.geometry, action.get("duration", .4))
+                    drag = drag_plan(action, self.geometry)
                 travel(approach, start)
                 # Do not click/scroll/drag if the cursor failed to arrive or was taken over.
                 confirm_arrival(target)

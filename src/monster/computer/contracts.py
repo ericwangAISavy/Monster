@@ -53,6 +53,9 @@ def number(value, low, high):
     return value
 
 
+MAX_DRAG_PATH = 24  # Intermediate points in one drag; the hold watchdog bounds its duration.
+
+
 def validate_action(value: dict, displays: list[Bounds]) -> dict:
     if type(value) is not dict:
         raise ValueError("Action must be an object.")
@@ -60,7 +63,7 @@ def validate_action(value: dict, displays: list[Bounds]) -> dict:
         "move": ({"x", "y"}, set()),
         "click": ({"x", "y"}, {"button", "count"}),
         "scroll": ({"x", "y", "delta"}, {"horizontal"}),
-        "drag": ({"x", "y", "end_x", "end_y"}, {"duration", "button"}),
+        "drag": ({"x", "y", "end_x", "end_y"}, {"duration", "button", "path"}),
         "down": ({"x", "y"}, {"button"}),
         "up": (set(), {"button"}),
         "text": ({"text"}, set()),
@@ -80,6 +83,16 @@ def validate_action(value: dict, displays: list[Bounds]) -> dict:
         if xkey in value:
             x = integer(value[xkey], -100000, 100000)
             y = integer(value[ykey], -100000, 100000)
+            if not any(b.contains(x, y) for b in displays):
+                raise ValueError("Point is outside actual displays (including monitor gaps).")
+    if "path" in value:
+        path = value["path"]
+        if type(path) is not list or not 1 <= len(path) <= MAX_DRAG_PATH:
+            raise ValueError(f"Drag path needs 1-{MAX_DRAG_PATH} intermediate points.")
+        for point in path:
+            if type(point) not in (list, tuple) or len(point) != 2:
+                raise ValueError("Drag path points must be [x, y] pairs.")
+            x, y = (integer(v, -100000, 100000) for v in point)
             if not any(b.contains(x, y) for b in displays):
                 raise ValueError("Point is outside actual displays (including monitor gaps).")
     if "button" in value and value["button"] not in BUTTONS:

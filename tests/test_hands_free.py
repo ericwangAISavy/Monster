@@ -105,7 +105,7 @@ def test_hands_free_settings_override_per_step_review(qtbot):
 
     dialog = ProviderSettings(replace(OllamaConfig(), hands_free=True))
     qtbot.addWidget(dialog)
-    assert dialog.hands_free.isChecked()
+    assert dialog.approval.currentText() == "No approval"
     assert not dialog.approve_each_step.isEnabled()
     assert dialog.value().hands_free
     assert not dialog.value().approve_each_step

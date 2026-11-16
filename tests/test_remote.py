@@ -83,6 +83,7 @@ def remote(qapp, tmp_path, monkeypatch):
     owners = {}  # hwnd -> pid; everything else belongs to another process.
     under = {}  # physical point -> hwnd
     bridge = RemoteBridge(ui, input_factory=FakeInput, windows_factory=FakeWindows,
+                          auto_approve=False,  # Pin laptop approval; tests opt in below.
                           capture=lambda display: observation(),
                           window_pid=lambda hwnd: owners.get(hwnd, 1),
                           window_at=lambda x, y: under.get((x, y), 5555))
@@ -207,7 +208,7 @@ def test_mcp_server_exposes_annotated_tools_behind_secret_path():
         assert '"screenshot_id": "abc"' in shot.content[1].text
         assert '"status": "refused"' in refused.content[0].text
         assert set(tools) == {"monster_status", "run_task", "task_status", "stop", "screenshot",
-                              "click", "scroll", "type_text", "press_keys"}
+                              "click", "scroll", "drag", "type_text", "press_keys"}
         assert tools["screenshot"].annotations.readOnlyHint is True
         assert tools["click"].annotations.readOnlyHint is False
         assert tools["run_task"].annotations.readOnlyHint is False
@@ -336,3 +337,72 @@ def test_completed_task_status_includes_agent_result(qtbot, remote, monkeypatch)
                     timeout=3000)
     status = call(qtbot, bridge, "task_status", task_id=started["task_id"])
     assert status["state"] == "completed" and status["result"] == "Yiwu: 61F, cloudy"
+
+
+def test_approved_drag_maps_every_point_to_physical_pixels(qtbot, remote):
+    ui, bridge = remote
+    shot = call(qtbot, bridge, "screenshot")
+    future = bridge.call("act", kind="drag", screenshot_id=shot["screenshot_id"],
+                         points=[[800, 450], [900, 450], [900, 550]], duration=None)
+    qtbot.waitUntil(lambda: ui.pending_question is not None, timeout=3000)
+    request_id, text, _ = ui.pending_question
+    assert "Left-drag through 3 points" in text and not FakeInput.instances
+    ui.answer(request_id, "approve")
+    qtbot.waitUntil(future.done, timeout=3000)
+    assert future.result()["status"] == "executed"
+    executed = [op for op in FakeInput.instances[0].ops if op[0] == "execute"]
+    assert executed[0][1] == {"op": "drag", "x": -1600, "y": 900, "end_x": -1400, "end_y": 1100,
+                              "button": "left", "duration": 1.0, "path": [[-1400, 900]]}
+
+
+@pytest.mark.parametrize("points,duration", [
+    ([[1, 1]], None), ([[1, 1]] * 27, None), ([[1, 1], [2]], None), ([[1, 1], [2, 2]], 3.0),
+])
+def test_invalid_drag_requests_are_refused(qtbot, remote, points, duration):
+    _, bridge = remote
+    shot = call(qtbot, bridge, "screenshot")
+    with pytest.raises(RemoteError):
+        call(qtbot, bridge, "act", kind="drag", screenshot_id=shot["screenshot_id"],
+             points=points, duration=duration)
+
+
+def test_auto_approve_runs_raw_action_without_laptop_review(qtbot, remote):
+    ui, bridge = remote
+    bridge.auto_approve = True
+    shot = call(qtbot, bridge, "screenshot")
+    result = call(qtbot, bridge, "act", kind="click", screenshot_id=shot["screenshot_id"],
+                  x=800, y=450, button="left", double=False)
+    assert result["status"] == "executed" and ui.pending_question is None
+    executed = [op for op in FakeInput.instances[0].ops if op[0] == "execute"]
+    assert executed[0][1] == {"op": "click", "x": -1600, "y": 900, "button": "left"}
+    assert not ui.workspace_gate.busy
+
+
+def test_approval_follows_live_setting_by_default(qtbot, remote):
+    from dataclasses import replace
+
+    from monster.remote.bridge import RemoteBridge
+
+    ui, _ = remote
+    live = RemoteBridge(ui, input_factory=FakeInput, windows_factory=FakeWindows,
+                        capture=lambda display: observation(),
+                        window_pid=lambda hwnd: 1, window_at=lambda x, y: 5555)
+    ui.model_config = replace(ui.model_config, hands_free=True)
+    assert live.auto_approve is True
+    assert call(qtbot, live, "status")["approval"] == "none"
+    ui.model_config = replace(ui.model_config, hands_free=False)
+    assert live.auto_approve is False
+    assert call(qtbot, live, "status")["approval"] == "laptop"
+
+
+def test_saved_settings_default_to_no_approval(tmp_path):
+    import json
+
+    from monster.providers.config import load
+
+    assert load(tmp_path / "missing.json").hands_free is True
+    path = tmp_path / "ollama.json"
+    path.write_text(json.dumps({"mode": "demo"}), encoding="utf-8")
+    assert load(path).hands_free is True
+    path.write_text(json.dumps({"mode": "demo", "hands_free": False}), encoding="utf-8")
+    assert load(path).hands_free is False

@@ -972,7 +972,7 @@ class CompanionApp:
         self.companion.set_state(state)
         if self.control_panel:
             mode = "Demo" if self.controller.is_mock else (
-                "Hands-free" if self.model_config.hands_free else
+                "No approval" if self.model_config.hands_free else
                 "Real input" if getattr(self.controller, "is_supervised", False) else "Preview"
             )
             self.control_panel.status.setText(f"●  {str(state).replace('_', ' ').title()}  ·  {mode}")
@@ -1642,7 +1642,7 @@ def main():
                         help="Explicit local Phase2/3 PASS evidence metadata for the supervised pilot")
     parser.add_argument("--remote-mcp", nargs="?", type=int, const=8765, metavar="PORT",
                         help="Serve Monster's tools over MCP on 127.0.0.1 (default port 8765) "
-                             "for ChatGPT via a tunnel; every action still needs laptop approval")
+                             "for ChatGPT via a tunnel; the Approval setting decides laptop review")
     parser.add_argument("--remote-mcp-allow-host", action="append", default=[], metavar="HOST",
                         help="Extra Host header to accept, e.g. a tunnel hostname (repeatable)")
     args = parser.parse_args()

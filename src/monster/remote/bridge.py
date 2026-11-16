@@ -14,7 +14,7 @@ from concurrent.futures import Future
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QImage
 
-from monster.computer.contracts import KEYS, validate_action
+from monster.computer.contracts import KEYS, MAX_DRAG_PATH, validate_action
 
 APPROVAL_SECONDS = 60
 FRAME_MAX_AGE_S = 120
@@ -39,9 +39,12 @@ class RemoteBridge(QObject):
     _posted = Signal(object)
 
     def __init__(self, ui, input_factory=None, windows_factory=None, capture=None,
-                 clock=time.monotonic, window_pid=None, window_at=None, parent=None):
+                 clock=time.monotonic, window_pid=None, window_at=None, parent=None,
+                 auto_approve=None):
         super().__init__(parent)
         self.ui = ui
+        # None follows the user's live Approval setting; True/False pins it (tests).
+        self._auto_approve = auto_approve
         if input_factory is None:
             from monster.agent.input_bridge import InputBridge
             input_factory = InputBridge
@@ -69,6 +72,18 @@ class RemoteBridge(QObject):
         self.approval_timer = QTimer(self)
         self.approval_timer.setSingleShot(True)
         self.approval_timer.timeout.connect(lambda: self._decline("Approval expired on the laptop."))
+
+    @property
+    def auto_approve(self):
+        """With "No approval", raw actions skip the laptop review. Every other check still
+        applies, and Stop / Ctrl+Alt+X still cancel."""
+        if self._auto_approve is not None:
+            return self._auto_approve
+        return getattr(getattr(self.ui, "model_config", None), "hands_free", False) is True
+
+    @auto_approve.setter
+    def auto_approve(self, value):
+        self._auto_approve = value
 
     # ---- thread-safe entry -------------------------------------------------
     def call(self, name, **kwargs) -> Future:
@@ -147,6 +162,7 @@ class RemoteBridge(QObject):
             "raw_action_pending": self.action is not None,
             "last_task": self._task_view(),
             "busy_reason": self._busy_reason(),
+            "approval": "none" if self.auto_approve else "laptop",
         }
 
     # ---- high-level tasks --------------------------------------------------
@@ -328,6 +344,25 @@ class RemoteBridge(QObject):
                 raise RemoteError("delta must be a non-zero integer from -10 to 10 notches.")
             action = {"op": "scroll", "x": px, "y": py, "delta": delta * 120}
             summary = f"Scroll {'down' if delta < 0 else 'up'} {abs(delta)} at ({params['x']}, {params['y']})."
+        elif kind == "drag":
+            points = params["points"]
+            if (type(points) is not list or not 2 <= len(points) <= MAX_DRAG_PATH + 2
+                    or any(type(p) not in (list, tuple) or len(p) != 2 for p in points)):
+                raise RemoteError(f"points must be 2-{MAX_DRAG_PATH + 2} [x, y] pairs.")
+            duration = params.get("duration")
+            if duration is None:
+                duration = 0.5 if len(points) == 2 else 1.0
+            if type(duration) not in (int, float) or not 0.1 <= duration <= 1.5:
+                raise RemoteError("duration must be 0.1-1.5 seconds.")
+            mapped = [self._frame_point(params["screenshot_id"], x, y) for x, y in points]
+            (sx, sy), (ex, ey) = mapped[0], mapped[-1]
+            action = {"op": "drag", "x": sx, "y": sy, "end_x": ex, "end_y": ey,
+                      "button": "left", "duration": float(duration)}
+            if len(mapped) > 2:
+                action["path"] = [list(p) for p in mapped[1:-1]]
+            summary = (f"Left-drag through {len(points)} points from screenshot "
+                       f"({points[0][0]}, {points[0][1]}) to ({points[-1][0]}, {points[-1][1]}) "
+                       f"over {float(duration):.1f}s. The button is held the whole time.")
         elif kind == "type_text":
             text = params["text"]
             if type(text) is not str or not text or len(text) > MAX_TEXT:
@@ -359,6 +394,10 @@ class RemoteBridge(QObject):
         self.action = {"id": request_id, "future": future, "action": action, "summary": summary,
                        "target": target, "displays": displays, "lease": None, "bridge": None,
                        "jobs": {}, "receipt": None, "error": None}
+        if self.auto_approve:
+            self.ui.notice("Remote action: " + summary.splitlines()[0], 2000)
+            self._execute(self.action)
+            return
         self.ui.question(
             request_id,
             "ChatGPT requests one raw action:\n" + summary +
