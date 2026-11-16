@@ -70,6 +70,31 @@ def approval_keys_released():
     return all(not (api.GetAsyncKeyState(key) & 0x8000) for key in keys)
 
 
+def window_process_id(handle: int) -> int:
+    """Owning process ID of a window handle, or 0 when unknown."""
+    api = user32()
+    if not api or not handle:
+        return 0
+    api.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    api.GetWindowThreadProcessId.restype = wintypes.DWORD
+    pid = wintypes.DWORD(0)
+    api.GetWindowThreadProcessId(handle, ctypes.byref(pid))
+    return int(pid.value)
+
+
+def root_window_at(x: int, y: int) -> int:
+    """Top-level window under a physical screen point, or 0 when unknown."""
+    api = user32()
+    if not api:
+        return 0
+    api.WindowFromPoint.argtypes = [wintypes.POINT]
+    api.WindowFromPoint.restype = wintypes.HWND
+    api.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    api.GetAncestor.restype = wintypes.HWND
+    child = api.WindowFromPoint(wintypes.POINT(x, y))
+    return int(api.GetAncestor(child, 2) or child or 0) if child else 0  # GA_ROOT
+
+
 def focus_window(window):
     api = user32()
     if api:
