@@ -98,6 +98,8 @@ class CompanionApp:
             self.model_config = provider_config.OllamaConfig()
             self.startup_error = "Could not load model settings; GUI demo is in use."
         self.closing = False
+        self.remote_bridge = None
+        self.remote_server = None
         try:
             self.preferences = load(config_path)
         except (OSError, ValueError, TypeError):
@@ -265,6 +267,7 @@ class CompanionApp:
         toggle.setChecked(True)
         self.add_action("Settings…", self.show_settings)
         self.add_action("AI model settings…", self.show_provider_settings)
+        self.add_action("ChatGPT connection…", self.show_remote_connection)
         self.add_action("Last action preview…", self.show_preview_details)
         self.add_action("Last failure…", self.show_failure_details)
         self.add_action("Last run report…", self.show_run_report)
@@ -333,7 +336,8 @@ class CompanionApp:
                 continue
             if text in ("Talk to Monster", "Pause", "Stop task"):
                 group = "task"
-            elif text in ("Show companion", "Settings…", "AI model settings…"):
+            elif text in ("Show companion", "Settings…", "AI model settings…",
+                          "ChatGPT connection…"):
                 group = "settings"
             elif text.startswith("Last "):
                 group = "activity"
@@ -1106,6 +1110,14 @@ class CompanionApp:
             self.answer(pending[1], "approve", source="keyboard")
 
     def answer(self, request_id, answer, *, source="mouse_or_text"):
+        if request_id.startswith("remote-"):
+            if self.remote_bridge and self.pending_question and self.pending_question[0] == request_id:
+                self.pending_question = None
+                self._cancel_keyboard_approval()
+                self.pill.hide()
+                self.hotkey_errors = self.register_hotkeys()
+                self.remote_bridge.answer(request_id, answer)
+            return
         if request_id.startswith('workspace-'):
             if self.workspace_mode == 'guest_simulation' and self.workspace_runtime and self.pending_question and self.pending_question[0] == request_id:
                 self.mission_review_timer.stop()
@@ -1189,6 +1201,8 @@ class CompanionApp:
         self.mission_review_timer.stop()
         if self.mission_runtime:
             self.mission_runtime.stop()
+        if self.remote_bridge:
+            self.remote_bridge.cancel_action("Stopped on the laptop.")
         self._cancel_keyboard_approval()
         self.activation_target = None
         # A real controller must synchronously disarm its input worker here.
@@ -1399,6 +1413,34 @@ class CompanionApp:
         else:
             self.preview_window.findChild(QLabel).setText("Diagnostic export saved. Review its contents before sharing.")
 
+    def start_remote(self, port, allowed_hosts=()):
+        """Start the localhost MCP server; returns its URL or raises RuntimeError."""
+        from monster.remote.bridge import RemoteBridge
+        from monster.remote.server import RemoteServer, load_token
+
+        self.remote_bridge = RemoteBridge(self)
+        token = load_token(self.config_path.with_name("remote.json"))
+        server = RemoteServer(self.remote_bridge, token, port, allowed_hosts)
+        server.start()
+        self.remote_server = server
+        return server.url
+
+    def show_remote_connection(self):
+        if self.remote_server is None:
+            text = ("The ChatGPT connection is off.\n\nStart Monster with:\n"
+                    "  uv run monster --remote-mcp\n\nThen reopen this window for the URL.")
+        else:
+            url = self.remote_server.url
+            QApplication.clipboard().setText(url)
+            text = (f"Local MCP URL (copied to clipboard):\n{url}\n\n"
+                    "Point OpenAI's tunnel-client at this URL (--mcp-server-url), then add the "
+                    "tunnel as a custom MCP server in ChatGPT developer mode.\n\n"
+                    "Treat the URL like a password: anyone who can reach it can request actions. "
+                    "Every desktop action still needs your approval here on the laptop; "
+                    "Ctrl+Alt+X stops input. Screenshots you allow are sent to ChatGPT.")
+        self._show_details("ChatGPT connection", text,
+                           "Remote control through MCP · approvals stay on this laptop")
+
     def _show_details(self, title, text, description, *, snapshot=None):
         if self.isolation.busy or self._focus_secondary_except(self.preview_window):
             return
@@ -1553,6 +1595,10 @@ class CompanionApp:
         if self.closing:
             return
         self.closing = True
+        if self.remote_server:
+            self.remote_server.close()
+        if self.remote_bridge:
+            self.remote_bridge.cancel_action("Monster is quitting.")
         self.mission_review_timer.stop()
         if self.mission_runtime:
             self.mission_runtime.close()
@@ -1594,6 +1640,11 @@ def main():
                         help="Explicit signed UIAccess MonsterOverlay.exe installed in Program Files")
     parser.add_argument("--phase4-qualification",type=Path,
                         help="Explicit local Phase2/3 PASS evidence metadata for the supervised pilot")
+    parser.add_argument("--remote-mcp", nargs="?", type=int, const=8765, metavar="PORT",
+                        help="Serve Monster's tools over MCP on 127.0.0.1 (default port 8765) "
+                             "for ChatGPT via a tunnel; every action still needs laptop approval")
+    parser.add_argument("--remote-mcp-allow-host", action="append", default=[], metavar="HOST",
+                        help="Extra Host header to accept, e.g. a tunnel hostname (repeatable)")
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Monster")
@@ -1609,6 +1660,13 @@ def main():
                 args.phase4_qualification.read_text(encoding="utf-8"))
         except (OSError,ValueError):
             print("Phase4 qualification unavailable/invalid; native pilot remains disabled.",file=sys.stderr)
+    if args.remote_mcp is not None:
+        try:
+            url = ui.start_remote(args.remote_mcp, args.remote_mcp_allow_host)
+        except (RuntimeError, OSError) as exc:
+            print(f"Remote MCP unavailable: {exc}", file=sys.stderr)
+        else:
+            print(f"Monster MCP server listening (localhost only): {url}", file=sys.stderr)
     if args.overlay_helper:
         from monster.ui.overlay_client import OverlayClient
         try:

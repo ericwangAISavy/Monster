@@ -118,6 +118,13 @@ actual recent actions, and blocks repeated failed clicks or duplicate text. Limi
 stops are reported as **Stopped incomplete**, with details in **Last failure**.
 See the [Slack draft workflow](docs/SUPERVISED_EXECUTION.md#typing-an-unsent-message-in-an-existing-slack-composer).
 
+## Control Monster from ChatGPT (MCP)
+
+`uv run monster --remote-mcp` serves Monster's tools (run a task, screenshot, click, type,
+keys, stop) to ChatGPT developer mode over a localhost MCP endpoint, reached through
+OpenAI's Secure MCP Tunnel. Every action still needs approval in the pill on the laptop.
+See [ChatGPT MCP guide](docs/CHATGPT_MCP.md).
+
 ## Diagnose a failed run
 
 Tray → **Last run report…** contains the original instruction, model/settings,
