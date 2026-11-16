@@ -20,6 +20,16 @@ APPROVAL_SECONDS = 60
 FRAME_MAX_AGE_S = 120
 MAX_IMAGE_EDGE = 1600
 MAX_TEXT = 2000
+MAX_DIAGNOSTIC_EVENTS = 300
+# Events that explain why a task advanced or stopped; the rest is HTTP/worker plumbing.
+KEY_EVENTS = frozenset({
+    "task_started", "proposal", "proposal_rejected", "verification_result",
+    "verification_reobserve_requested", "scene_recheck_result", "input_result",
+    "completion_verification", "launch_state_observed", "app_launch_stage",
+    "draft_target_result", "drawing_target_result", "review_response", "capture_failed",
+    "model_result", "task_terminated", "startup_failed", "dispatch_requested",
+    "review_requested", "clarification_requested", "launch_query_confirmed",
+})
 
 
 class RemoteError(RuntimeError):
@@ -245,6 +255,30 @@ class RemoteBridge(QObject):
         if self.task is None or (task_id and task_id != self.task["id"]):
             raise RemoteError("Unknown task_id. Only the most recent remote task is tracked.")
         return self._task_view()
+
+    def op_task_diagnostics(self, future, task_id=None, full=False):
+        """Read-only event trail of the tracked task, without screenshots."""
+        task = self.task
+        if task is None or (task_id and task_id != task["id"]):
+            raise RemoteError("Unknown task_id. Only the most recent remote task is tracked.")
+        controller = self._controller()
+        if (controller is not task["controller"]
+                or getattr(controller, "run_generation", None) != task["generation"]):
+            raise RemoteError("This task's diagnostics were replaced by a newer run.")
+        snapshot = controller.diagnostic_snapshot(include_content=True)
+        if snapshot is None:
+            raise RemoteError("No diagnostics recorded for this task.")
+        data = snapshot.data
+        events = data["events"] if full else [e for e in data["events"] if e["event"] in KEY_EVENTS]
+        dropped = max(0, len(events) - MAX_DIAGNOSTIC_EVENTS)
+        return {
+            "task_id": task["id"], "state": self._task_view()["state"],
+            "outcome": data["outcome"], "summary": data["summary"],
+            "configuration": {k: data["configuration"].get(k)
+                              for k in ("model", "mode", "hands_free", "approve_each_step")},
+            "events": events[-MAX_DIAGNOSTIC_EVENTS:], "events_omitted": dropped,
+            "view": "full" if full else "key",
+        }
 
     def op_stop(self, future):
         stopped = []

@@ -241,6 +241,19 @@ def scene_matches(before, after, action, *, diagnostics=None):
                        abs(action["end_y"] - action["y"]) + 41).intersected(old.rect())
         if old.copy(region) != new.copy(region):
             return finish(False, "drag_path_changed")
+    # Unrelated activity elsewhere (a chat spinner, a clock) must not block the target app.
+    # When both frames know the same foreground window rectangle, compare only that area.
+    region_name = "whole_scene"
+    before_rect = getattr(before, "foreground_rect", None)
+    after_rect = getattr(after, "foreground_rect", None)
+    if before_rect is not None and after_rect is not None:
+        if before_rect != after_rect:
+            return finish(False, "foreground_window_moved")
+        window = QRect(before_rect.x - before.bounds.x, before_rect.y - before.bounds.y,
+                       before_rect.width, before_rect.height).intersected(old.rect())
+        if window.width() >= 8 and window.height() >= 8:
+            old, new = old.copy(window), new.copy(window)
+            region_name = "foreground_window"
     old = old.scaled(320, 180, Qt.AspectRatioMode.KeepAspectRatio).convertToFormat(
         QImage.Format.Format_RGBA8888
     )
@@ -254,8 +267,9 @@ def scene_matches(before, after, action, *, diagnostics=None):
         if max(abs(a[offset + c] - b[offset + c]) for c in range(3)) > 20:
             changed += 1
             if changed > threshold:
-                return finish(False, "whole_scene_changed", changed_pixels=changed,
+                return finish(False, region_name + "_changed", changed_pixels=changed,
                               sampled_pixels=pixels, allowed_changed_pixels=threshold,
                               count_is_lower_bound=True)
-    return finish(True, "scene_matches", changed_pixels=changed, sampled_pixels=pixels,
+    return finish(True, "scene_matches", region=region_name, changed_pixels=changed,
+                  sampled_pixels=pixels,
                   allowed_changed_pixels=threshold, count_is_lower_bound=False)

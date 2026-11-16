@@ -18,6 +18,8 @@ class Observation:
     png: bytes
     sha256: str
     foreground: int = 0
+    # Physical rectangle of the foreground window at capture time, when known.
+    foreground_rect: Bounds | None = None
 
 
 def capture_display(display: int | None = 1, crop: Bounds | None = None) -> Observation:
@@ -73,6 +75,10 @@ def capture_display(display: int | None = 1, crop: Bounds | None = None) -> Obse
         if not any(shot.rgb):
             raise RuntimeError("Capture is black/unavailable; inspect the desktop manually.")
         png = to_png(shot.rgb, shot.size)
+        try:
+            foreground_rect = windows.window_bounds(foreground)
+        except (OSError, AttributeError):
+            foreground_rect = None
     if len(png) > 32 * 1024 * 1024:
         raise ValueError("Encoded screenshot exceeds the 32 MiB limit.")
     return Observation(
@@ -83,4 +89,5 @@ def capture_display(display: int | None = 1, crop: Bounds | None = None) -> Obse
         png,
         hashlib.sha256(png).hexdigest(),
         foreground,
+        foreground_rect,
     )

@@ -207,7 +207,8 @@ def test_mcp_server_exposes_annotated_tools_behind_secret_path():
         assert base64.b64decode(shot.content[0].data) == b"jpegbytes"
         assert '"screenshot_id": "abc"' in shot.content[1].text
         assert '"status": "refused"' in refused.content[0].text
-        assert set(tools) == {"monster_status", "run_task", "task_status", "stop", "screenshot",
+        assert set(tools) == {"monster_status", "run_task", "task_status", "task_diagnostics",
+                              "stop", "screenshot",
                               "click", "scroll", "drag", "type_text", "press_keys"}
         assert tools["screenshot"].annotations.readOnlyHint is True
         assert tools["click"].annotations.readOnlyHint is False
@@ -406,3 +407,30 @@ def test_saved_settings_default_to_no_approval(tmp_path):
     assert load(path).hands_free is True
     path.write_text(json.dumps({"mode": "demo", "hands_free": False}), encoding="utf-8")
     assert load(path).hands_free is False
+
+
+def test_task_diagnostics_explain_a_stopped_task(qtbot, remote, monkeypatch):
+    from test_supervised import controller
+
+    from monster.computer import screenshot as screenshot_module
+    from monster.computer import windows as windows_module
+    from monster.providers.base import Decision
+
+    ui, bridge = remote
+    monkeypatch.setattr(windows_module, "WindowsInput", FakeWindows)
+    monkeypatch.setattr(screenshot_module, "capture_display", lambda display=None: observation())
+    engine, _, _ = controller([Decision("unable", "Cannot find the Record button")])
+    ui.switch_controller(engine)
+    started = call(qtbot, bridge, "run_task", instruction="click Record")
+    qtbot.waitUntil(lambda: call(qtbot, bridge, "task_status")["state"] != "running",
+                    timeout=5000)
+    key = call(qtbot, bridge, "task_diagnostics", task_id=started["task_id"])
+    names = [event["event"] for event in key["events"]]
+    assert key["view"] == "key" and "proposal" in names and "task_terminated" in names
+    assert "provider_http_result" not in names and key["outcome"]["status"] == "error"
+    proposal = next(e for e in key["events"] if e["event"] == "proposal")
+    assert proposal["content"]["proposal"]["summary"] == "Cannot find the Record button"
+    full = call(qtbot, bridge, "task_diagnostics", task_id=started["task_id"], full=True)
+    assert len(full["events"]) >= len(key["events"]) and full["view"] == "full"
+    with pytest.raises(RemoteError, match="Unknown task_id"):
+        call(qtbot, bridge, "task_diagnostics", task_id="nope")

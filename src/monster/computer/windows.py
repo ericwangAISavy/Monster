@@ -118,6 +118,20 @@ class WindowsInput:
         rect = info.monitor
         return Bounds(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
 
+    def window_bounds(self, handle):
+        """Physical rectangle of a top-level window, or None when unavailable."""
+        if not handle:
+            return None
+        self.api.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        self.api.GetWindowRect.restype = wintypes.BOOL
+        rect = wintypes.RECT()
+        if not self.api.GetWindowRect(handle, ctypes.byref(rect)):
+            return None
+        width, height = rect.right - rect.left, rect.bottom - rect.top
+        if width <= 0 or height <= 0:
+            return None
+        return Bounds(rect.left, rect.top, width, height)
+
     def restore_foreground(self, handle):
         if handle and self.foreground() == handle:
             return True

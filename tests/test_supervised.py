@@ -85,6 +85,10 @@ class FakeModel:
     async def verify_action(self, *args):
         return Verification("succeeded", "Simulated expected visual result is present")
 
+    async def verify_completion(self, *args):
+        # Inconclusive by default: a completion claim after a failed step stays rejected.
+        return Verification("uncertain", "Simulated whole-task check is inconclusive")
+
     async def decide(self, *args, history=()):
         self.history.append(history)
         return self.decisions.pop(0) if self.decisions else Decision("unable", "No more steps")
@@ -550,7 +554,8 @@ def test_wrong_click_cannot_repeat_despite_changed_screenshot_and_coordinate_jit
         assert len(actions) == 3
         assert actions[0]["x"] == -90 and actions[1]["x"] == -30
         assert actions[2] == {"op": "text", "text": "Hello"}
-        assert engine.verification_calls == 3
+        # The failed click gets one later look (no input) before it is accepted as failed.
+        assert engine.verification_calls == 4
         assert any("different" in line or "rejected" in line for line in engine.history)
     finally:
         engine.close()
@@ -1587,7 +1592,8 @@ def test_explicit_click_once_never_dispatches_second_input(qtbot, approve_each_s
         engine.submit("go to startup btn and click once")
         qtbot.waitUntil(lambda: bool(failures))
         assert len(bridge.executed) == 1
-        assert engine.verification_calls == (2 if status == "uncertain" else 1)
+        # A failed/uncertain click gets one later look; still exactly one input.
+        assert engine.verification_calls == (1 if status == "succeeded" else 2)
         if status != "succeeded":
             assert engine.calls == 1
             assert "one-click" in failures[0].lower()
@@ -2343,5 +2349,101 @@ def test_rejection_stop_names_the_last_rejection_reason(qtbot):
         engine.submit("click the target button")
         qtbot.waitUntil(lambda: bool(failures))
         assert "Last rejection:" in failures[0]
+    finally:
+        engine.close()
+
+
+def _painted(rect_color_region=None, foreground_rect=None):
+    image = QImage(100, 100, QImage.Format.Format_RGB32)
+    image.fill(QColor("#ffffff"))
+    if rect_color_region:
+        x, y, w, h = rect_color_region
+        for px in range(x, x + w):
+            for py in range(y, y + h):
+                image.setPixelColor(px, py, QColor("#000000"))
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    png = bytes(data)
+    bounds = Bounds(-100, 0, 100, 100)
+    return Observation("frame", time.monotonic(), bounds, (bounds,), png,
+                       hashlib.sha256(png).hexdigest(), 77, foreground_rect)
+
+
+def test_activity_outside_the_target_window_does_not_block_the_recheck():
+    window = Bounds(-100, 0, 50, 100)  # Left half of the capture, in physical pixels.
+    action = {"op": "click", "x": 20, "y": 20}
+    before = _painted(foreground_rect=window)
+    spinner = _painted((70, 40, 25, 25), foreground_rect=window)  # Right half changed.
+    details = {}
+    assert scene_matches(before, spinner, action, diagnostics=details)
+    assert details["region"] == "foreground_window"
+    inside = _painted((5, 60, 25, 25), foreground_rect=window)
+    assert not scene_matches(before, inside, action)
+    moved = _painted(foreground_rect=Bounds(-90, 0, 50, 100))
+    details = {}
+    assert not scene_matches(before, moved, action, diagnostics=details)
+    assert details["reason"] == "foreground_window_moved"
+    # Without a known window rectangle the whole capture is still compared.
+    assert not scene_matches(_painted(), _painted((70, 40, 25, 25)), action)
+
+
+def test_repeat_rejection_tells_planner_to_check_whether_the_effect_already_happened(qtbot):
+    click = Decision("action", "Select Full Screen", {"op": "click", "x": 20, "y": 20},
+                     risk="routine")
+    engine, bridge, model = controller([click, click, Decision("complete", "Full Screen selected")])
+    engine.config = replace(engine.config, approve_each_step=False)
+    verdicts = iter(["failed", "failed"])
+
+    async def verify(*args):
+        return Verification(next(verdicts, "succeeded"), "Radio state unclear")
+
+    async def whole_task(*args):
+        completion_checks.append(args)
+        return Verification("succeeded", "Full Screen is selected")
+
+    completion_checks = []
+    model.verify_action = verify
+    model.verify_completion = whole_task
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    try:
+        engine.submit("Select the Full Screen option in the open Screen Recorder window")
+        qtbot.waitUntil(lambda: engine.phase == "confirming", timeout=5000)
+        assert len(bridge.executed) == 1  # The repeated click was never dispatched.
+        assert len(completion_checks) == 1  # Completion after a failed check was rechecked.
+        assert any("intended effect of that action is already visible" in line
+                   for line in model.history[-1])
+    finally:
+        engine.close()
+
+
+
+def test_completion_after_failed_check_is_rejected_when_independent_check_disagrees(qtbot):
+    click = Decision("action", "Select option", {"op": "click", "x": 20, "y": 20}, risk="routine")
+    engine, bridge, model = controller([click, Decision("complete", "Done"),
+                                        Decision("complete", "Done again")])
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+
+    async def verify(*args):
+        return Verification("failed", "Option not selected")
+
+    async def whole_task(*args):
+        return Verification("failed", "Option still unselected")
+
+    model.verify_action, model.verify_completion = verify, whole_task
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("Select the option in the open window")
+        qtbot.waitUntil(lambda: bool(failures), timeout=6000)
+        assert len(bridge.executed) == 1 and not engine.human_result_confirmed
+        assert any("independent whole-task check did not confirm" in line
+                   for line in engine.history)
     finally:
         engine.close()

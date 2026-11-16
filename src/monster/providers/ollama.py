@@ -470,6 +470,10 @@ class OllamaProvider:
             "a duplicated query. A search match or app-details panel is NOT a launched app. "
             "After Enter/Open, require the actual requested app window, editor or canvas. "
             "Assess visible foreground menus/dialogs, not controls occluded beneath them. "
+            "For small controls (radio buttons, checkboxes, toggles, tabs, menu items), inspect "
+            "that specific control's current state: if the requested option is now selected or "
+            "the expected menu/dialog is open, report succeeded even when the rest of the screen "
+            "barely changed. "
             "For a draft task, sending is not success. If focus/text/target cannot be "
             "established visually, report uncertain. Never assume success from the action."
         )

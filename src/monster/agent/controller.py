@@ -38,6 +38,10 @@ from monster.providers.jobs import ProviderJobs
 from monster.providers.ollama import OllamaProvider
 
 
+VERIFY_RETAKES = 1  # Later looks at a failed/uncertain step before accepting it.
+LAUNCH_RETAKES = 2  # App windows can take longer to appear.
+
+
 class SupervisedController(TaskController):
     effect_requested = Signal(object)
     terminal_ready = Signal(object)  # ExecutionReport, emitted only after cleanup.
@@ -184,6 +188,7 @@ class SupervisedController(TaskController):
         self.input_may_have_occurred = False
         self.completion_summary = None
         self.last_rejection = None
+        self.completion_recheck = self.completion_recheck_used = False
         self.active_changed.emit(True)
         self.paused_changed.emit(False)
         self.state_changed.emit(State.THINKING)
@@ -634,8 +639,21 @@ class SupervisedController(TaskController):
         elif self.phase == "checking_completion":
             self._record("completion_verification", observation=self.log_frame,
                          content={"status": result.status, "evidence": result.evidence})
+            recheck, self.completion_recheck = self.completion_recheck, False
             if result.status != "succeeded":
+                if recheck:
+                    self.completion_summary = None
+                    self._reject_proposal(
+                        "Completion is unsupported: the last action failed visual verification "
+                        "and an independent whole-task check did not confirm it: " + result.evidence,
+                        "completion",
+                    )
+                    return
                 self.fail("Task completion could not be verified: " + result.evidence)
+                return
+            if recheck and not self.hands_free:
+                self.last_verification = result
+                self._ask_completion_confirmation(self.completion_summary)
                 return
             self.last_verification = result
             self._terminate("complete", self._completion_message("Completed · visual task check passed"))
@@ -695,16 +713,20 @@ class SupervisedController(TaskController):
             # can be temporary. Re-observe without repeating Enter/Open or any input.
             launch_wait = self.verification_launch_activation and result.status in {"failed", "uncertain"}
             drawing_wait = self.pending.action.get("op") == "drag" and result.status in {"failed", "uncertain"}
-            retry_limit = 2 if launch_wait else 1
-            if (result.status == "uncertain" or launch_wait or drawing_wait) and self.verification_retakes < retry_limit:
+            # Menus, dialogs and repaints often appear after the first capture, so a
+            # failed/uncertain step gets one later look (two for an app launch), never a
+            # repeated input, before its outcome is accepted.
+            retry_limit = LAUNCH_RETAKES if launch_wait else VERIFY_RETAKES
+            if result.status in {"failed", "uncertain"} and self.verification_retakes < retry_limit:
                 self.verification_retakes += 1
                 self.verification_retry_scene = self.observation
                 self._record('verification_reobserve_requested', observation=self.log_frame,
                              attempt=self.verification_retakes, input_repeated=False,
-                             reason="app_launch_settling" if launch_wait else "drawing_render" if drawing_wait else "uncertain")
+                             reason="app_launch_settling" if launch_wait else "drawing_render"
+                             if drawing_wait else "ui_settling")
                 self.trace.append('Waiting for visible result without repeating input.')
                 self.phase = 'verifying_capture'
-                self._schedule_capture(750 * self.verification_retakes if launch_wait else 350)
+                self._schedule_capture((750 if launch_wait else 600) * self.verification_retakes)
                 return
             if self.action_gate:
                 # Keep the receipt awaiting observation during the bounded read-only
@@ -985,9 +1007,18 @@ class SupervisedController(TaskController):
                     )
                     return
                 if self.last_verification and self.last_verification.status != "succeeded":
-                    self._reject_proposal(
-                        "Completion is unsupported: the last action failed visual verification.", "completion"
-                    )
+                    if self.action_gate or self.completion_recheck_used:
+                        self._reject_proposal(
+                            "Completion is unsupported: the last action failed visual verification.",
+                            "completion",
+                        )
+                        return
+                    # The step check can miss a small change. Let an independent read-only
+                    # whole-task check decide instead of rejecting the claim outright.
+                    self.completion_recheck = self.completion_recheck_used = True
+                    self.completion_summary = result.summary
+                    self.phase = "completion_capture"
+                    self._capture()
                     return
                 self.completion_summary = result.summary
                 if self.hands_free:
@@ -1012,6 +1043,17 @@ class SupervisedController(TaskController):
             self.approval_requested.emit(self.question_id, text)
             self.approval_timer.start(60000)
 
+
+    def _ask_completion_confirmation(self, summary):
+        self.phase = "confirming"
+        self.question_id = uuid.uuid4().hex
+        self.state_changed.emit(State.WAITING)
+        self.approval_requested.emit(
+            self.question_id,
+            "Confirm the visible result meets your task:\n" + self.instruction
+            + "\nModel reports: " + (summary or "") + "\nApprove only after inspecting it.",
+        )
+        self.approval_timer.start(60000)
 
     def _dispatch_checked_action(self, action):
         self.phase = "executing"
@@ -1277,6 +1319,10 @@ class SupervisedController(TaskController):
         self.history.append(
             f"Controller rejected the proposed step: {reason} "
             "No input was executed. Choose a different valid approach or ask for help."
+            + (" First inspect the current screenshot: a check can miss a small change, so if "
+               "the intended effect of that action is already visible (option selected, menu "
+               "open, text present), do not repeat it; continue with the next step or report "
+               "completion." if category == "repeat" else "")
         )
         if self.rejected_proposals >= 3:
             advice = (

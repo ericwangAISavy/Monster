@@ -91,7 +91,7 @@ def test_persistent_uncertainty_stops_without_completion_review_or_replay(qtbot)
         engine.close()
 
 
-def test_explicit_verification_failure_is_not_retried(qtbot):
+def test_explicit_verification_failure_is_looked_at_again_but_input_is_not_retried(qtbot):
     engine, bridge, model = typing_controller()
     checks, failures = [], []
 
@@ -107,8 +107,9 @@ def test_explicit_verification_failure_is_not_retried(qtbot):
     try:
         engine.submit("Type hello into the currently open Notepad document")
         qtbot.waitUntil(lambda: bool(failures), timeout=5000)
-        assert len(checks) == 1 and len(bridge.executed) == 1
-        assert engine.verification_retakes == 0
+        # One later look in case the screen had not repainted; never a second input.
+        assert len(checks) == 2 and len(bridge.executed) == 1
+        assert engine.verification_retakes == 1
     finally:
         engine.close()
 
