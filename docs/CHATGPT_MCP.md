@@ -10,7 +10,7 @@ Monster's pill on the laptop**, and **Ctrl+Alt+X** stops input at any time.
 | --- | --- | --- |
 | `monster_status` | read-only | Mode, running task, whether the laptop is waiting for a review |
 | `run_task(instruction)` | write | Starts a task with Monster's supervised agent (its own model, rechecks, limits and reviews) |
-| `task_status(task_id, wait_seconds)` | read-only | Task state; waits up to 90 s for a change |
+| `task_status(task_id, wait_seconds)` | read-only | Task state; waits up to 45 s for a change. A completed task includes `result`: what the agent reported (e.g. information read from the screen) |
 | `stop()` | write | Stops the task or cancels a pending raw action |
 | `screenshot(display)` | read-only | JPEG of the screen (overlays hidden) and a `screenshot_id` |
 | `click`, `scroll` | write | Pixel coordinates of a specific `screenshot_id` (max 2 min old); laptop approval each time |

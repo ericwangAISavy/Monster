@@ -172,6 +172,7 @@ class RemoteBridge(QObject):
             "waiting_for_laptop_review": bool(pending),
             "review_text": pending[1] if pending else None,
             "message": task["message"],
+            "result": task.get("result"),
             "confirmed_input_transactions": getattr(controller, "actions", None),
         }
 
@@ -202,6 +203,7 @@ class RemoteBridge(QObject):
         def finished(text, current=task):
             if current["state"] == "running" and self.task is current:
                 current["state"], current["message"] = "completed", text
+                current["result"] = getattr(controller, "completion_summary", None)
 
         def failed(text, current=task):
             if current["state"] == "running" and self.task is current:

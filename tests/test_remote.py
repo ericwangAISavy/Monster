@@ -315,3 +315,24 @@ def test_late_signal_from_previous_worker_is_ignored(qtbot, remote):
     assert not second.done() and bridge.action is not None
     bridge.cancel_action("test cleanup")
     qtbot.waitUntil(second.done, timeout=3000)
+
+
+def test_completed_task_status_includes_agent_result(qtbot, remote, monkeypatch):
+    from test_supervised import controller
+
+    from monster.computer import screenshot as screenshot_module
+    from monster.computer import windows as windows_module
+    from monster.providers.base import Decision
+
+    ui, bridge = remote
+    monkeypatch.setattr(windows_module, "WindowsInput", FakeWindows)
+    monkeypatch.setattr(screenshot_module, "capture_display", lambda display=None: observation())
+    engine, _, _ = controller([Decision("complete", "Yiwu: 61F, cloudy")])
+    ui.switch_controller(engine)
+    started = call(qtbot, bridge, "run_task", instruction="read today's forecast")
+    qtbot.waitUntil(lambda: engine.phase == "confirming", timeout=5000)
+    engine.respond(engine.question_id, "approve")
+    qtbot.waitUntil(lambda: call(qtbot, bridge, "task_status")["state"] != "running",
+                    timeout=3000)
+    status = call(qtbot, bridge, "task_status", task_id=started["task_id"])
+    assert status["state"] == "completed" and status["result"] == "Yiwu: 61F, cloudy"

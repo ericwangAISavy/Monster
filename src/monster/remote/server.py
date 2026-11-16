@@ -21,15 +21,17 @@ from monster.remote.bridge import RemoteError
 DEFAULT_PORT = 8765
 CALL_TIMEOUT_S = 15
 ACTION_TIMEOUT_S = 100  # Laptop approval (60 s) plus worker execution, under a 120 s tunnel deadline.
-MAX_STATUS_WAIT_S = 90
+MAX_STATUS_WAIT_S = 45
 
 INSTRUCTIONS = """\
 Monster operates the user's own Windows laptop. The user is sitting at the laptop and
 approves every desktop action there; you cannot approve anything yourself.
 
 Preferred: run_task(instruction) hands a natural-language task to Monster's own supervised
-vision agent. Then call task_status(task_id, wait_seconds=60) until the state is no longer
+vision agent. Then call task_status(task_id, wait_seconds=30) until the state is no longer
 "running". "waiting_for_laptop_review" means the user must click Approve on the laptop.
+When a task completes, "result" holds what Monster's agent reported, such as information
+it read from the screen.
 
 Raw control: screenshot() first, then click/scroll using pixel coordinates from that exact
 screenshot_id, or type_text/press_keys into the focused window. Each raw action waits for
@@ -97,7 +99,7 @@ def build_server(bridge, token: str, port: int = DEFAULT_PORT, allowed_hosts=())
 
     @mcp.tool(annotations=read_only)
     async def task_status(task_id: str, wait_seconds: int = 0) -> dict:
-        """State of a run_task task. wait_seconds (0-90) waits for the task to change first."""
+        """State of a run_task task. wait_seconds (0-45) waits for the task to change first."""
         wait = max(0, min(MAX_STATUS_WAIT_S, int(wait_seconds)))
         deadline = asyncio.get_running_loop().time() + wait
         first = await call("task_status", task_id=task_id)

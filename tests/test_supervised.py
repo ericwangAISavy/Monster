@@ -2299,3 +2299,49 @@ def test_report_new_document_rejects_wrong_chord_then_dispatches_reviewed_ctrl_n
         assert len(reviews) == 1
     finally:
         engine.close()
+
+
+def test_information_task_completion_reports_model_answer(qtbot):
+    engine, bridge, _ = controller(
+        [Decision("complete", "Yiwu: 61F, cloudy, high 67F, low 58F")]
+    )
+    questions, finished = [], []
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.approval_requested.connect(lambda rid, text: questions.append((rid, text)))
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("read today's forecast in the open Weather app")
+        qtbot.waitUntil(lambda: len(questions) == 1)
+        assert "61F, cloudy" in questions[0][1] and not bridge.executed
+        engine.respond(questions[0][0], "approve")
+        qtbot.waitUntil(lambda: bool(finished))
+        assert "confirmed by you" in finished[0] and "61F, cloudy" in finished[0]
+        assert engine.completion_summary == "Yiwu: 61F, cloudy, high 67F, low 58F"
+    finally:
+        engine.close()
+
+
+def test_rejection_stop_names_the_last_rejection_reason(qtbot):
+    bad = Decision(
+        "action", "Click unchanged target", {"op": "click", "x": 20, "y": 20}, risk="routine"
+    )
+    engine, _, model = controller([bad] * 6)
+    engine.config = replace(engine.config, approve_each_step=False)
+    failures = []
+
+    async def verify(*args):
+        return Verification("failed", "Target did not respond")
+
+    model.verify_action = verify
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(observation(), engine.generation)
+    )
+    engine.failed.connect(failures.append)
+    try:
+        engine.submit("click the target button")
+        qtbot.waitUntil(lambda: bool(failures))
+        assert "Last rejection:" in failures[0]
+    finally:
+        engine.close()

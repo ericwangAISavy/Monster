@@ -182,6 +182,8 @@ class SupervisedController(TaskController):
         self.terminal_report = None
         self.human_result_confirmed = False
         self.input_may_have_occurred = False
+        self.completion_summary = None
+        self.last_rejection = None
         self.active_changed.emit(True)
         self.paused_changed.emit(False)
         self.state_changed.emit(State.THINKING)
@@ -636,7 +638,7 @@ class SupervisedController(TaskController):
                 self.fail("Task completion could not be verified: " + result.evidence)
                 return
             self.last_verification = result
-            self._terminate("complete", "Completed · visual task check passed")
+            self._terminate("complete", self._completion_message("Completed · visual task check passed"))
         elif self.phase == "checking_target":
             if not self._reviewed_proposal_matches():
                 return
@@ -987,6 +989,7 @@ class SupervisedController(TaskController):
                         "Completion is unsupported: the last action failed visual verification.", "completion"
                     )
                     return
+                self.completion_summary = result.summary
                 if self.hands_free:
                     self.phase = "completion_capture"
                     self._capture()
@@ -1159,7 +1162,7 @@ class SupervisedController(TaskController):
             self._capture()
         elif self.phase == "confirming":
             self.human_result_confirmed = True
-            self._terminate("complete", "Completed · visible result confirmed by you")
+            self._terminate("complete", self._completion_message("Completed · visible result confirmed by you"))
         elif self.phase == "approval":
             self._begin_recheck(restore=True)
 
@@ -1253,8 +1256,13 @@ class SupervisedController(TaskController):
             )
         return text
 
+    def _completion_message(self, base):
+        summary = self.completion_summary
+        return base + ("\nModel reports: " + summary if summary else "")
+
     def _reject_proposal(self, reason, category="unspecified"):
         self.rejected_proposals += 1
+        self.last_rejection = reason
         label = {
             "model_response": "invalid model response",
             "repeat": "repeated/previously failed input",
@@ -1276,7 +1284,8 @@ class SupervisedController(TaskController):
                 if draft_only(self.instruction) else
                 "Inspect the target application and Last action preview before starting a new task."
             )
-            self.fail("Three repeated/invalid proposals rejected without input. " + advice)
+            self.fail("Three repeated/invalid proposals rejected without input. " + advice
+                      + " Last rejection: " + str(reason)[:300])
             return
         self.phase = "observing"
         self._capture()
