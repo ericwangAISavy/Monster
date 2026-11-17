@@ -12,10 +12,12 @@ ACTION_SCHEMA = {
         {
             "type": "object",
             "properties": {"op": {"const": op}, **properties},
-            "required": ["op", *properties],
+            "required": ["op", *(name for name in properties if name not in optional)],
             "additionalProperties": False,
         }
-        for op, properties in [
+        for op, properties, optional in [
+            (op, properties, {"path_1000"} if op == "drag" else set())
+            for op, properties in [
             ("move", {"x_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
                       "y_1000": {"type": "integer", "minimum": 0, "maximum": 1000}}),
             (
@@ -43,6 +45,12 @@ ACTION_SCHEMA = {
                 "end_y_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
                 "button": {"const": "left"},
                 "duration": {"type": "number", "minimum": 0.05, "maximum": 2.0},
+                "path_1000": {
+                    "type": "array", "minItems": 1, "maxItems": 24,
+                    "description": "Optional points between start and end, for curves and circles.",
+                    "items": {"type": "array", "minItems": 2, "maxItems": 2,
+                              "items": {"type": "integer", "minimum": 0, "maximum": 1000}},
+                },
             }),
             ("text", {"text": {"type": "string", "minLength": 1, "maxLength": 2000}}),
             ("press", {"key": {"enum": [key for key in KEYS if key != "DELETE" and key not in MODIFIERS - {"WIN"}]}}),
@@ -66,7 +74,7 @@ ACTION_SCHEMA = {
                 },
             ),
             ("screenshot", {}),
-        ]
+        ]]
     ]
 }
 DECISION_SCHEMA = {
@@ -169,6 +177,14 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
                 coordinates = {"x_1000": ("x", width), "y_1000": ("y", height)}
                 if action["op"] == "drag":
                     coordinates.update(end_x_1000=("end_x", width), end_y_1000=("end_y", height))
+                    path = action.get("path_1000")
+                    if path is not None and (
+                        type(path) is not list or not 1 <= len(path) <= 24
+                        or any(type(p) is not list or len(p) != 2
+                               or any(type(v) is not int or not 0 <= v <= 1000 for v in p)
+                               for p in path)):
+                        raise ProviderError("Model action failed validation: path_1000 needs "
+                                            "1-24 [x, y] integer pairs in [0,1000].")
                 if any(key in action for key in ("x", "y", "end_x", "end_y")) or any(
                     type(action.get(key)) is not int or not 0 <= action[key] <= 1000
                     for key in coordinates
@@ -185,6 +201,9 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
                 action = dict(action)
                 for source, (target, extent) in coordinates.items():
                     action[target] = round(action.pop(source) * (extent - 1) / 1000)
+                if "path_1000" in action:
+                    action["path"] = [[round(x * (width - 1) / 1000), round(y * (height - 1) / 1000)]
+                                      for x, y in action.pop("path_1000")]
             try:
                 validate_action(action, [Bounds(0, 0, width, height)])
             except (ValueError, TypeError):

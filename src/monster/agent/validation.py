@@ -211,6 +211,11 @@ def prepare_action(action, observation, *, allow_window_close=False, allow_termi
         if xkey in action:
             action[xkey] += observation.bounds.x
             action[ykey] += observation.bounds.y
+    if "path" in action:
+        action["path"] = [[x + observation.bounds.x, y + observation.bounds.y]
+                          for x, y in action["path"]]
+        # The executor refuses holds near its 2 s watchdog; keep path strokes well inside it.
+        action["duration"] = min(float(action.get("duration", 1.0)), 1.5)
     return validate_action(action, list(observation.displays))
 
 

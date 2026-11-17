@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
 from monster.agent.diagnostics import RUNTIME
 from monster.providers.config import OllamaConfig
 from monster.providers.jobs import ProviderJobs
+from monster.providers.claude_code import provider_for
+from monster.providers.config import CLAUDE_MODELS, PROVIDERS
 from monster.providers.ollama import PROBE_STAGES, OllamaProvider
 
 
@@ -33,9 +35,9 @@ class ProviderSettings(QDialog):
     activity_changed = Signal(str)
     provider_event = Signal(int, str, object)
 
-    def __init__(self, config, provider_factory=OllamaProvider):
+    def __init__(self, config, provider_factory=provider_for):
         super().__init__()
-        self.setWindowTitle("Monster · LAN Ollama")
+        self.setWindowTitle("Monster · AI model")
         self.setMinimumWidth(440)
         self.provider_factory = provider_factory
         self.config = config
@@ -59,9 +61,7 @@ class ProviderSettings(QDialog):
         # Existing active configurations are checked again by the task controller.
         # Saving only local execution policy should not require another UI probe.
         self.probed_config = (
-            replace(config, mode="demo", approve_each_step=True)
-            if config.mode in {"preview", "supervised"}
-            else None
+            self.check_key(config) if config.mode in {"preview", "supervised"} else None
         )
         self.setStyleSheet(
             "QDialog {background:#222626;} QLabel,QCheckBox {color:#f2f4f3;}"
@@ -103,6 +103,22 @@ class ProviderSettings(QDialog):
         self.mode.addItem("Ollama screenshot/action preview · no input", "preview")
         self.mode.addItem("Real computer control (experimental)", "supervised")
         self.mode.setCurrentIndex(self.mode.findData(config.mode))
+        self.provider = QComboBox()
+        for key, label in PROVIDERS.items():
+            self.provider.addItem(label, key)
+        self.provider.setCurrentIndex(max(0, self.provider.findData(config.provider)))
+        self.claude_model = QComboBox()
+        self.claude_model.addItems(CLAUDE_MODELS)
+        if config.claude_model not in CLAUDE_MODELS:
+            self.claude_model.addItem(config.claude_model)
+        self.claude_model.setCurrentText(config.claude_model)
+        self.claude_consent = QCheckBox(
+            "Send screenshots to Claude through this laptop's Claude Code login")
+        self.claude_consent.setChecked(config.claude_code_confirmed)
+        form.addRow("Intelligence", self.provider)
+        form.addRow("Claude model", self.claude_model)
+        form.addRow(self.claude_consent)
+        self.form = form
         form.addRow("Server", self.url)
         form.addRow("Installed model", self.model)
         form.addRow("Total request timeout", self.timeout)
@@ -127,6 +143,12 @@ class ProviderSettings(QDialog):
             "verifies completion itself and stops if review or clarification is required. "
             "Laptop approval: you review on the laptop.")
         form.addRow("Approval", self.approval)
+        self.orchestrate = QCheckBox("Plan tasks as steps first (orchestrator)")
+        self.orchestrate.setChecked(config.orchestrate)
+        self.orchestrate.setToolTip(
+            "Monster first splits the task into small steps, runs each one, and re-plans "
+            "when a step fails. Turn off to run every task as a single step loop.")
+        form.addRow(self.orchestrate)
         self.approval.currentIndexChanged.connect(
             lambda _: self.approve_each_step.setEnabled(
                 self.mode.currentData() == "supervised" and not self.no_approval()
@@ -215,7 +237,12 @@ class ProviderSettings(QDialog):
         outer.addWidget(buttons)
         area = self.screen().availableGeometry()
         self.resize(600, min(720, area.height() - 40))
+        self.provider.currentIndexChanged.connect(self._provider_changed)
+        self._provider_changed()
         for signal in (
+            self.provider.currentIndexChanged,
+            self.claude_model.currentTextChanged,
+            self.claude_consent.toggled,
             self.url.textChanged,
             self.model.currentTextChanged,
             self.timeout.valueChanged,
@@ -228,6 +255,30 @@ class ProviderSettings(QDialog):
         ):
             signal.connect(self.invalidate)
         self.finished.connect(self._closed)
+
+    def uses_claude(self):
+        return self.provider.currentData() == "claude_code"
+
+    def _provider_changed(self, *_):
+        claude = self.uses_claude()
+        for widget in (self.claude_model, self.claude_consent):
+            self.form.setRowVisible(widget, claude)
+        for widget in (self.url, self.model, self.http, self.local):
+            self.form.setRowVisible(widget, not claude)
+        self.connect_button.setVisible(not claude)
+
+    @staticmethod
+    def check_key(config):
+        """The part of a configuration the vision + JSON check vouches for."""
+        return replace(config, mode="demo", approve_each_step=True, hands_free=False,
+                       orchestrate=False)
+
+    def provider_values(self):
+        return {
+            "provider": self.provider.currentData(),
+            "claude_model": self.claude_model.currentText(),
+            "claude_code_confirmed": self.claude_consent.isChecked(),
+        }
 
     def no_approval(self):
         return self.approval.currentData() is True
@@ -242,7 +293,9 @@ class ProviderSettings(QDialog):
             self.mode.currentData(),
             approve_each_step=self.approve_each_step.isChecked() and not self.no_approval(),
             hands_free=self.no_approval(),
+            orchestrate=self.orchestrate.isChecked(),
             **self.inference_values(),
+            **self.provider_values(),
         )
         config.validate()
         return config
@@ -398,6 +451,7 @@ class ProviderSettings(QDialog):
             "demo",
             approve_each_step=True,  # Execution policy does not change model compatibility.
             **self.inference_values(),
+            **self.provider_values(),
         )
         config.validate()
         return config
@@ -405,9 +459,12 @@ class ProviderSettings(QDialog):
     def probe(self):
         try:
             config = self.value_for_checks()
-            if not config.model:
+            if config.provider == "claude_code":
+                if not config.claude_code_confirmed:
+                    raise ValueError("Confirm sending screenshots to Claude before the vision probe.")
+            elif not config.model:
                 raise ValueError("Discover and select an installed vision model first.")
-            if not config.local_server_confirmed:
+            elif not config.local_server_confirmed:
                 raise ValueError("Confirm local-only server operation before the vision probe.")
             provider = self.provider_factory(config)
         except ValueError as exc:
@@ -441,7 +498,7 @@ class ProviderSettings(QDialog):
                 "Select a model and test vision + JSON."
             )
         else:
-            self.probed_config = self._probe_value
+            self.probed_config = self.check_key(self._probe_value)
             self.status.setText(
                 f"Vision + JSON probe passed · {result.model}. "
                 "This checks compatibility, not GUI grounding accuracy."
@@ -452,9 +509,7 @@ class ProviderSettings(QDialog):
             config = self.value()
             if self.pending:
                 raise ValueError("Wait for the current check or cancel it before saving.")
-            if config.mode in {"preview", "supervised"} and self.probed_config != replace(
-                config, mode="demo", approve_each_step=True
-            ):
+            if config.mode in {"preview", "supervised"} and self.probed_config != self.check_key(config):
                 raise ValueError(
                     "Run and pass the vision + JSON probe for these exact settings first."
                 )

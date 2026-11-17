@@ -35,11 +35,21 @@ from monster.agent.validation import (
 )
 from monster.lifecycle import State, TaskController
 from monster.providers.jobs import ProviderJobs
+from monster.providers.claude_code import provider_for
 from monster.providers.ollama import OllamaProvider
 
 
 VERIFY_RETAKES = 1  # Later looks at a failed/uncertain step before accepting it.
 LAUNCH_RETAKES = 2  # App windows can take longer to appear.
+DRAWING_TARGET_RETRIES = 2  # Re-plans after an uncertain canvas check before stopping.
+# Orchestrator budgets: a planned task gets more room overall, each subtask less.
+ORCHESTRATED_TASK_MS = 600000
+MAX_SUBTASKS = 8
+MAX_PLAN_REVISIONS = 2
+MAX_TASK_ACTIONS = 30
+MAX_TASK_CALLS = 60
+SUBTASK_ACTIONS = 8
+SUBTASK_CALLS = 15
 
 
 class SupervisedController(TaskController):
@@ -50,7 +60,7 @@ class SupervisedController(TaskController):
     worker_owned = Signal(bool)
     is_supervised = True
 
-    def __init__(self, config, provider_factory=OllamaProvider, input_bridge=None, parent=None):
+    def __init__(self, config, provider_factory=provider_for, input_bridge=None, parent=None):
         super().__init__(parent)
         self.config, self.provider_factory = config, provider_factory
         self.timings = OperationTimings()
@@ -131,6 +141,12 @@ class SupervisedController(TaskController):
         self.human_result_confirmed = False
         self.input_may_have_occurred = False
         self.instruction = ""
+        self.goal = ""
+        self.orchestrated = False
+        self.plan = None
+        # Callable(physical_action, foreground, task) -> protected app name or None.
+        # The app installs the native guard; tests run without one.
+        self.window_guard = None
 
     def submit(self, instruction):
         if (
@@ -159,6 +175,37 @@ class SupervisedController(TaskController):
         self.active, self.paused = True, False
         self.generation += 1
         self.run_generation = self.generation
+        self._reset_step_state()
+        self.verification_calls = 0
+        self.trace = []
+        self.actions = self.calls = self.stale = 0
+        self.terminal = None
+        self.terminal_report = None
+        self.human_result_confirmed = False
+        self.input_may_have_occurred = False
+        # Orchestrator: plan the whole task as subtasks, then run each with the step loop.
+        self.goal = self.instruction
+        self.orchestrated = bool(getattr(self.config, "orchestrate", False)) and not self.action_gate
+        self.plan = None
+        self.plan_index = 0
+        self.subtask_results = []
+        self.plan_revisions = self.subtasks_started = 0
+        self.subtask_base_actions = self.subtask_base_calls = 0
+        self.final_summary = None
+        self.active_changed.emit(True)
+        self.paused_changed.emit(False)
+        self.state_changed.emit(State.THINKING)
+        self.stage_changed.emit("Starting")
+        self.deadline.start(ORCHESTRATED_TASK_MS if self.orchestrated else 300000)
+        self.phase = "opening"
+        # GUI releases its stop registration before the child registers it. No
+        # automated input can be armed before the child reports ready.
+        self.worker_owned.emit(True)
+        self.input_job = self._start_input("open")
+        return True
+
+    def _reset_step_state(self):
+        """Everything the step loop learns while working on one (sub)task."""
         self.history = []
         self.failed_actions = []
         self.inserted_text = set()
@@ -179,28 +226,96 @@ class SupervisedController(TaskController):
         self.human_confirmed_focus = False
         self.close_dispatched = False
         self.single_click_dispatched = False
-        self.recovery_attempts = self.rejected_proposals = self.verification_calls = 0
-        self.trace = []
-        self.actions = self.calls = self.stale = 0
-        self.terminal = None
-        self.terminal_report = None
-        self.human_result_confirmed = False
-        self.input_may_have_occurred = False
+        self.recovery_attempts = self.rejected_proposals = 0
         self.completion_summary = None
         self.last_rejection = None
         self.completion_recheck = self.completion_recheck_used = False
-        self.active_changed.emit(True)
-        self.paused_changed.emit(False)
-        self.state_changed.emit(State.THINKING)
-        self.stage_changed.emit("Starting")
-        self.deadline.start(300000)
-        self.phase = "opening"
-        # GUI releases its stop registration before the child registers it. No
-        # automated input can be armed before the child reports ready.
-        self.worker_owned.emit(True)
-        self.input_job = self._start_input("open")
-        return True
+        self.drawing_target_retries = 0
+        self.stale = 0
 
+    # ---- orchestrator -------------------------------------------------------
+    @property
+    def plan_active(self):
+        return self.orchestrated and self.plan is not None
+
+    def _plan_text(self):
+        return "\n".join(f"{i + 1}. {item['instruction']} (done when: {item['done_when']})"
+                         for i, item in enumerate(self.plan or ()))
+
+    def _start_subtask(self, index):
+        if (self.subtasks_started >= MAX_SUBTASKS or self.actions >= MAX_TASK_ACTIONS
+                or self.calls >= MAX_TASK_CALLS):
+            self._end_plan("error", "Stopped incomplete: the task's overall step budget was used "
+                                    "up before it finished.")
+            return
+        self.plan_index = index
+        self.subtasks_started += 1
+        item = self.plan[index]
+        self._reset_step_state()
+        self.instruction = item["instruction"]
+        self.single_click_policy = single_click_requested(self.instruction)
+        self.subtask_base_actions, self.subtask_base_calls = self.actions, self.calls
+        self._record("subtask_started", index=index, total=len(self.plan),
+                     content={"subtask": item})
+        self.trace.append(f"Subtask {index + 1}/{len(self.plan)}: {item['instruction'][:120]}")
+        self.stage_changed.emit(f"Step {index + 1}/{len(self.plan)}")
+        self.phase = "observing"
+        self._capture()
+
+    def _subtask_finished(self, succeeded, message):
+        """Record a subtask's outcome; continue the plan or ask the orchestrator what next."""
+        item = self.plan[self.plan_index]
+        outcome = {"subtask": item["instruction"], "succeeded": succeeded,
+                   "report": (self.completion_summary if succeeded else message) or message}
+        self.subtask_results.append(outcome)
+        self._record("subtask_finished", index=self.plan_index, succeeded=succeeded,
+                     content={"result": outcome})
+        if succeeded and self.plan_index + 1 < len(self.plan):
+            self._start_subtask(self.plan_index + 1)
+            return
+        self.phase = "assessing_capture"
+        self.stage_changed.emit("Reviewing")
+        self._capture()
+
+    def _plan_assessed(self, result):
+        decision, summary = result["decision"], result["summary"]
+        self._record("plan_assessed", decision=decision,
+                     content={"summary": summary, "subtasks": result["subtasks"]})
+        if decision == "next" and self.plan_index + 1 < len(self.plan):
+            self._start_subtask(self.plan_index + 1)
+        elif decision == "revise":
+            if self.plan_revisions >= MAX_PLAN_REVISIONS:
+                self._end_plan("error", "Stopped incomplete: the plan was already revised "
+                                        f"{MAX_PLAN_REVISIONS} times. Last finding: " + summary)
+                return
+            self.plan_revisions += 1
+            self.plan = self.plan[:self.plan_index + 1] + result["subtasks"]
+            self._record("plan_revised", revision=self.plan_revisions,
+                         content={"plan": self.plan})
+            self._start_subtask(self.plan_index + 1)
+        elif decision == "done" or (decision == "next" and self.subtask_results
+                                    and self.subtask_results[-1]["succeeded"]):
+            self.final_summary = summary
+            if self.hands_free:
+                self._end_plan("complete", "Completed · plan finished and checked")
+            else:
+                self.phase = "final_confirming"
+                self.question_id = uuid.uuid4().hex
+                self.state_changed.emit(State.WAITING)
+                self.approval_requested.emit(
+                    self.question_id,
+                    "Confirm the visible result meets your task:\n" + self.goal
+                    + "\nMonster reports: " + summary + "\nApprove only after inspecting it.")
+                self.approval_timer.start(60000)
+        else:
+            self._end_plan("error", "Stopped incomplete: " + summary)
+
+    def _end_plan(self, kind, message):
+        if kind == "complete":
+            self.completion_summary = self.final_summary
+            self._terminate("complete", self._completion_message(message))
+        else:
+            self._terminate("error", message)
     def _record(self, event, *, content=None, **details):
         if self.action_gate:
             content = None  # Mission audit is content-free even before a proposal is denied.
@@ -273,6 +388,7 @@ class SupervisedController(TaskController):
             "comparing": "recheck", "verifying": "verification",
             "checking_target": "target_check", "checking_completion": "verification",
             "checking_drawing_target": "target_check", "checking_launch": "verification",
+            "planning": "orchestration", "assessing": "orchestration",
         }[self.phase]
         job = self.jobs.start(operation)
         self._remember_diagnostic_origin(self.model_diagnostic_origins, job)
@@ -424,7 +540,8 @@ class SupervisedController(TaskController):
 
     def _capture(self):
         if self.active and not self.paused and self.phase in {
-            "observing", "rechecking", "verifying_capture", "completion_capture"
+            "observing", "rechecking", "verifying_capture", "completion_capture",
+            "planning_capture", "assessing_capture",
         }:
             self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
@@ -452,11 +569,30 @@ class SupervisedController(TaskController):
                     "and start a new task; no close shortcut was redirected."
                 )
                 return
+        if self.phase in {"planning_capture", "assessing_capture"}:
+            self.observation = observation
+            planning = self.phase == "planning_capture"
+            self.phase = "planning" if planning else "assessing"
+            self.state_changed.emit(State.THINKING)
+            diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+            goal, plan, results = self.goal, deepcopy(self.plan), deepcopy(self.subtask_results)
+            self._record("plan_requested" if planning else "assessment_requested",
+                         observation=self.log_frame, content={"goal": goal, "results": results})
+            self.job = self._start_model(
+                (lambda: self._provider(diagnostics, "planning", call, step).plan(
+                    self.config.model, goal, observation.png,
+                    observation.bounds.width, observation.bounds.height))
+                if planning else
+                (lambda: self._provider(diagnostics, "assessing", call, step).assess(
+                    self.config.model, goal, plan, results, observation.png,
+                    observation.bounds.width, observation.bounds.height))
+            )
+            return
         if self.phase == "completion_capture":
             self.observation = observation
             self.phase = "checking_completion"
             diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
-            instruction = self.instruction
+            instruction = self._subtask_goal()
             self.job = self._start_model(
                 lambda: self._provider(diagnostics, "checking_completion", call, step).verify_completion(
                     self.config.model, instruction, observation.png,
@@ -531,7 +667,10 @@ class SupervisedController(TaskController):
             return
         if self.phase != "observing":
             return
-        if self.calls >= 20:
+        if self.plan_active and self.calls - self.subtask_base_calls >= SUBTASK_CALLS:
+            self.fail(f"Subtask limit reached ({SUBTASK_CALLS} planning calls).", recoverable=True)
+            return
+        if self.calls >= (MAX_TASK_CALLS if self.plan_active else 20):
             self.fail(
                 "Task limit reached (20 planning calls). The task is incomplete, not completed."
             )
@@ -593,11 +732,32 @@ class SupervisedController(TaskController):
                 "checking_completion": "Whole-task visual check",
                 "checking_drawing_target": "Drawing target check",
                 "checking_launch": "App window check",
+                "planning": "Task planning",
+                "assessing": "Plan review",
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
+        elif self.phase == "planning":
+            self.plan = list(result)
+            self._record("plan_created", subtasks=len(self.plan), content={"plan": self.plan})
+            self.trace.append(f"Plan: {len(self.plan)} subtasks.")
+            if self.hands_free:
+                self._start_subtask(0)
+                return
+            self.phase = "plan_review"
+            self.question_id = uuid.uuid4().hex
+            self.state_changed.emit(State.WAITING)
+            self.approval_requested.emit(
+                self.question_id,
+                "Monster's plan for: " + self.goal[:300] + "\n" + self._plan_text()
+                + "\nApprove to start. Each step still follows your approval setting.")
+            self.approval_timer.start(60000)
+        elif self.phase == "assessing":
+            self._plan_assessed(result)
         elif self.phase == "probing":
             self._record("model_compatibility", metadata=asdict(result) if is_dataclass(result) else {})
-            self.phase = "observing"
+            self.phase = "planning_capture" if self.orchestrated else "observing"
+            if self.orchestrated:
+                self.stage_changed.emit("Planning")
             self._capture()
         elif self.phase == "checking_launch":
             self._record("launch_state_observed", observation=self.log_frame,
@@ -631,8 +791,22 @@ class SupervisedController(TaskController):
                     or type(evidence) is not str or not 1 <= len(evidence.strip()) <= 300):
                 self.fail("Invalid drawing target assessment; no input was dispatched.")
                 return
+            if (result.status in {"uncertain", "wrong_target"}
+                    and self.drawing_target_retries < DRAWING_TARGET_RETRIES):
+                # No input was sent. Let the planner fix what the check found (e.g. select
+                # the pencil) instead of ending the task on the first uncertain look.
+                self.drawing_target_retries += 1
+                self._reject_proposal(
+                    "Drawing target not established yet, so the stroke was not drawn: "
+                    + result.evidence.strip() + " Fix that first (for example select the "
+                    "Pencil or Brush tool, or keep every point well inside the canvas), then "
+                    "propose the stroke again.",
+                    "drawing_target",
+                )
+                return
             if result.status != "ready":
-                self.fail("Drawing target could not be established: " + result.evidence)
+                self.fail("Drawing target could not be established: " + result.evidence,
+                          recoverable=True)
                 return
             self.drawing_target_proposal = deepcopy(self.pending)
             self._begin_recheck(restore=False)
@@ -649,13 +823,17 @@ class SupervisedController(TaskController):
                         "completion",
                     )
                     return
-                self.fail("Task completion could not be verified: " + result.evidence)
+                self.fail("Task completion could not be verified: " + result.evidence,
+                          recoverable=True)
                 return
-            if recheck and not self.hands_free:
+            if recheck and not self.hands_free and not self.plan_active:
                 self.last_verification = result
                 self._ask_completion_confirmation(self.completion_summary)
                 return
             self.last_verification = result
+            if self.plan_active:
+                self._subtask_finished(True, "Subtask checked: " + result.evidence)
+                return
             self._terminate("complete", self._completion_message("Completed · visual task check passed"))
         elif self.phase == "checking_target":
             if not self._reviewed_proposal_matches():
@@ -745,10 +923,13 @@ class SupervisedController(TaskController):
                 return
             if result.status != "succeeded" and self.pending.action.get("op") == "drag":
                 self.fail("Drawing input was dispatched once, but its result could not be verified: "
-                          + result.evidence + " No automatic redraw was attempted.")
+                          + result.evidence + " No automatic redraw was attempted.", recoverable=True)
                 return
-            if result.status != "succeeded" and self.hands_free:
-                self.fail("Visual verification " + result.status + ": " + result.evidence)
+            if (result.status != "succeeded" and self.hands_free
+                    and (self.pending.action.get("op") == "text" or draft_only(self.instruction))):
+                # Typing and draft focus need a human answer, which No approval cannot ask for.
+                self.fail("Visual verification " + result.status + ": " + result.evidence,
+                          recoverable=self.pending.action.get("op") != "text")
                 return
             if result.status != "succeeded":
                 self.failed_actions.append(dict(self.pending.action))
@@ -827,7 +1008,8 @@ class SupervisedController(TaskController):
                         if draft_only(self.instruction) else
                         "Inspect or focus the intended application manually before starting a new task."
                     )
-                    self.fail("No verified progress after three attempts. " + advice)
+                    self.fail("No verified progress after three attempts. " + advice,
+                              recoverable=True)
                     return
             else:
                 self.recovery_attempts = self.rejected_proposals = 0
@@ -865,6 +1047,17 @@ class SupervisedController(TaskController):
                 self._validate_draft_proposal()
             except (ValueError, TypeError):
                 self.fail("Action is outside the supervised demo policy.")
+                return
+            protected = (self.window_guard(action, self.observation.foreground, self.goal)
+                         if self.window_guard else None)
+            if protected:
+                self._record("protected_window_refused", app=protected)
+                self._reject_proposal(
+                    f"That input would land in {protected}, the app that controls Monster. "
+                    "Switch to the app the task is about first (for example press WIN and open "
+                    "it), and never click or type inside " + protected + ".",
+                    "protected_window",
+                )
                 return
             if needs_text_target_check(self.instruction, self.pending.action) and self.draft_target_proposal != self.pending:
                 self.phase = "checking_target"
@@ -916,10 +1109,10 @@ class SupervisedController(TaskController):
                 self._schedule_capture()
                 return
             if result.kind == "unable":
-                self.fail("Model could not continue. Open Last action preview for its explanation.")
+                self.fail("Model could not continue: " + result.summary[:300], recoverable=True)
                 return
             if result.kind == "clarify" and self.hands_free:
-                self.fail("Task needs clarification: " + result.summary)
+                self.fail("Task needs clarification: " + result.summary, recoverable=True)
                 return
             if result.kind == "clarify":
                 self.phase = "clarifying"
@@ -938,7 +1131,8 @@ class SupervisedController(TaskController):
                     self.fail("App launch remains unverified; reconcile its effect before continuing.")
                     return
                 if self.launch_reconciliations >= 2:
-                    self.fail("The requested app window could not be verified after launch. No further input was dispatched.")
+                    self.fail("The requested app window could not be verified after launch. "
+                              "No further input was dispatched.", recoverable=True)
                     return
                 self.launch_reconciliations += 1
                 self.phase = "checking_launch"
@@ -954,7 +1148,10 @@ class SupervisedController(TaskController):
                 )
                 return
             if result.kind == "action":
-                if self.actions >= 10:
+                if self.plan_active and self.actions - self.subtask_base_actions >= SUBTASK_ACTIONS:
+                    self.fail(f"Subtask limit reached ({SUBTASK_ACTIONS} inputs).", recoverable=True)
+                    return
+                if self.actions >= (MAX_TASK_ACTIONS if self.plan_active else 10):
                     self.fail(
                         "Ten-action limit reached. The task is incomplete; inspect the result."
                     )
@@ -1021,7 +1218,7 @@ class SupervisedController(TaskController):
                     self._capture()
                     return
                 self.completion_summary = result.summary
-                if self.hands_free:
+                if self.hands_free or self.plan_active:
                     self.phase = "completion_capture"
                     self._capture()
                     return
@@ -1202,8 +1399,17 @@ class SupervisedController(TaskController):
             self.restore_focus = self.observation.foreground
             self.phase = "observing"
             self._capture()
+        elif self.phase == "plan_review":
+            self._record("plan_approved")
+            self._start_subtask(0)
+        elif self.phase == "final_confirming":
+            self.human_result_confirmed = True
+            self._end_plan("complete", "Completed · visible result confirmed by you")
         elif self.phase == "confirming":
             self.human_result_confirmed = True
+            if self.plan_active:
+                self._subtask_finished(True, "Subtask confirmed by you")
+                return
             self._terminate("complete", self._completion_message("Completed · visible result confirmed by you"))
         elif self.phase == "approval":
             self._begin_recheck(restore=True)
@@ -1247,8 +1453,25 @@ class SupervisedController(TaskController):
         self.restore_focus = self.observation.foreground if restore else None
         self._capture()
 
+    def _subtask_goal(self):
+        """What the current (sub)task must achieve, for the whole-(sub)task check."""
+        if not self.plan_active:
+            return self.instruction
+        return self.instruction + " Done when: " + self.plan[self.plan_index]["done_when"]
+
     def _task_context(self):
         text = self.instruction
+        if self.plan_active:
+            item = self.plan[self.plan_index]
+            done = [r["subtask"] + " -> " + str(r["report"])[:200]
+                    for r in self.subtask_results if r["succeeded"]]
+            text += (
+                f"\nDone when: {item['done_when']}"
+                f"\nThis is step {self.plan_index + 1} of {len(self.plan)} of a larger task; do "
+                "only this step, then report complete. Overall task (context only): "
+                + self.goal[:600]
+                + ("\nEarlier steps already done: " + " | ".join(done)[:800] if done else "")
+            )
         if drawing_requested(self.instruction):
             text += (
                 '\nDrawing capability: a left-button drag draws a stroke on the verified canvas. '
@@ -1310,6 +1533,8 @@ class SupervisedController(TaskController):
             "repeat": "repeated/previously failed input",
             "action_validation": "tool/action validation",
             "completion": "unsupported completion",
+            "drawing_target": "drawing target not ready",
+            "protected_window": "input aimed at the controlling app",
         }.get(category, "unspecified validation")
         self.trace.append(f"Proposal rejected: {label}.")
         self._record("proposal_rejected", category=label, content={
@@ -1331,7 +1556,7 @@ class SupervisedController(TaskController):
                 "Inspect the target application and Last action preview before starting a new task."
             )
             self.fail("Three repeated/invalid proposals rejected without input. " + advice
-                      + " Last rejection: " + str(reason)[:300])
+                      + " Last rejection: " + str(reason)[:300], recoverable=True)
             return
         self.phase = "observing"
         self._capture()
@@ -1348,9 +1573,18 @@ class SupervisedController(TaskController):
         self.timings.finish(("capture", self.generation), "failed")
         self.fail(error)
 
-    def fail(self, message):
-        if self.active:
-            self._terminate("error", "Stopped incomplete: " + message)
+    def fail(self, message, recoverable=False):
+        """End the task. In a planned task, a recoverable failure (no unsafe or uncertain
+        input state) ends only the current subtask and lets the orchestrator re-plan."""
+        if not self.active:
+            return
+        if recoverable and self.plan_active and self.phase != "closing":
+            self.job = None
+            self.approval_timer.stop()
+            self.question_id = None
+            self._subtask_finished(False, message)
+            return
+        self._terminate("error", "Stopped incomplete: " + message)
 
     def _terminate(self, kind, message):
         if self.action_gate:

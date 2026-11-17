@@ -8,6 +8,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
+PROVIDERS = {"ollama": "Ollama (local / LAN model)", "claude_code": "Claude Code (this laptop)"}
+CLAUDE_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5")
+
+
 @dataclass(frozen=True)
 class OllamaConfig:
     url: str = "http://localhost:11434"
@@ -22,6 +26,13 @@ class OllamaConfig:
     thinking: bool = False
     approve_each_step: bool = True
     hands_free: bool = False
+    # Which intelligence reasons about the screen: the Ollama server above, or the
+    # Claude Code CLI on this laptop (screenshots then go to Anthropic via that login).
+    provider: str = "ollama"
+    claude_model: str = "claude-sonnet-5-5"
+    claude_code_confirmed: bool = False
+    # Plan the task as subtasks first (orchestrator), then run each with the step loop.
+    orchestrate: bool = False
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -85,23 +96,37 @@ class OllamaConfig:
             raise ValueError("Select demo, preview or supervised mode.")
         if any(type(v) is not bool for v in (self.allow_lan_http, self.local_server_confirmed)):
             raise ValueError("Provider confirmation values must be Boolean.")
-        if self.mode in {"preview", "supervised"} and (
-            not self.model or not self.local_server_confirmed
-        ):
-            raise ValueError("Select a model and confirm local-only server operation for preview.")
+        if self.provider not in PROVIDERS:
+            raise ValueError("Choose Ollama or Claude Code as the intelligence provider.")
+        if (type(self.claude_model) is not str
+                or not re.fullmatch(r"claude-[a-z0-9.-]{1,60}", self.claude_model)):
+            raise ValueError("Choose a Claude model such as claude-sonnet-5-5.")
+        if type(self.orchestrate) is not bool:
+            raise ValueError("Task planning must be enabled or disabled explicitly.")
+        if type(self.claude_code_confirmed) is not bool:
+            raise ValueError("Claude Code consent must be enabled or disabled explicitly.")
+        if self.mode in {"preview", "supervised"}:
+            if self.provider == "claude_code":
+                if not self.claude_code_confirmed:
+                    raise ValueError("Confirm that screenshots are sent to Claude through "
+                                     "Claude Code before using it.")
+            elif not self.model or not self.local_server_confirmed:
+                raise ValueError("Select a model and confirm local-only server operation for preview.")
 
 
 # The saved-settings default for the Approval choice is "No approval" (hands-free). The
 # dataclass default stays False so code building a config explicitly opts in.
 DEFAULT_HANDS_FREE = True
+DEFAULT_ORCHESTRATE = True
 
 
 def load(path: Path) -> OllamaConfig:
     if not path.exists():
-        return OllamaConfig(hands_free=DEFAULT_HANDS_FREE)
+        return OllamaConfig(hands_free=DEFAULT_HANDS_FREE, orchestrate=DEFAULT_ORCHESTRATE)
     data = json.loads(path.read_text(encoding="utf-8"))
     if type(data) is dict:
         data.setdefault("hands_free", DEFAULT_HANDS_FREE)
+        data.setdefault("orchestrate", DEFAULT_ORCHESTRATE)
     config = OllamaConfig(**data)
     config.validate()
     return config

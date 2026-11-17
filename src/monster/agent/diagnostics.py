@@ -142,6 +142,10 @@ class RunDiagnostics:
             "model", "mode", "timeout", "context_size", "max_output_tokens", "thinking",
             "keep_alive", "approve_each_step", "hands_free", "allow_lan_http", "local_server_confirmed",
         )}
+        # Which intelligence actually reasoned in this run.
+        self.configuration["provider"] = getattr(config, "provider", "ollama")
+        if self.configuration["provider"] == "claude_code":
+            self.configuration["model"] = getattr(config, "claude_model", None)
         try:
             origin = urlsplit(config.url)
             host = origin.hostname or "unknown"

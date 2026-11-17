@@ -29,6 +29,8 @@ KEY_EVENTS = frozenset({
     "draft_target_result", "drawing_target_result", "review_response", "capture_failed",
     "model_result", "task_terminated", "startup_failed", "dispatch_requested",
     "review_requested", "clarification_requested", "launch_query_confirmed",
+    "plan_requested", "plan_created", "plan_approved", "subtask_started", "subtask_finished",
+    "assessment_requested", "plan_assessed", "plan_revised", "protected_window_refused",
 })
 
 
@@ -199,6 +201,10 @@ class RemoteBridge(QObject):
             "review_text": pending[1] if pending else None,
             "message": task["message"],
             "result": task.get("result"),
+            "plan": [item["instruction"] for item in (getattr(controller, "plan", None) or ())]
+                    if task["state"] == "running" else None,
+            "current_step": (getattr(controller, "plan_index", 0) + 1)
+                            if task["state"] == "running" and getattr(controller, "plan", None) else None,
             "confirmed_input_transactions": getattr(controller, "actions", None),
         }
 
@@ -275,7 +281,8 @@ class RemoteBridge(QObject):
             "task_id": task["id"], "state": self._task_view()["state"],
             "outcome": data["outcome"], "summary": data["summary"],
             "configuration": {k: data["configuration"].get(k)
-                              for k in ("model", "mode", "hands_free", "approve_each_step")},
+                              for k in ("provider", "model", "mode", "hands_free",
+                                        "approve_each_step")},
             "events": events[-MAX_DIAGNOSTIC_EVENTS:], "events_omitted": dropped,
             "view": "full" if full else "key",
         }

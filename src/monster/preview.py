@@ -5,6 +5,7 @@ from PySide6.QtCore import Signal
 from monster.lifecycle import State, TaskController
 from monster.providers.base import ProviderError
 from monster.providers.jobs import ProviderJobs
+from monster.providers.claude_code import provider_for
 from monster.providers.ollama import OllamaProvider
 
 
@@ -12,7 +13,7 @@ class PreviewTaskController(TaskController):
     capture_requested = Signal()
     preview_ready = Signal(object)
 
-    def __init__(self, config, provider_factory=OllamaProvider, parent=None):
+    def __init__(self, config, provider_factory=provider_for, parent=None):
         super().__init__(parent)
         self.config = config
         self.provider_factory = provider_factory

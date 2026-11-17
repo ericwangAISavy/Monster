@@ -84,7 +84,7 @@ def test_drag_scene_recheck_detects_changed_destination_path():
     assert details['reason'] == 'drag_path_changed'
 
 
-@pytest.mark.parametrize('target_status', ['ready', 'uncertain', 'wrong_target'])
+@pytest.mark.parametrize('target_status', ['ready'])
 def test_draw_checks_canvas_then_dispatches_once_without_approval(qtbot, target_status):
     engine, bridge, model = controller([stroke(), Decision('complete', 'Line is drawn')])
     engine.config = replace(engine.config, hands_free=True)
@@ -117,6 +117,55 @@ def test_draw_checks_canvas_then_dispatches_once_without_approval(qtbot, target_
             assert 'Completed' in done[0]
         else:
             assert 'Drawing target could not be established' in done[0]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize('status', ['uncertain', 'wrong_target'])
+def test_uncertain_canvas_check_replans_twice_without_input_then_stops(qtbot, status):
+    engine, bridge, model = controller([stroke(), stroke(), stroke()])
+    engine.config = replace(engine.config, hands_free=True)
+    done, checks = [], []
+
+    async def target(*args):
+        checks.append(args)
+        return DraftTargetCheck(status, 'No drawing tool is active; select the Pencil tool')
+
+    model.verify_drawing_target = target
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.failed.connect(done.append)
+    try:
+        engine.submit('Draw a simple line in the open Paint canvas')
+        qtbot.waitUntil(lambda: bool(done), timeout=5000)
+        assert len(checks) == 3 and not bridge.executed
+        assert 'Drawing target could not be established' in done[0]
+        assert any('select the Pencil tool' in line for line in model.history[-1])
+    finally:
+        engine.close()
+
+
+def test_uncertain_canvas_check_lets_planner_fix_tool_then_draws(qtbot):
+    pencil = Decision('action', 'Select the Pencil tool', {'op': 'click', 'x': 10, 'y': 5},
+                      risk='routine', expected_result='Pencil tool is selected')
+    engine, bridge, model = controller([stroke(), pencil, stroke(), Decision('complete', 'Line drawn')])
+    engine.config = replace(engine.config, hands_free=True)
+    done, verdicts = [], iter(['uncertain', 'ready'])
+
+    async def target(*args):
+        return DraftTargetCheck(next(verdicts), 'Select the Pencil tool first')
+
+    async def complete(*args):
+        return Verification('succeeded', 'Line visible')
+
+    model.verify_drawing_target, model.verify_completion = target, complete
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    engine.finished.connect(done.append)
+    engine.failed.connect(done.append)
+    try:
+        engine.submit('Draw a simple line in the open Paint canvas')
+        qtbot.waitUntil(lambda: bool(done), timeout=6000)
+        assert [a[0]['op'] for a in bridge.executed] == ['click', 'drag']
+        assert 'Completed' in done[0]
     finally:
         engine.close()
 
@@ -206,7 +255,7 @@ def test_provider_drawing_target_uses_both_endpoints_and_retains_result(status):
     result = asyncio.run(provider.verify_drawing_target('vision:small', 'Draw a line', stroke().action, b'PNG', 100, 100))
     assert result.status == status
     prompt = json.loads(requests[-1].content)['messages'][1]['content']
-    assert 'BOTH endpoints' in prompt and 'straight path' in prompt
+    assert 'BOTH endpoints' in prompt and 'between consecutive points' in prompt
 
 
 def test_canvas_assessment_is_bound_to_fresh_scene_before_dispatch(qtbot):

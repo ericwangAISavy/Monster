@@ -82,6 +82,31 @@ def window_process_id(handle: int) -> int:
     return int(pid.value)
 
 
+def window_process_name(handle: int) -> str:
+    """Executable file name (for example code.exe) owning a window, or "" when unknown."""
+    pid = window_process_id(handle)
+    if not pid or sys.platform != "win32":
+        return ""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    process = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        return ""
+    try:
+        buffer = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(size)):
+            return ""
+        return buffer.value.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    finally:
+        kernel.CloseHandle(process)
+
+
 def root_window_at(x: int, y: int) -> int:
     """Top-level window under a physical screen point, or 0 when unknown."""
     api = user32()
