@@ -123,7 +123,7 @@ def test_claude_checks_use_the_check_model():
     async def runner(argv, stdin, timeout):
         calls.append(argv[argv.index("--model") + 1])
         result = {"type": "result", "subtype": "success", "is_error": False,
-                  "structured_output": {"status": "succeeded", "evidence": "ok"}}
+                  "result": json.dumps({"status": "succeeded", "evidence": "ok"})}
         return 0, json.dumps(result).encode(), b""
 
     config = OllamaConfig(mode="supervised", provider="claude_code", claude_code_confirmed=True)
@@ -164,3 +164,12 @@ def test_uncertain_risk_in_no_approval_is_replanned_by_the_orchestrator(qtbot):
         assert len(reviews) == 1 and not bridge.executed
     finally:
         engine.close()
+
+
+def test_long_final_reports_are_kept_and_long_step_labels_are_trimmed():
+    report = "Headlines: " + "story; " * 120
+    assert parse_decision({"kind": "complete", "summary": report}, 10, 10).summary == report.strip()
+    step = parse_decision({"kind": "action", "summary": "Click " * 100, "risk": "routine",
+                           "action": {"op": "press", "key": "WIN"}, "expected_result": "Start"},
+                          10, 10)
+    assert len(step.summary) == 300 and step.summary.endswith("…")

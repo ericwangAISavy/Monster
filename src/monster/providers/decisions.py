@@ -34,7 +34,8 @@ ACTION_SCHEMA = {
                 {
                     "x_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
                     "y_1000": {"type": "integer", "minimum": 0, "maximum": 1000},
-                    "delta": {"type": "integer", "minimum": -1200, "maximum": 1200},
+                    "delta": {"type": "integer", "minimum": -1200, "maximum": 1200,
+                              "description": "Wheel amount: NEGATIVE scrolls down, positive scrolls up; 120 = one notch."},
                     "horizontal": {"type": "boolean"},
                 },
             ),
@@ -106,7 +107,7 @@ DECISION_SCHEMA = {
             "type": "object",
             "properties": {
                 "kind": {"enum": ["complete", "clarify", "unable"]},
-                "summary": {"type": "string", "minLength": 1, "maxLength": 300},
+                "summary": {"type": "string", "minLength": 1, "maxLength": 1200},
                 "previous_step": PREVIOUS_STEP,
             },
             "required": ["kind", "summary"],
@@ -154,8 +155,15 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
     ):
         raise ProviderError("Model returned an invalid decision.")
     summary = value.get("summary")
-    if type(summary) is not str or not 1 <= len(summary.strip()) <= 300:
+    if type(summary) is not str or not summary.strip():
         raise ProviderError("Model returned an invalid summary.")
+    # A final report can carry the information the task asked for; a step summary is only
+    # a label, so an over-long one is shortened rather than costing a whole planning call.
+    limit = 300 if value["kind"] == "action" else 1200
+    if len(summary.strip()) > limit:
+        if value["kind"] != "action":
+            raise ProviderError("Model returned an invalid summary.")
+        summary = summary.strip()[:limit - 1].rstrip() + "…"
     required = {"kind", "summary", "action"} if value["kind"] == "action" else {"kind", "summary"}
     allowed = (required | {"risk", "expected_result"} if value["kind"] == "action" else required) | {"previous_step"}
     if not required <= set(value) or set(value) - allowed:

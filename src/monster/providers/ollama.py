@@ -121,7 +121,8 @@ ORCHESTRATOR_GUIDE = (
     "or open Chrome/Edge first, then type the bare domain (linkedin.com) in the address bar. "
     "Keep a sequence that opens a menu and picks from it inside ONE subtask, because a menu "
     "closes between subtasks. For information tasks, end with a subtask that reads the "
-    "requested information from the screen and reports it. For drawing in Paint, use one "
+    "requested information from the screen and reports it. Never plan a click on the "
+    "taskbar icon of the app already in front (that minimizes it). For drawing in Paint, use one "
     "subtask per part (for example head, ears, eyes) and say where on the canvas it goes. "
     "Never add steps the user did not ask for that send, delete, buy, install or sign in. "
     "Never act inside the app that controls Monster (Visual Studio Code, Claude, ChatGPT) "
@@ -146,7 +147,7 @@ ASSESS_SCHEMA = {
     "type": "object",
     "properties": {
         "decision": {"enum": ["next", "revise", "done", "stop"]},
-        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 1200},
         "subtasks": {"type": "array", "minItems": 0, "maxItems": 6, "items": SUBTASK_ITEM},
     },
     "required": ["decision", "summary", "subtasks"],
@@ -177,7 +178,7 @@ def parse_plan(value):
 def parse_assessment(value):
     if (type(value) is not dict or set(value) != {"decision", "summary", "subtasks"}
             or value["decision"] not in {"next", "revise", "done", "stop"}
-            or type(value["summary"]) is not str or not 1 <= len(value["summary"].strip()) <= 500):
+            or type(value["summary"]) is not str or not 1 <= len(value["summary"].strip()) <= 1200):
         raise ProviderError("Model returned an invalid assessment.")
     subtasks = _subtasks(value["subtasks"], 0, 6)
     if value["decision"] == "revise" and not subtasks:
@@ -633,6 +634,9 @@ class OllamaProvider:
         value = await self.chat(
             model,
             "Independently check the ENTIRE requested task against this current screenshot. "
+            "Judge only the visible end state (including any 'Done when' condition), never "
+            "whether each listed step was performed: a finished result counts even if the "
+            "route to it cannot be seen. "
             "Return succeeded only if all requested results are visibly established in the "
             "intended application. Search results do not prove an application launched. "
             "Opening Paint does not prove a requested drawing exists. For an information task "
@@ -751,6 +755,12 @@ class OllamaProvider:
             "do not replace the user's click with a shortcut. "
             "Only click a target you can actually see in this screenshot; never click a spot "
             "because something 'should' be there, and describe exactly what is at that point. "
+            "Scrolling: a NEGATIVE delta scrolls down (for example -480 is four notches down), "
+            "a positive delta scrolls up; scroll over the page content, not over a popup. "
+            "Clicking the taskbar icon of the app that is already in front minimizes it, so "
+            "never do that; if the app is in front, act inside its window. "
+            "When the task asks for information, put it in the complete summary (up to about "
+            "1000 characters). "
             "After pressing WIN, type the app name straight away; Start search is already "
             "focused, so do not click the search box. "
             "To open a website: if a browser window is visible, click its new-tab + button or "

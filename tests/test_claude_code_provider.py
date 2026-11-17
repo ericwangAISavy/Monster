@@ -31,22 +31,40 @@ class FakeCli:
         return self.code, "\n".join(lines).encode(), b""
 
 
-def test_decide_sends_image_and_wrapped_schema_and_unwraps_answer():
-    answer = {"answer": {"kind": "action", "summary": "Open Start",
-                         "action": {"op": "press", "key": "WIN"}, "risk": "routine",
-                         "expected_result": "Start is open"}}
-    cli = FakeCli(answer)
+DECISION = {"kind": "action", "summary": "Open Start", "action": {"op": "press", "key": "WIN"},
+            "risk": "routine", "expected_result": "Start is open"}
+
+
+def test_decide_asks_for_plain_json_in_one_call():
+    cli = FakeCli(None, text="```json\n" + json.dumps(DECISION) + "\n```")
     provider = ClaudeCodeProvider(config(), cli="claude.exe", runner=cli)
     decision = asyncio.run(provider.decide("ignored", "Open Notepad", b"PNG", 100, 100))
     assert decision.kind == "action" and decision.action == {"op": "press", "key": "WIN"}
+    assert len(cli.calls) == 1
     argv, stdin, _ = cli.calls[0]
     assert argv[:2] == ["claude.exe", "-p"] and "--strict-mcp-config" in argv
+    assert "--json-schema" not in argv
     assert argv[argv.index("--tools") + 1] == "" and argv[argv.index("--model") + 1] == "claude-sonnet-5-5"
-    schema = json.loads(argv[argv.index("--json-schema") + 1])
-    assert schema["type"] == "object" and schema["properties"]["answer"] == DECISION_SCHEMA
-    message = json.loads(stdin)
-    kinds = [block["type"] for block in message["message"]["content"]]
-    assert kinds == ["image", "text"]
+    content = json.loads(stdin)["message"]["content"]
+    assert [block["type"] for block in content] == ["image", "text"]
+    assert json.dumps(DECISION_SCHEMA, separators=(",", ":")) in content[-1]["text"]
+
+
+def test_unparseable_answer_retries_once_with_the_schema_tool():
+    class TwoStep(FakeCli):
+        async def __call__(self, argv, stdin, timeout):
+            self.text = "I think you should press WIN." if not self.calls else None
+            self.answer = {"answer": DECISION} if self.calls else None
+            return await super().__call__(argv, stdin, timeout)
+
+    cli = TwoStep(None)
+    provider = ClaudeCodeProvider(config(), cli="claude.exe", runner=cli)
+    decision = asyncio.run(provider.decide("ignored", "Open Notepad", b"PNG", 100, 100))
+    assert decision.action == {"op": "press", "key": "WIN"} and len(cli.calls) == 2
+    retry = cli.calls[1][0]
+    schema = json.loads(retry[retry.index("--json-schema") + 1])
+    assert schema["properties"]["answer"] == DECISION_SCHEMA
+    assert retry[retry.index("--tools") + 1] == ""
 
 
 def test_verify_sends_before_and_after_images_with_labels():
@@ -59,8 +77,47 @@ def test_verify_sends_before_and_after_images_with_labels():
     content = json.loads(cli.calls[0][1])["message"]["content"]
     assert [b["type"] for b in content] == ["text", "image", "text", "image", "text"]
     assert content[0]["text"].startswith("Image 1: BEFORE")
-    schema = json.loads(cli.calls[0][0][cli.calls[0][0].index("--json-schema") + 1])
-    assert "answer" not in schema.get("properties", {})  # Object schemas pass through.
+    assert cli.calls[0][0][cli.calls[0][0].index("--model") + 1] == "claude-haiku-5-5"
+
+
+def test_parse_json_text():
+    from monster.providers.claude_code import parse_json_text
+
+    assert parse_json_text('{"a": 1}') == {"a": 1}
+    assert parse_json_text('Sure:\n```json\n{"a": 2}\n```') == {"a": 2}
+    assert parse_json_text("no json here") is None
+    assert parse_json_text("[1, 2]") is None
+
+
+def test_warm_pool_hands_out_a_started_process_and_prewarms_the_next():
+    from monster.providers.claude_code import WarmPool
+
+    class Proc:
+        def __init__(self, n):
+            self.n, self.killed = n, False
+
+        def poll(self):
+            return 0 if self.killed else None
+
+        def kill(self):
+            self.killed = True
+
+        def communicate(self, *a, **k):
+            return b"", b""
+
+    spawned, now = [], [0.0]
+    pool = WarmPool(spawn=lambda argv: spawned.append(Proc(len(spawned))) or spawned[-1],
+                    clock=lambda: now[0])
+    argv = ["claude", "-p", "x"]
+    first = pool.take(argv)  # Cold: spawns one to use and one to keep ready.
+    assert first.n == 0 and len(spawned) == 2
+    second = pool.take(argv)  # Warm: gets the ready one and starts another.
+    assert second.n == 1 and len(spawned) == 3
+    now[0] = WarmPool.IDLE_S + 1
+    third = pool.take(argv)  # The ready one went stale: killed, a fresh one used.
+    assert spawned[2].killed and third.n == 3
+    pool.close()
+    assert all(p.killed for p in spawned[4:])
 
 
 def test_login_and_cli_errors_are_reported_plainly():
@@ -135,3 +192,21 @@ def test_settings_dialog_saves_claude_code_after_probe(qtbot):
     dialog.probed_config = dialog.check_key(dialog.value())  # As after a passed probe.
     dialog.apply()
     assert saved and saved[0].provider == "claude_code" and saved[0].claude_code_confirmed
+
+
+def test_over_long_text_is_fitted_to_the_schema_instead_of_failing():
+    long_evidence = "The page did not scroll. " * 40
+    cli = FakeCli({"status": "failed", "evidence": long_evidence})
+    provider = ClaudeCodeProvider(config(), cli="claude.exe", runner=cli)
+    result = asyncio.run(provider.verify_action(
+        "m", "Scroll", {"op": "scroll", "x": 5, "y": 5, "delta": -120}, "Page moves", b"A", 10, 10))
+    assert result.status == "failed" and len(result.evidence) == 300 and len(cli.calls) == 1
+
+
+def test_fit_to_schema_picks_the_matching_decision_variant():
+    from monster.providers.claude_code import fit_to_schema
+
+    report = {"kind": "complete", "summary": "y" * 1500}
+    assert len(fit_to_schema(report, DECISION_SCHEMA)["summary"]) == 1200
+    step = {"kind": "action", "summary": "x" * 500, "action": {"op": "press", "key": "WIN"}}
+    assert len(fit_to_schema(step, DECISION_SCHEMA)["summary"]) == 300
