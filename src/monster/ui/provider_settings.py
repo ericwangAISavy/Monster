@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QLabel,
@@ -125,6 +126,15 @@ class ProviderSettings(QDialog):
         self.claude_check_model.setToolTip("Model for yes/no screen checks; a faster one cuts latency.")
         form.addRow("Check model", self.claude_check_model)
         form.addRow(self.claude_consent)
+        self.paid_cap = QDoubleSpinBox()
+        self.paid_cap.setRange(0, 1000)
+        self.paid_cap.setDecimals(2)
+        self.paid_cap.setPrefix("$ ")
+        self.paid_cap.setSuffix(" per day")
+        self.paid_cap.setValue(config.paid_daily_cap_usd)
+        self.paid_cap.setToolTip("Auto routing stops using Claude for the rest of the day once this "
+                                 "much was spent, and continues with the local model.")
+        form.addRow("Paid models: daily limit", self.paid_cap)
         self.form = form
         form.addRow("Server", self.url)
         form.addRow("Installed model", self.model)
@@ -274,6 +284,7 @@ class ProviderSettings(QDialog):
             self.claude_check_model.currentTextChanged,
             self.claude_model.currentTextChanged,
             self.claude_consent.toggled,
+            self.paid_cap.valueChanged,
             self.url.textChanged,
             self.model.currentTextChanged,
             self.timeout.valueChanged,
@@ -291,9 +302,13 @@ class ProviderSettings(QDialog):
         return self.provider.currentData() == "claude_code"
 
     def _provider_changed(self, *_):
-        claude = self.uses_claude()
-        for widget in (self.claude_model, self.claude_check_model, self.claude_consent):
+        provider = self.provider.currentData()
+        claude, auto = provider == "claude_code", provider == "router"
+        # Auto routing uses both: the Ollama model and Claude Haiku (models fixed by policy).
+        for widget in (self.claude_model, self.claude_check_model):
             self.form.setRowVisible(widget, claude)
+        self.form.setRowVisible(self.claude_consent, claude or auto)
+        self.form.setRowVisible(self.paid_cap, auto)
         for widget in (self.url, self.model, self.http, self.local):
             self.form.setRowVisible(widget, not claude)
         self.connect_button.setVisible(not claude)
@@ -311,6 +326,7 @@ class ProviderSettings(QDialog):
             "claude_model": self.claude_model.currentText(),
             "claude_check_model": self.claude_check_model.currentText(),
             "claude_code_confirmed": self.claude_consent.isChecked(),
+            "paid_daily_cap_usd": round(self.paid_cap.value(), 2),
         }
 
     def no_approval(self):
@@ -495,7 +511,12 @@ class ProviderSettings(QDialog):
     def probe(self):
         try:
             config = self.value_for_checks()
-            if config.provider == "claude_code":
+            if config.provider == "router":
+                if not ((config.model and config.local_server_confirmed)
+                        or config.claude_code_confirmed):
+                    raise ValueError("Auto routing needs the Ollama model (with local-only "
+                                     "confirmation) and/or Claude consent before the probe.")
+            elif config.provider == "claude_code":
                 if not config.claude_code_confirmed:
                     raise ValueError("Confirm sending screenshots to Claude before the vision probe.")
             elif not config.model:

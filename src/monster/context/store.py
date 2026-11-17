@@ -21,7 +21,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUNDLE_TTL_S = 7 * 24 * 3600
 MAX_BUNDLE_BYTES = 20 * 1024 * 1024
 CHUNK_CHARS = 800
@@ -66,8 +66,11 @@ def _pdf_text(data):
         import pypdf
     except ImportError:
         return None  # The file is still stored and usable for uploads.
-    reader = pypdf.PdfReader(io.BytesIO(data))
-    return "\n".join((page.extract_text() or "") for page in reader.pages)
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception:  # noqa: BLE001 - A damaged or unusual PDF is still stored, just unsearchable.
+        return None
 
 
 def extract_text(name, data):
@@ -138,6 +141,7 @@ class ContextStore:
                         text TEXT, summary TEXT NOT NULL,
                         entities_json TEXT NOT NULL DEFAULT '[]', purpose TEXT NOT NULL DEFAULT '',
                         created_at REAL NOT NULL,
+                        linked INTEGER NOT NULL DEFAULT 0,
                         CHECK ((project_id IS NULL) <> (bundle_id IS NULL)));
                     CREATE INDEX documents_project ON documents(project_id);
                     CREATE INDEX documents_bundle ON documents(bundle_id);
@@ -146,6 +150,10 @@ class ContextStore:
                 self.db.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
             elif row["version"] > SCHEMA_VERSION:
                 raise ContextError("The context database is from a newer Monster version.")
+            elif row["version"] < 2:
+                # v2: linked documents point at the user's own file instead of a copy.
+                self.db.execute("ALTER TABLE documents ADD COLUMN linked INTEGER NOT NULL DEFAULT 0")
+                self.db.execute("UPDATE schema_version SET version = 2")
 
     # ---- projects (permanent) -----------------------------------------------
     def create_project(self, name, instructions=""):
@@ -171,7 +179,7 @@ class ContextStore:
         with self.lock, self.db:
             self._project(project_id)
             paths = [r["path"] for r in self.db.execute(
-                "SELECT path FROM documents WHERE project_id = ?", (project_id,))]
+                "SELECT path FROM documents WHERE project_id = ? AND linked = 0", (project_id,))]
             self.db.execute("DELETE FROM chunks WHERE document_id IN "
                             "(SELECT id FROM documents WHERE project_id = ?)", (project_id,))
             self.db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
@@ -199,6 +207,12 @@ class ContextStore:
             self._project(project_id)
         return self._add_document(name, data, project_id=project_id)
 
+    def link_file(self, project_id, path):
+        """Use a file where it already is (uploads pick that exact path)."""
+        with self.lock:
+            self._project(project_id)
+        return self._add_document(None, None, project_id=project_id, linked_path=path)
+
     def add_text(self, project_id, name, text):
         with self.lock:
             self._project(project_id)
@@ -206,13 +220,13 @@ class ContextStore:
                                   project_id=project_id, force_text=True)
 
     # ---- bundles (temporary, one task) ---------------------------------------
-    def create_bundle(self, *, text=None, files=(), images=(), run_ref=None):
+    def create_bundle(self, *, text=None, files=(), images=(), links=(), run_ref=None):
         """Store one command's temporary context. files/images: [(name, bytes)]."""
         size = len((text or "").encode("utf-8")) + sum(len(d) for _, d in (*files, *images))
         if size > MAX_BUNDLE_BYTES:
             raise ContextError(f"Temporary context is {size // 1024} KB; the limit is "
                                f"{MAX_BUNDLE_BYTES // (1024 * 1024)} MB per command.")
-        if not (text and text.strip()) and not files and not images:
+        if not (text and text.strip()) and not files and not images and not links:
             return None
         bundle_id, now = _new_id(), self.clock()
         with self.lock, self.db:
@@ -226,6 +240,8 @@ class ContextStore:
                 self._add_document(name, data, bundle_id=bundle_id)
             for name, data in images:
                 self._add_document(name, data, bundle_id=bundle_id, force_image=True)
+            for path in links:
+                self._add_document(None, None, bundle_id=bundle_id, linked_path=path)
         except Exception:
             self.delete_bundle(bundle_id)
             raise
@@ -246,7 +262,7 @@ class ContextStore:
     def delete_bundle(self, bundle_id):
         with self.lock, self.db:
             paths = [r["path"] for r in self.db.execute(
-                "SELECT path FROM documents WHERE bundle_id = ?", (bundle_id,))]
+                "SELECT path FROM documents WHERE bundle_id = ? AND linked = 0", (bundle_id,))]
             self.db.execute("DELETE FROM chunks WHERE document_id IN "
                             "(SELECT id FROM documents WHERE bundle_id = ?)", (bundle_id,))
             self.db.execute("DELETE FROM bundles WHERE id = ?", (bundle_id,))
@@ -268,10 +284,16 @@ class ContextStore:
 
     # ---- documents -------------------------------------------------------------
     def _add_document(self, name, data, *, project_id=None, bundle_id=None,
-                      force_text=False, force_image=False):
+                      force_text=False, force_image=False, linked_path=None):
+        if linked_path is not None:
+            source = Path(linked_path)
+            if not source.is_file():
+                raise ContextError(f"{linked_path} is not a readable file.")
+            name, data = source.name, source.read_bytes()
         if type(data) is not bytes:
             raise ContextError("File data must be bytes.")
-        name = _safe_name(name)
+        if linked_path is None:
+            name = _safe_name(name)
         if force_text:
             kind, text = "text", data.decode("utf-8", "replace")
         elif force_image:
@@ -279,14 +301,17 @@ class ContextStore:
         else:
             kind, text = extract_text(name, data)
         document_id = _new_id()
-        path = self.files / f"{document_id}_{name}"
-        path.write_bytes(data)
+        if linked_path is not None:
+            path = Path(linked_path).resolve()
+        else:
+            path = self.files / f"{document_id}_{name}"
+            path.write_bytes(data)
         with self.lock, self.db:
             self.db.execute(
                 "INSERT INTO documents (id, project_id, bundle_id, name, kind, path, size, text, "
-                "summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "summary, created_at, linked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (document_id, project_id, bundle_id, name, kind, str(path), len(data), text,
-                 summarize(name, kind, text), self.clock()))
+                 summarize(name, kind, text), self.clock(), int(linked_path is not None)))
             for seq, chunk in enumerate(chunks_of(text)):
                 self.db.execute("INSERT INTO chunks (text, document_id, seq) VALUES (?, ?, ?)",
                                 (chunk, document_id, seq))
@@ -295,20 +320,53 @@ class ContextStore:
                                 (self.clock(), project_id))
         return document_id
 
+    def upload_path(self, document_id):
+        """A copy of the document under its original name, for a site's file picker.
+
+        Stored copies carry an id prefix; an upload should arrive as "resume.pdf"."""
+        with self.lock:
+            row = self.db.execute("SELECT name, path, linked FROM documents WHERE id = ?",
+                                  (document_id,)).fetchone()
+        if row is None or not row["path"]:
+            raise ContextError("Unknown document.")
+        if row["linked"]:
+            if not Path(row["path"]).is_file():
+                raise ContextError(f"Linked file {row['path']} no longer exists.")
+            return row["path"]
+        folder = self.root / "upload" / document_id
+        target = folder / row["name"]
+        if not target.exists():
+            folder.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(Path(row["path"]).read_bytes())
+        return str(target)
+
+    def uploadable(self, *, project_ids=(), bundle_ids=()):
+        """Files (not pasted text) of the given projects and bundles: [(name, document_id)]."""
+        result = []
+        for project_id in project_ids:
+            result += [(d["name"], d["id"]) for d in self.documents(project_id=project_id)
+                       if d["kind"] in {"file", "image"}]
+        for bundle_id in bundle_ids:
+            result += [(d["name"], d["id"]) for d in self.documents(bundle_id=bundle_id)
+                       if d["kind"] in {"file", "image"}]
+        return result
+
     def delete_document(self, document_id):
         with self.lock, self.db:
-            row = self.db.execute("SELECT path FROM documents WHERE id = ?", (document_id,)).fetchone()
+            row = self.db.execute("SELECT path, linked FROM documents WHERE id = ?",
+                                  (document_id,)).fetchone()
             if row is None:
                 raise ContextError("Unknown document.")
             self.db.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
             self.db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
-        self._remove_files([row["path"]])
+        if not row["linked"]:
+            self._remove_files([row["path"]])
 
     def documents(self, *, project_id=None, bundle_id=None):
         column, value = ("project_id", project_id) if project_id else ("bundle_id", bundle_id)
         with self.lock:
             rows = self.db.execute(
-                f"SELECT id, project_id, bundle_id, name, kind, path, size, summary, created_at "
+                f"SELECT id, project_id, bundle_id, name, kind, path, size, summary, created_at, linked "
                 f"FROM documents WHERE {column} = ? ORDER BY created_at", (value,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -350,12 +408,16 @@ class ContextStore:
                 for d in self.documents(project_id=project["id"])]})
         return result
 
-    @staticmethod
-    def _remove_files(paths):
+    def _remove_files(self, paths):
+        import shutil
+
         for path in paths:
             try:
                 if path:
                     Path(path).unlink(missing_ok=True)
+                    # Stored names are "<document id>_<name>"; drop the upload copy too.
+                    document_id = Path(path).name.split("_", 1)[0]
+                    shutil.rmtree(self.root / "upload" / document_id, ignore_errors=True)
             except OSError:
                 pass
 

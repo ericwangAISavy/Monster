@@ -31,7 +31,8 @@ KEY_EVENTS = frozenset({
     "review_requested", "clarification_requested", "launch_query_confirmed",
     "plan_requested", "plan_created", "plan_approved", "subtask_started", "subtask_finished",
     "assessment_requested", "plan_assessed", "plan_revised", "protected_window_refused",
-    "orchestration_requested", "orchestration_result", "context_projects_chosen",
+    "orchestration_requested", "orchestration_result", "orchestration_retry",
+    "context_projects_chosen",
     "context_fetched", "screen_settled", "batch_planned", "batch_step",
 })
 
@@ -230,12 +231,12 @@ class RemoteBridge(QObject):
         if text is not None and type(text) is not str:
             raise RemoteError("context_text must be text.")
         file_items = attachments(files, "file")
+        links = []
         for path in paths or ():
             if type(path) is not str or not os.path.isfile(path):
                 raise RemoteError(f"Context path {path!r} is not a readable file.")
-            with open(path, "rb") as handle:
-                file_items.append((os.path.basename(path), handle.read()))
-        return text, file_items, attachments(images, "image")
+            links.append(path)  # Used in place: uploads pick this exact file.
+        return text, file_items, attachments(images, "image"), links
 
     def op_run_task(self, future, instruction, context_text=None, context_files=None,
                     context_images=None, context_paths=None):
@@ -257,15 +258,16 @@ class RemoteBridge(QObject):
         # deleted when it succeeds, kept for a retry when it fails or stops.
         bundle_id = None
         store = getattr(self.ui, "context_store", None)
-        text, files, images = self._temporary_context(
+        text, files, images, links = self._temporary_context(
             context_text, context_files, context_images, context_paths)
-        if (text and text.strip()) or files or images:
+        if (text and text.strip()) or files or images or links:
             if store is None:
                 raise RemoteError("Monster's context store is unavailable; temporary context "
                                   "cannot be used.")
             from monster.context.store import ContextError
             try:
-                bundle_id = store.create_bundle(text=text, files=files, images=images)
+                bundle_id = store.create_bundle(text=text, files=files, images=images,
+                                                links=links)
             except ContextError as exc:
                 raise RemoteError(str(exc)) from None
         controller.context_bundle_id = bundle_id

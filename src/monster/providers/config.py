@@ -8,7 +8,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-PROVIDERS = {"ollama": "Ollama (local / LAN model)", "claude_code": "Claude Code (this laptop)"}
+PROVIDERS = {
+    "router": "Auto: Ollama first, Claude Haiku when needed",
+    "ollama": "Ollama (local / LAN model)",
+    "claude_code": "Claude Code (this laptop)",
+}
 CLAUDE_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5")
 
 
@@ -44,6 +48,9 @@ class OllamaConfig:
     # watched locally until it settles, and the orchestrator picks one subtask at a time and
     # is the independent check of each. "classic": separate step/completion checks.
     pipeline: str = "classic"
+    # Auto routing: the most paid models (Claude) may cost per day before Monster uses
+    # only local models.
+    paid_daily_cap_usd: float = 2.0
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -112,6 +119,8 @@ class OllamaConfig:
         if (type(self.claude_model) is not str
                 or not re.fullmatch(r"claude-[a-z0-9.-]{1,60}", self.claude_model)):
             raise ValueError("Choose a Claude model such as claude-sonnet-5-5.")
+        if type(self.paid_daily_cap_usd) not in (int, float) or not 0 <= self.paid_daily_cap_usd <= 1000:
+            raise ValueError("The daily limit for paid models must be 0-1000 USD.")
         if self.pipeline not in {"classic", "lean"}:
             raise ValueError("Choose the lean or classic pipeline.")
         if type(self.enforce_policies) is not bool:
@@ -126,7 +135,11 @@ class OllamaConfig:
         if type(self.claude_code_confirmed) is not bool:
             raise ValueError("Claude Code consent must be enabled or disabled explicitly.")
         if self.mode in {"preview", "supervised"}:
-            if self.provider == "claude_code":
+            if self.provider == "router":
+                if not ((self.model and self.local_server_confirmed) or self.claude_code_confirmed):
+                    raise ValueError("Auto routing needs at least one model: an Ollama model with "
+                                     "local-only confirmation, or Claude Code with consent.")
+            elif self.provider == "claude_code":
                 if not self.claude_code_confirmed:
                     raise ValueError("Confirm that screenshots are sent to Claude through "
                                      "Claude Code before using it.")

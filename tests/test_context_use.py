@@ -115,3 +115,69 @@ def test_without_context_nothing_extra_is_sent(qtbot, store):
         assert "Context for this subtask" not in seen["decide"][0][0]
     finally:
         engine.close()
+
+
+def test_large_context_stays_within_the_planning_limits(qtbot, store):
+    project = store.create_project("Thomas Dang applications")
+    for i in range(6):
+        store.add_text(project, f"notes{i}.txt", ("Thomas Dang phone 972 200 8542. " * 60))
+    engine, bridge, seen = lean_with_context(
+        store,
+        [verdict("next", projects=[project], next_subtask="Write the phone number",
+                 success_criterion="Phone written", context_query="Thomas Dang phone"),
+         verdict("done", answer="Written")],
+        [Decision("complete", "Phone written")])
+    finished = []
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("write the phone number of thomas dang")
+        qtbot.waitUntil(lambda: bool(finished), timeout=6000)
+        instruction = seen["decide"][0][0]
+        assert "972 200 8542" in instruction and len(instruction) < 16000
+        assert len(engine.subtask_results[0]["subtask"]) < 400
+    finally:
+        engine.close()
+
+
+def test_upload_paths_reach_the_executor(qtbot, store):
+    project = store.create_project("Thomas Dang applications")
+    store.add_file(project, "resume.pdf", b"%PDF-1.4 fake")
+    engine, bridge, seen = lean_with_context(
+        store,
+        [verdict("next", projects=[project], next_subtask="Attach resume.pdf",
+                 success_criterion="Resume attached", use_documents=["resume.pdf"]),
+         verdict("done", answer="Attached")],
+        [Decision("complete", "Resume attached")])
+    finished = []
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("apply with thomas dang's details")
+        qtbot.waitUntil(lambda: bool(finished), timeout=6000)
+        instruction = seen["decide"][0][0]
+        assert "Files you can upload" in instruction
+        assert "resume.pdf -> " in instruction and "upload" in instruction.split("resume.pdf -> ")[1]
+    finally:
+        engine.close()
+
+
+def test_short_answer_sheets_reach_the_orchestrator_and_executor_in_full(qtbot, store):
+    project = store.create_project("Job Application")
+    store.add_text(project, "application_answers.txt",
+                   "Gender: Male\nRace / ethnicity: Asian\nVeteran status: I am not a protected veteran")
+    engine, bridge, seen = lean_with_context(
+        store,
+        [verdict("next", projects=[project], next_subtask="Fill the demographic questions",
+                 success_criterion="Demographics filled", context_query="sexual orientation"),
+         verdict("done", answer="Filled")],
+        [Decision("complete", "Filled")])
+    finished = []
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("apply with Thomas's details")
+        qtbot.waitUntil(lambda: bool(finished), timeout=6000)
+        second = seen["orchestrator"][1]["context"]
+        assert "Race / ethnicity: Asian" in second["project_texts"][0]["text"]
+        instruction = seen["decide"][0][0]
+        assert "Gender: Male" in instruction and "not a protected veteran" in instruction
+    finally:
+        engine.close()

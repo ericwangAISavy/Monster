@@ -42,3 +42,19 @@ def test_save_details_and_remove_document(window):
     w.documents.setCurrentRow(0)
     w._remove_document()
     assert w.documents.count() == 0 and store.documents(project_id=project) == []
+
+
+def test_files_are_linked_by_default_and_copied_on_request(window, tmp_path):
+    w, store = window
+    project = w.create_project("Job Application")
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"%PDF-1.4")
+    assert w.link_mode.isChecked()
+    w.add_paths([str(resume)])
+    linked = store.documents(project_id=project)[0]
+    assert linked["linked"] == 1 and linked["path"] == str(resume.resolve())
+    assert "linked" in w.documents.item(0).text()
+    w.link_mode.setChecked(False)
+    w.add_paths([str(resume)])
+    copied = [d for d in store.documents(project_id=project) if not d["linked"]][0]
+    assert copied["path"] != str(resume.resolve())

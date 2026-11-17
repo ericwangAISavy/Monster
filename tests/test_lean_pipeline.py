@@ -143,3 +143,49 @@ def test_screen_is_watched_until_it_settles_before_planning(qtbot):
 
 def test_saved_settings_default_to_the_lean_pipeline(tmp_path):
     assert load(tmp_path / "missing.json").pipeline == "lean"
+
+
+def test_invalid_orchestrator_reply_is_retried_with_a_correction(qtbot):
+    from monster.providers.base import ProviderError
+
+    engine, bridge, model, calls = lean(
+        [Decision("complete", "Page open")],
+        [verdict("next", subtask="Open the Bidder management page", criterion="Page visible"),
+         verdict("done", answer="Bidder management is open")])
+    notes, valid = [], model.next_subtask
+
+    async def flaky(model_name, goal, criteria, history, *args, **kwargs):
+        notes.append(kwargs.get("note"))
+        if len(notes) == 1:
+            raise ProviderError("Model returned an invalid orchestration result: next needs a "
+                                "subtask and its success criterion.")
+        return await valid(model_name, goal, criteria, history, *args, **kwargs)
+
+    model.next_subtask = flaky
+    finished = []
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("check the bidder management page")
+        qtbot.waitUntil(lambda: bool(finished), timeout=6000)
+        assert notes[0] is None and "next needs a subtask" in notes[1] and notes[2] is None
+    finally:
+        engine.close()
+
+
+def test_orchestrator_replies_from_local_models_are_normalised():
+    import pytest
+
+    from monster.providers.base import ProviderError
+    from monster.providers.ollama import NEXT_SCHEMA, parse_next
+
+    assert list(NEXT_SCHEMA["properties"])[-1] == "status"  # Decide after reasoning.
+    base = {"success_criteria": "Page visible", "evidence": "Dashboard open"}
+    named = parse_next({**base, "status": "stop", "next_subtask": "Click Bidder management",
+                        "success_criterion": "Bidder page visible"})
+    assert named["status"] == "next"
+    with pytest.raises(ProviderError, match="stop needs the specific reason"):
+        parse_next({**base, "evidence": "none", "status": "stop", "next_subtask": "none",
+                    "success_criterion": "none"})
+    done = parse_next({**base, "status": "done", "next_subtask": "N/A", "success_criterion": "",
+                       "answer": "3 bidders"})
+    assert done["next_subtask"] == "" and done["status"] == "done"

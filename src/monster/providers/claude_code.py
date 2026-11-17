@@ -536,6 +536,10 @@ class ClaudeCodeProvider(OllamaProvider):
 
 def provider_for(config, *args, **kwargs):
     """The configured intelligence provider."""
+    if getattr(config, "provider", "ollama") == "router":
+        from monster.providers.router import RoutingProvider
+
+        return RoutingProvider(config, *args, **kwargs)
     if getattr(config, "provider", "ollama") == "claude_code":
         return ClaudeCodeProvider(config, *args, **kwargs)
     return OllamaProvider(config, *args, **kwargs)

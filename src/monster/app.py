@@ -100,6 +100,11 @@ class CompanionApp:
             self.context_store.purge_expired()
         except (OSError, ContextError, Exception):  # noqa: BLE001 - Monster still runs without it.
             self.context_store = None
+        try:
+            from monster.providers import router
+            router.SPEND = router.Spend(config_path.with_name("paid_spend.json"))
+        except Exception:  # noqa: BLE001 - Spending then counts in memory only.
+            pass
         self.context_reaper = QTimer()
         self.context_reaper.setInterval(3600 * 1000)
         self.context_reaper.timeout.connect(

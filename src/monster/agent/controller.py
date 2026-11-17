@@ -44,13 +44,13 @@ VERIFY_RETAKES = 1  # Later looks at a failed/uncertain step before accepting it
 LAUNCH_RETAKES = 2  # App windows can take longer to appear.
 DRAWING_TARGET_RETRIES = 2  # Re-plans after an uncertain canvas check before stopping.
 # Orchestrator budgets: a planned task gets more room overall, each subtask less.
-ORCHESTRATED_TASK_MS = 600000
-MAX_SUBTASKS = 8
+ORCHESTRATED_TASK_MS = 1200000  # 20 minutes: long forms
+MAX_SUBTASKS = 20
 MAX_PLAN_REVISIONS = 2
-MAX_TASK_ACTIONS = 30
-MAX_TASK_CALLS = 60
-SUBTASK_ACTIONS = 8
-SUBTASK_CALLS = 15
+MAX_TASK_ACTIONS = 80
+MAX_TASK_CALLS = 150
+SUBTASK_ACTIONS = 12
+SUBTASK_CALLS = 20
 PLANNER_CHECK_DELAY_MS = 700  # Let the UI settle before the planner judges a routine step.
 BATCH_STEP_DELAY_MS = 300  # Between keyboard follow-ups (Start search, address bar, ...).
 # Lean pipeline: watch the screen locally until it stops changing instead of fixed waits
@@ -59,6 +59,10 @@ SETTLE_FIRST_MS = 150
 SETTLE_INTERVAL_MS = 150
 SETTLE_MAX_S = 1.5
 MAX_CONSECUTIVE_FAILED_SUBTASKS = 3
+ORCHESTRATION_RETRIES = 2  # Re-ask after an invalid orchestrator reply before stopping.
+CONTEXT_CHARS = 6000  # Context handed to one subtask's planning calls.
+SHORT_TEXT_CHARS = 2500  # A project text this short is passed whole, not searched.
+SHORT_TEXT_BUDGET = 4000  # At most this much whole short text per subtask.
 UNCERTAIN_REVIEW = "The model is uncertain about this action's target or effect."
 
 
@@ -213,6 +217,8 @@ class SupervisedController(TaskController):
             bool(getattr(self.config, "orchestrate", False)) and not self.action_gate)
         self.criteria = None
         self.consecutive_failures = 0
+        self.orchestration_retries = 0
+        self.orchestration_note = None
         self.context_projects = []
         self.plan = None
         self.plan_index = 0
@@ -354,6 +360,7 @@ class SupervisedController(TaskController):
     def _orchestrated_next(self, result):
         """Lean orchestrator verdict: finished, one next subtask, or stop."""
         self.criteria = self.criteria or result["success_criteria"]
+        self.orchestration_retries, self.orchestration_note = 0, None
         self._record("orchestration_result", status=result["status"], content=result)
         if not self.context_projects and result.get("projects") and self.context_store is not None:
             known = {p["id"] for p in self.context_store.list_projects()}
@@ -396,6 +403,10 @@ class SupervisedController(TaskController):
                  "files": [{"name": f["name"], "kind": f["kind"], "summary": f["summary"][:160]}
                            for f in p["files"][:15]]}
                 for p in projects[:20]]
+            if self.context_projects:
+                # Answer sheets are small: plan with the real values, not just a summary.
+                overview["project_texts"] = [
+                    {"name": d["name"], "text": d["text"]} for d in self._short_project_texts()]
         temporary, images = [], []
         for document in self._bundle_documents():
             entry = {"name": document["name"], "kind": document["kind"],
@@ -408,6 +419,22 @@ class SupervisedController(TaskController):
         if temporary:
             overview["temporary"] = temporary
         return (overview or None), [image for image in images if image]
+
+    def _short_project_texts(self):
+        """Full text of the chosen projects' short documents (answer sheets, notes)."""
+        store = self.context_store
+        if store is None or not self.context_projects:
+            return []
+        result, budget = [], SHORT_TEXT_BUDGET
+        for project_id in self.context_projects:
+            for document in store.documents(project_id=project_id):
+                if document["kind"] not in {"text", "file"}:
+                    continue
+                text = (store.document_text(document["id"]) or "").strip()
+                if text and len(text) <= SHORT_TEXT_CHARS and len(text) <= budget:
+                    result.append({"name": document["name"], "text": text})
+                    budget -= len(text)
+        return result
 
     @staticmethod
     def _document_image(document):
@@ -427,10 +454,12 @@ class SupervisedController(TaskController):
             if project["id"] in self.context_projects and project["instructions"].strip():
                 parts.append("[" + project["name"] + " / instructions] "
                              + project["instructions"][:600])
+        for document in self._short_project_texts():
+            parts.append("[" + document["name"] + "] " + document["text"])
         query = (result.get("context_query") or "").strip()
         if query:
             for hit in store.search(query, project_ids=self.context_projects,
-                                    bundle_ids=bundle_ids, limit=6):
+                                    bundle_ids=bundle_ids, limit=4):
                 parts.append("[" + hit["name"] + "] " + hit["text"])
         wanted = {name.lower() for name in result.get("use_documents") or ()}
         if wanted:
@@ -445,8 +474,19 @@ class SupervisedController(TaskController):
                         images.append(image)
                 else:
                     text = store.document_text(document["id"]) or ""
-                    parts.append("[" + document["name"] + "] " + text[:3000])
-        context_text = "\n".join(parts)[:6000]
+                    parts.append("[" + document["name"] + "] " + text[:2500])
+        context_text = "\n".join(parts)[:CONTEXT_CHARS]
+        uploads = []
+        for name, document_id in store.uploadable(project_ids=self.context_projects,
+                                                  bundle_ids=bundle_ids)[:8]:
+            try:
+                uploads.append(f"{name} -> {store.upload_path(document_id)}")
+            except (OSError, ValueError):
+                continue
+        if uploads:
+            # Listed after the snippets so the trimming above never cuts a path off.
+            context_text += ("\nFiles you can upload (in the Open dialog, type the full path "
+                             "into the File name box and press ENTER):\n" + "\n".join(uploads))
         if context_text or images:
             self._record("context_fetched", characters=len(context_text), images=len(images),
                          content={"query": query, "documents": sorted(wanted)})
@@ -693,7 +733,23 @@ class SupervisedController(TaskController):
             provider.diagnostic_callback = lambda event, details, content=None: diagnostics.add(
                 event, stage, content=content, planning_call=call, step=step, **details
             )
+        if hasattr(provider, "hints"):
+            provider.hints = self._routing_hints()
         return provider
+
+    def _routing_hints(self):
+        """How hard the current work is, for a provider that picks models per call."""
+        item = self.plan[self.plan_index] if self.plan_active and self.plan else {}
+        context = item.get("context_text") or ""
+        return {
+            "failures": self.recovery_attempts + self.rejected_proposals,
+            "subtask_retry": bool(self.lean and self.consecutive_failures),
+            "orchestration_retry": bool(self.lean and self.orchestration_retries),
+            "drawing": bool(self.instruction and self._drawing_task()),
+            "large_context": len(context) > 1500,
+            "upload": "Files you can upload" in context and any(
+                word in (self.instruction or "").lower() for word in ("attach", "upload", "resume")),
+        }
 
     def _probe(self):
         self.phase = "probing"
@@ -774,6 +830,8 @@ class SupervisedController(TaskController):
                                   "context_projects": len((context or {}).get("projects", ())),
                                   "temporary_items": len((context or {}).get("temporary", ()))})
             extra = {"context": context, "context_images": context_images} if context else {}
+            if self.orchestration_note:
+                extra["note"] = self.orchestration_note
             self.job = self._start_model(
                 lambda: self._provider(diagnostics, "orchestrating", call, step).next_subtask(
                     self.config.model, goal, criteria, history, observation.png,
@@ -941,6 +999,15 @@ class SupervisedController(TaskController):
                      content={"error": error} if error else None)
         self.job = None
         if error:
+            if (self.phase == "orchestrating" and error.startswith("Model returned an invalid")
+                    and self.orchestration_retries < ORCHESTRATION_RETRIES):
+                self.orchestration_retries += 1
+                self.orchestration_note = error
+                self._record("orchestration_retry", attempt=self.orchestration_retries,
+                             content={"error": error})
+                self.phase = "orchestrating_capture"
+                self._capture()
+                return
             if self.phase == "deciding" and error.startswith(
                 (
                     "Model returned an invalid",
@@ -1425,9 +1492,11 @@ class SupervisedController(TaskController):
                 if self.plan_active and self.actions - self.subtask_base_actions >= SUBTASK_ACTIONS:
                     self.fail(f"Subtask limit reached ({SUBTASK_ACTIONS} inputs).", recoverable=True)
                     return
-                if self.actions >= (MAX_TASK_ACTIONS if self.plan_active else 10):
+                limit = MAX_TASK_ACTIONS if self.plan_active else 10
+                if self.actions >= limit:
                     self.fail(
-                        "Ten-action limit reached. The task is incomplete; inspect the result."
+                        f"Input limit reached ({limit} inputs). The task is incomplete; "
+                        "inspect the result."
                     )
                     return
                 action = result.action

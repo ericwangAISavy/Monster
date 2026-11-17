@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -77,6 +78,13 @@ class ProjectsWindow(QDialog):
         layout.addWidget(self.save_button)
 
         layout.addWidget(QLabel("Files and text  ·  drop files here"))
+        self.link_mode = QCheckBox("Use files where they are (link, don't copy)")
+        self.link_mode.setChecked(True)
+        self.link_mode.setToolTip(
+            "Linked files stay in their folder: uploads (for example a resume in a job "
+            "application) pick that exact file, and removing it here never deletes it. "
+            "Untick to keep a copy inside Monster instead.")
+        layout.addWidget(self.link_mode)
         self.documents = QListWidget()
         layout.addWidget(self.documents, 1)
         row = QHBoxLayout()
@@ -130,8 +138,11 @@ class ProjectsWindow(QDialog):
         self.name.setText(project["name"])
         self.instructions.setPlainText(project["instructions"])
         for document in self.store.documents(project_id=project_id):
-            item = QListWidgetItem(f"{document['name']}  ·  {document['kind']}  ·  {_size(document['size'])}")
-            item.setToolTip(document["summary"])
+            where = "  ·  linked" if document.get("linked") else ""
+            item = QListWidgetItem(
+                f"{document['name']}  ·  {document['kind']}  ·  {_size(document['size'])}{where}")
+            item.setToolTip((document["path"] + "\n\n" if document.get("linked") else "")
+                            + document["summary"])
             item.setData(Qt.ItemDataRole.UserRole, document["id"])
             self.documents.addItem(item)
 
@@ -159,7 +170,10 @@ class ProjectsWindow(QDialog):
                 if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
                     skipped.append(path.name)
                     continue
-                self.store.add_file(project_id, path.name, path.read_bytes())
+                if self.link_mode.isChecked():
+                    self.store.link_file(project_id, str(path))
+                else:
+                    self.store.add_file(project_id, path.name, path.read_bytes())
                 added += 1
             except (OSError, ContextError):
                 skipped.append(path.name)

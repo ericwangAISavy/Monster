@@ -111,3 +111,62 @@ def test_pdf_text_is_extracted_and_searchable(store):
     store.add_file(project, "resume.pdf", buffer.getvalue())
     hits = store.search("phone", project_ids=[project])
     assert hits and "555-0100" in hits[0]["text"]
+
+
+def test_files_get_a_clean_upload_copy_that_is_removed_with_them(store, tmp_path):
+    project = store.create_project("Thomas")
+    resume = store.add_file(project, "resume.pdf", b"%PDF-1.4 fake")
+    store.add_text(project, "answers.txt", "Phone: 555")
+    assert [name for name, _ in store.uploadable(project_ids=[project])] == ["resume.pdf"]
+    path = store.upload_path(resume)
+    assert path.endswith("resume.pdf") and "upload" in path
+    from pathlib import Path
+    assert Path(path).read_bytes() == b"%PDF-1.4 fake" and Path(path).name == "resume.pdf"
+    store.delete_document(resume)
+    assert not Path(path).exists()
+
+
+def test_linked_files_are_used_in_place_and_never_deleted(store, tmp_path):
+    original = tmp_path / "profiles" / "Thomas Dang - Senior ML Engineer - 2026.pdf"
+    original.parent.mkdir()
+    original.write_bytes(b"%PDF-1.4 resume")
+    project = store.create_project("Job Application")
+    doc = store.link_file(project, str(original))
+    assert store.upload_path(doc) == str(original.resolve())  # The exact local file.
+    assert [d["linked"] for d in store.documents(project_id=project)] == [1]
+    store.delete_document(doc)
+    assert original.exists()  # Forgetting the link keeps the user's file.
+    store.link_file(project, str(original))
+    store.delete_project(project)
+    assert original.exists()
+    bundle = store.create_bundle(links=[str(original)])
+    store.finish_bundle(bundle, succeeded=True)
+    assert original.exists()
+    with pytest.raises(ContextError, match="not a readable file"):
+        store.link_file(store.create_project("x"), str(tmp_path / "missing.pdf"))
+
+
+def test_version_one_databases_gain_linked_documents(tmp_path):
+    import sqlite3
+
+    root = tmp_path / "old"
+    ContextStore(root).close()
+    db = sqlite3.connect(root / "context.sqlite3")
+    db.executescript("""
+        CREATE TABLE documents_old AS SELECT * FROM documents;
+        DROP TABLE documents;
+        CREATE TABLE documents (id TEXT PRIMARY KEY, project_id TEXT, bundle_id TEXT, name TEXT NOT NULL,
+            kind TEXT NOT NULL, path TEXT, size INTEGER NOT NULL, text TEXT, summary TEXT NOT NULL,
+            entities_json TEXT NOT NULL DEFAULT '[]', purpose TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL);
+        UPDATE schema_version SET version = 1;
+    """)
+    db.commit()
+    db.close()
+    store = ContextStore(root)
+    try:
+        project = store.create_project("Upgraded")
+        store.add_text(project, "a.txt", "hello")
+        assert store.documents(project_id=project)[0]["linked"] == 0
+    finally:
+        store.close()
