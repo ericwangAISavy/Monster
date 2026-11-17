@@ -250,3 +250,14 @@ def test_drag_subtask_of_a_drawing_goal_needs_no_review(qtbot):
         assert finished and len(bridge.executed) == 1
     finally:
         engine.close()
+
+
+def test_launching_an_app_by_name_is_not_drafting_a_message():
+    from monster.agent.progress import draft_only
+
+    assert not draft_only("Switch to the already open Slack window by clicking its icon in the "
+                          "taskbar (if it isn't visible there, press WIN, type Slack, press ENTER).")
+    assert not draft_only("Type Slack into Start search and open it")
+    assert draft_only("Click the message input box in Slack and type exactly: hello")
+    assert draft_only("In Slack, type hello team, press ENTER")
+    assert draft_only("Press WIN, type Microsoft Teams, press ENTER, then type hello in the chat")

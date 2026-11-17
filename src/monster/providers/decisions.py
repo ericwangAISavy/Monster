@@ -142,8 +142,18 @@ def decision_schema_for_draft():
     return schema
 
 
-def decision_schema_for_navigation(instruction):
+def decision_schema_for_navigation(instruction, enforce=True):
     schema = deepcopy(DECISION_SCHEMA)
+    if not enforce:
+        # Policies off: any single key (Delete included) and any well-formed chord.
+        for variant in schema["oneOf"][0]["properties"]["action"]["oneOf"]:
+            op = variant["properties"]["op"]["const"]
+            if op == "press":
+                variant["properties"]["key"]["enum"] = [k for k in KEYS if k not in MODIFIERS - {"WIN"}]
+            elif op == "chord":
+                variant["properties"]["keys"] = {
+                    "type": "array", "minItems": 2, "maxItems": 4, "items": {"enum": sorted(KEYS)},
+                    "description": "Modifiers first (CTRL, ALT, SHIFT, WIN), then one key."}
     if terminal_window_requested(instruction):
         for variant in schema["oneOf"][0]["properties"]["action"]["oneOf"]:
             if variant["properties"]["op"]["const"] == "chord":

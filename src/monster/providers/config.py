@@ -37,6 +37,9 @@ class OllamaConfig:
     merged_checks: bool = False
     # Faster Claude model for yes/no screen checks (step, completion, canvas, composer).
     claude_check_model: str = "claude-haiku-5-5"
+    # Safety policies: review of sensitive/uncertain steps, draft-only (no send) tasks,
+    # the shortcut allowlist and typed-content filters. Off = none of these stop a task.
+    enforce_policies: bool = True
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -105,6 +108,8 @@ class OllamaConfig:
         if (type(self.claude_model) is not str
                 or not re.fullmatch(r"claude-[a-z0-9.-]{1,60}", self.claude_model)):
             raise ValueError("Choose a Claude model such as claude-sonnet-5-5.")
+        if type(self.enforce_policies) is not bool:
+            raise ValueError("Safety policies must be enabled or disabled explicitly.")
         if type(self.merged_checks) is not bool:
             raise ValueError("Merged step checks must be enabled or disabled explicitly.")
         if (type(self.claude_check_model) is not str
@@ -128,17 +133,20 @@ class OllamaConfig:
 DEFAULT_HANDS_FREE = True
 DEFAULT_ORCHESTRATE = True
 DEFAULT_MERGED_CHECKS = True
+DEFAULT_ENFORCE_POLICIES = False  # The user's chosen default for saved settings.
 
 
 def load(path: Path) -> OllamaConfig:
     if not path.exists():
         return OllamaConfig(hands_free=DEFAULT_HANDS_FREE, orchestrate=DEFAULT_ORCHESTRATE,
-                            merged_checks=DEFAULT_MERGED_CHECKS)
+                            merged_checks=DEFAULT_MERGED_CHECKS,
+                            enforce_policies=DEFAULT_ENFORCE_POLICIES)
     data = json.loads(path.read_text(encoding="utf-8"))
     if type(data) is dict:
         data.setdefault("hands_free", DEFAULT_HANDS_FREE)
         data.setdefault("orchestrate", DEFAULT_ORCHESTRATE)
         data.setdefault("merged_checks", DEFAULT_MERGED_CHECKS)
+        data.setdefault("enforce_policies", DEFAULT_ENFORCE_POLICIES)
     config = OllamaConfig(**data)
     config.validate()
     return config

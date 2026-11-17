@@ -310,3 +310,27 @@ def test_decide_states_the_sent_image_size_and_maps_coordinates_back():
     assert "Image size: 1280x720" in seen[0]
     # 0-1000 coordinates are converted with the sent size, then mapped to full-resolution pixels.
     assert decision.action["x"] in (959, 960) and decision.action["y"] in (785, 786)
+
+
+def test_follow_ups_are_not_held_to_the_first_actions_description(qtbot):
+    win = Decision("action", "Press the Windows key to open Start, then type Slack and press Enter",
+                   {"op": "press", "key": "WIN"}, risk="routine",
+                   expected_result="The Slack window is in front",
+                   then=({"op": "text", "text": "Slack"}, {"op": "press", "key": "ENTER"}))
+    engine, bridge, model = controller([win, Decision("complete", "Slack in front")])
+    engine.config = replace(engine.config, approve_each_step=False, hands_free=True)
+
+    async def completion(*args):
+        return Verification("succeeded", "Slack in front")
+
+    model.verify_completion = completion
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    finished, failed = [], []
+    engine.finished.connect(finished.append)
+    engine.failed.connect(failed.append)
+    try:
+        engine.submit("Switch to Slack by pressing WIN, typing Slack and pressing ENTER")
+        qtbot.waitUntil(lambda: bool(finished or failed), timeout=6000)
+        assert not failed and len(bridge.executed) == 3
+    finally:
+        engine.close()

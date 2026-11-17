@@ -173,13 +173,16 @@ def needs_human_approval(decision, instruction=""):
     return approval_reason(decision, instruction) is not None
 
 
-def prepare_action(action, observation, *, allow_window_close=False, allow_terminal_window=False):
+def prepare_action(action, observation, *, allow_window_close=False, allow_terminal_window=False,
+                   enforce=True):
+    """Convert to physical pixels; with enforce=False the content and shortcut policies are
+    skipped (the action must still be well-formed and on a real display)."""
     action = validate_action(
         action, [Bounds(0, 0, observation.bounds.width, observation.bounds.height)]
     )
     if action.get("op") in {"text", "press", "chord"} and not observation.foreground:
         raise ValueError("Keyboard actions require a captured foreground window.")
-    if action.get("op") == "text":
+    if action.get("op") == "text" and enforce:
         text = action.get("text", "")
         if re.search(
             r"(?i)(powershell|\bcmd\b|\bpwsh\b|javascript:|data:|https?://|\.exe\b|\brm\s+-|\bsudo\b)",
@@ -190,9 +193,9 @@ def prepare_action(action, observation, *, allow_window_close=False, allow_termi
             )
     if action.get("op") == "press" and action.get("key") in MODIFIERS - {"WIN"}:
         raise ValueError("A modifier alone is not a shortcut; provide a complete chord.")
-    if action.get("op") == "press" and action.get("key") == "DELETE":
+    if action.get("op") == "press" and action.get("key") == "DELETE" and enforce:
         raise ValueError("Delete is outside the supervised demo.")
-    if action.get("op") == "chord":
+    if action.get("op") == "chord" and enforce:
         keys = action.get("keys", [])
         if not ((allow_window_close and keys == ["ALT", "F4"])
                 or (allow_terminal_window and keys == NEW_TERMINAL_WINDOW)) and keys not in (

@@ -153,6 +153,7 @@ class SupervisedController(TaskController):
         self.unverified = None  # Routine step awaiting the planner's merged check.
         self.canvas_cache = None  # Last canvas verified ready: window, rect, canvas box.
         self.batch = []  # Keyboard follow-ups still to send for the current decision.
+        self.batch_follow_up = False  # True while a batched follow-up is checked and sent.
 
     def submit(self, instruction):
         if (
@@ -241,6 +242,7 @@ class SupervisedController(TaskController):
         self.unverified = None
         self.canvas_cache = None
         self.batch = []
+        self.batch_follow_up = False
 
     # ---- orchestrator -------------------------------------------------------
     @property
@@ -486,6 +488,7 @@ class SupervisedController(TaskController):
                 )
                 return
             self.actions += 1
+            self.batch_follow_up = False
             self.verification_retakes = 0
             self.verification_before = self.observation
             self.verification_before_frame = self.log_frame
@@ -516,6 +519,7 @@ class SupervisedController(TaskController):
                 self.canvas_cache = None  # A tool or window change may follow any other input.
             if self.batch:
                 follow_up = self.batch.pop(0)
+                self.batch_follow_up = True
                 self.pending = replace(self.pending, action=follow_up, then=())
                 self._record("batch_step", remaining=len(self.batch), content={"action": follow_up})
                 self.phase = "batch_capture"
@@ -578,7 +582,7 @@ class SupervisedController(TaskController):
         previous_frame = self.log_frame
         self.log_frame = self.run_diagnostics.observe(observation, self.phase)
         self.timings.finish(("capture", generation), "completed")
-        if draft_only(self.instruction) or (
+        if self._draft() or (
             window_close_requested(self.instruction) and not self.close_dispatched
         ):
             if self.task_foreground is None:
@@ -587,7 +591,7 @@ class SupervisedController(TaskController):
                 self.fail(
                     "Current-composer target window changed. Focus the intended composer "
                     "and start a new task; no input was redirected to another window."
-                    if draft_only(self.instruction) else
+                    if self._draft() else
                     "Close target window changed before dispatch. Focus the intended window "
                     "and start a new task; no close shortcut was redirected."
                 )
@@ -970,7 +974,7 @@ class SupervisedController(TaskController):
                           + result.evidence + " No automatic redraw was attempted.", recoverable=True)
                 return
             if (result.status != "succeeded" and self.hands_free
-                    and (self.pending.action.get("op") == "text" or draft_only(self.instruction))):
+                    and (self.pending.action.get("op") == "text" or self._draft())):
                 # Typing and draft focus need a human answer, which No approval cannot ask for.
                 self.fail("Visual verification " + result.status + ": " + result.evidence,
                           recoverable=self.pending.action.get("op") != "text")
@@ -985,7 +989,7 @@ class SupervisedController(TaskController):
                 )
                 if (
                     self.pending.action["op"] == "click"
-                    and draft_only(self.instruction)
+                    and self._draft()
                     and not self.inserted_text
                 ):
                     self.phase = "focus_review"
@@ -1022,7 +1026,7 @@ class SupervisedController(TaskController):
                         )
                         self.approval_timer.start(60000)
                         return
-                    if not draft_only(self.instruction):
+                    if not self._draft():
                         self.fail(
                             "Text location remains uncertain. Task is incomplete; no text was "
                             "retyped and no Enter was dispatched to an unverified target."
@@ -1049,7 +1053,7 @@ class SupervisedController(TaskController):
                 if self.recovery_attempts >= 3:
                     advice = (
                         "Focus the intended composer manually and start a new task."
-                        if draft_only(self.instruction) else
+                        if self._draft() else
                         "Inspect or focus the intended application manually before starting a new task."
                     )
                     self.fail("No verified progress after three attempts. " + advice,
@@ -1098,8 +1102,9 @@ class SupervisedController(TaskController):
                 action = self._prepare_action(self.pending.action, self.observation)
                 self._validate_draft_proposal()
             except (ValueError, TypeError):
+                follow_up, self.batch_follow_up = self.batch_follow_up, False
                 self.batch = []
-                self.fail("Action is outside the supervised demo policy.")
+                self.fail("Action is outside the supervised demo policy.", recoverable=follow_up)
                 return
             protected = (self.window_guard(action, self.observation.foreground, self.goal)
                          if self.window_guard else None)
@@ -1112,7 +1117,8 @@ class SupervisedController(TaskController):
                     "protected_window",
                 )
                 return
-            if needs_text_target_check(self.instruction, self.pending.action) and self.draft_target_proposal != self.pending:
+            if (self.policies_on and needs_text_target_check(self.instruction, self.pending.action)
+                    and self.draft_target_proposal != self.pending):
                 self.phase = "checking_target"
                 self.state_changed.emit(State.THINKING)
                 self.stage_changed.emit("Target check")
@@ -1245,6 +1251,10 @@ class SupervisedController(TaskController):
                     self._reject_proposal(str(exc), "action_validation")
                     return
                 reason = (
+                    "Per-step approval is enabled."
+                    if self.config.approve_each_step and not self.hands_free
+                    else None
+                ) if not self.policies_on else (
                     "Closing a window can discard unsaved work. Confirm the intended window "
                     "is the current foreground target."
                     if window_close_requested(self.instruction) else
@@ -1320,6 +1330,15 @@ class SupervisedController(TaskController):
             self.approval_timer.start(60000)
 
 
+    @property
+    def policies_on(self):
+        """Safety policies apply unless the user turned them off; missions always apply them."""
+        return self.action_gate or bool(getattr(self.config, "enforce_policies", True))
+
+    def _draft(self):
+        """A draft-only (type, never send) task, when safety policies apply."""
+        return self.policies_on and draft_only(self.instruction)
+
     def _drawing_task(self):
         """A subtask of a drawing goal is a drawing task even if its own text only says drag."""
         return drawing_requested(self.instruction) or (
@@ -1348,9 +1367,11 @@ class SupervisedController(TaskController):
     def _batch_allowed(self, decision):
         """Follow-up keys only when no step would need review and the task allows them."""
         if (not decision.then or self.action_gate or self.single_click_policy
-                or draft_only(self.instruction) or window_close_requested(self.instruction)
+                or self._draft() or window_close_requested(self.instruction)
                 or (self.config.approve_each_step and not self.hands_free)):
             return False
+        if not self.policies_on:
+            return True
         policy = self._policy_instruction()
         return all(
             approval_reason(replace(decision, action=step, then=()), policy) is None
@@ -1366,7 +1387,7 @@ class SupervisedController(TaskController):
             and not self.launch_query_pending
             and not self.verification_launch_activation
             and not self.single_click_policy
-            and not draft_only(self.instruction)
+            and not self._draft()
             and not window_close_requested(self.instruction)
         )
 
@@ -1559,7 +1580,8 @@ class SupervisedController(TaskController):
             self._begin_recheck(restore=True)
 
     def _validate_draft_proposal(self):
-        validate_draft_action(self.pending, self.instruction, bool(self.inserted_text))
+        if self.policies_on:
+            validate_draft_action(self.pending, self.instruction, bool(self.inserted_text))
         if self.human_confirmed_focus and self.pending.action.get("op") != "text":
             raise ValueError(
                 "The user already confirmed composer focus. Do not click or navigate again; "
@@ -1567,7 +1589,10 @@ class SupervisedController(TaskController):
             )
 
     def _prepare_action(self, action, observation):
-        validate_proposal_intent(self.pending, self.instruction)
+        # A follow-up inherits the first action's description ("press WIN, then ..."), so
+        # the description/action consistency check applies to the first action only.
+        if not self.batch_follow_up:
+            validate_proposal_intent(self.pending, self.instruction)
         if self.single_click_policy:
             if self.single_click_dispatched:
                 raise ValueError("The requested one-click input was already dispatched; no further input.")
@@ -1580,8 +1605,10 @@ class SupervisedController(TaskController):
             raise ValueError(
                 "Current-window closing supports one reviewed Alt+F4 only; no guessed clicks or retry."
             )
-        return prepare_action(action, observation, allow_window_close=closing,
-                              allow_terminal_window=terminal_window_requested(self.instruction))
+        return prepare_action(action, observation,
+                              allow_window_close=closing or not self.policies_on,
+                              allow_terminal_window=terminal_window_requested(self.instruction),
+                              enforce=self.policies_on)
 
     def _reviewed_proposal_matches(self):
         if self.reviewed_proposal is None or self.pending != self.reviewed_proposal:
@@ -1632,7 +1659,7 @@ class SupervisedController(TaskController):
                 'query, run a shell command, install anything or use Run as administrator. '
                 'Verify the actual app window before proceeding with the rest of the original task.'
             )
-        if draft_only(text):
+        if self.policies_on and draft_only(text):
             text += (
                 "\nTrusted task boundary: draft/typing only in the currently open composer. "
                 "Do not send, submit, switch applications or press Enter. Stop when the "
@@ -1671,6 +1698,7 @@ class SupervisedController(TaskController):
 
     def _reject_proposal(self, reason, category="unspecified"):
         self.batch = []
+        self.batch_follow_up = False
         self.rejected_proposals += 1
         self.last_rejection = reason
         label = {
@@ -1697,7 +1725,7 @@ class SupervisedController(TaskController):
         if self.rejected_proposals >= 3:
             advice = (
                 "Focus the current message composer manually and give a fresh typing instruction."
-                if draft_only(self.instruction) else
+                if self._draft() else
                 "Inspect the target application and Last action preview before starting a new task."
             )
             self.fail("Three repeated/invalid proposals rejected without input. " + advice

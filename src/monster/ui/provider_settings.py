@@ -162,6 +162,14 @@ class ProviderSettings(QDialog):
             "Routine clicks, keys and strokes are checked by the next planning call instead of "
             "a separate check call. Typing, app launches and completion keep the independent check.")
         form.addRow(self.merged_checks)
+        self.enforce_policies = QCheckBox("Safety policies: stop or ask before sensitive actions")
+        self.enforce_policies.setChecked(config.enforce_policies)
+        self.enforce_policies.setToolTip(
+            "On: sending, deleting, purchases, installs, credentials and uncertain steps need "
+            "review, typing tasks never send, and only listed shortcuts are allowed. Off: none "
+            "of these stop a task. The stop key, input cleanup, the controlling-app guard and "
+            "missions are unaffected.")
+        form.addRow(self.enforce_policies)
         self.approval.currentIndexChanged.connect(
             lambda _: self.approve_each_step.setEnabled(
                 self.mode.currentData() == "supervised" and not self.no_approval()
@@ -285,7 +293,7 @@ class ProviderSettings(QDialog):
     def check_key(config):
         """The part of a configuration the vision + JSON check vouches for."""
         return replace(config, mode="demo", approve_each_step=True, hands_free=False,
-                       orchestrate=False, merged_checks=False)
+                       orchestrate=False, merged_checks=False, enforce_policies=True)
 
     def provider_values(self):
         return {
@@ -310,6 +318,7 @@ class ProviderSettings(QDialog):
             hands_free=self.no_approval(),
             orchestrate=self.orchestrate.isChecked(),
             merged_checks=self.merged_checks.isChecked(),
+            enforce_policies=self.enforce_policies.isChecked(),
             **self.inference_values(),
             **self.provider_values(),
         )

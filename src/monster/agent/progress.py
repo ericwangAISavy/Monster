@@ -29,10 +29,24 @@ def action_signature(action):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+# "press WIN, type Slack, press ENTER" or "type Chrome into Start search" launch an app;
+# typing an app name there is navigation, not drafting a message.
+APP_LAUNCH_TYPING = re.compile(
+    # Only right after pressing WIN, so "In Slack, type hi, press ENTER" stays a draft.
+    r"(?i)\bpress\s+(?:the\s+)?win(?:dows)?(?:\s+key)?\s*(?:,|and|then)?\s*(?:,\s*)?"
+    r"type\s+(?:the\s+)?[\w.'-]+(?:\s+[\w.'-]+){0,2}"
+    r"(?=\s*(?:,|and|then)?\s*(?:,\s*)?(?:then\s+)?(?:press|hit)\s+enter\b)"
+    # Or typed explicitly into Start/Search.
+    r"|\btype\s+(?:the\s+)?[\w.'-]+(?:\s+[\w.'-]+){0,2}\s+(?:in|into)\s+(?:the\s+)?"
+    r"(?:windows\s+)?(?:start|search)\b"
+)
+
+
 def draft_only(instruction):
+    text = APP_LAUNCH_TYPING.sub("", instruction)
     return bool(
-        re.search(r"(?i)\b(type|write|draft|prepare)\b", instruction)
-        and re.search(r"(?i)\b(slack|chat|message|msg|reply|email)\b", instruction)
+        re.search(r"(?i)\b(type|write|draft|prepare)\b", text)
+        and re.search(r"(?i)\b(slack|chat|message|msg|reply|email)\b", text)
     )
 
 
