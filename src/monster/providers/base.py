@@ -41,6 +41,8 @@ class Decision:
     # The planner's own check of the previous, not yet verified step:
     # {"status": "succeeded" | "failed" | "uncertain", "evidence": str}
     previous_step: dict | None = None
+    # Up to 3 keyboard follow-ups run right after the action, each re-checked locally.
+    then: tuple = ()
 
 
 @dataclass(frozen=True)

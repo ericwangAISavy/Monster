@@ -173,3 +173,140 @@ def test_long_final_reports_are_kept_and_long_step_labels_are_trimmed():
                            "action": {"op": "press", "key": "WIN"}, "expected_result": "Start"},
                           10, 10)
     assert len(step.summary) == 300 and step.summary.endswith("…")
+
+
+def launch_batch(**extra):
+    return Decision("action", "Open Paint", {"op": "press", "key": "WIN"}, risk="routine",
+                    expected_result="Paint window is open",
+                    then=({"op": "text", "text": "Paint"}, {"op": "press", "key": "ENTER"}), **extra)
+
+
+def test_batch_runs_follow_up_keys_with_one_check_at_the_end(qtbot):
+    engine, bridge, model = controller([launch_batch(), Decision("complete", "Paint open")])
+    engine.config = replace(engine.config, approve_each_step=False, hands_free=True)
+    checks, frames = [], []
+
+    async def verify(*args):
+        checks.append(args[2])
+        return Verification("succeeded", "Paint window open")
+
+    async def completion(*args):
+        return Verification("succeeded", "Paint open")
+
+    model.verify_action, model.verify_completion = verify, completion
+    engine.capture_requested.connect(
+        lambda: frames.append(engine.phase) or engine.observation_ready(observation(), engine.generation))
+    finished = []
+    engine.finished.connect(finished.append)
+    try:
+        engine.submit("Open Paint")
+        qtbot.waitUntil(lambda: bool(finished), timeout=6000)
+        assert [a[0] for a in bridge.executed] == [
+            {"op": "press", "key": "WIN"}, {"op": "text", "text": "Paint"}, {"op": "press", "key": "ENTER"}]
+        assert frames.count("batch_capture") == 2  # A fresh local look before each follow-up.
+        assert checks == [{"op": "press", "key": "ENTER"}]  # One model check, for the launch.
+        assert engine.launch_query_pending is None  # The batch went through the launch logic.
+    finally:
+        engine.close()
+
+
+def test_batch_follow_up_into_a_protected_app_is_refused(qtbot):
+    engine, bridge, model = controller([launch_batch(), Decision("unable", "stop")])
+    engine.config = replace(engine.config, approve_each_step=False, hands_free=True)
+    engine.window_guard = lambda action, fg, task: "Visual Studio Code" if action["op"] == "text" else None
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    failed = []
+    engine.failed.connect(failed.append)
+    try:
+        engine.submit("Open Paint")
+        qtbot.waitUntil(lambda: bool(failed), timeout=6000)
+        assert [a[0] for a in bridge.executed] == [{"op": "press", "key": "WIN"}]
+        assert engine.batch == []
+    finally:
+        engine.close()
+
+
+def test_batches_are_not_used_with_per_step_approval(qtbot):
+    engine, bridge, model = controller([launch_batch()])
+    engine.config = replace(engine.config, approve_each_step=True, hands_free=False)
+    questions = []
+    engine.approval_requested.connect(lambda rid, text: questions.append(rid))
+    engine.capture_requested.connect(lambda: engine.observation_ready(observation(), engine.generation))
+    try:
+        engine.submit("Open Paint")
+        qtbot.waitUntil(lambda: bool(questions), timeout=5000)
+        assert engine.batch == []
+    finally:
+        engine.close()
+
+
+def test_follow_ups_are_parsed_and_bad_ones_dropped():
+    from monster.providers.decisions import decision_schema_for_draft
+
+    base = {"kind": "action", "summary": "Open Start", "risk": "routine", "expected_result": "Paint",
+            "action": {"op": "press", "key": "WIN"}}
+    good = parse_decision({**base, "then": [{"op": "text", "text": "Paint"},
+                                            {"op": "press", "key": "ENTER"}]}, 100, 100)
+    assert good.then == ({"op": "text", "text": "Paint"}, {"op": "press", "key": "ENTER"})
+    clicky = parse_decision({**base, "then": [{"op": "click", "x": 1, "y": 1}]}, 100, 100)
+    assert clicky.then == () and clicky.action == {"op": "press", "key": "WIN"}
+    assert "then" not in decision_schema_for_draft()["oneOf"][0]["properties"]
+
+
+def test_screenshots_are_shrunk_and_pixel_coordinates_scaled(qapp):
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor, QImage
+
+    from monster.providers.claude_code import image_scale, scale_action, shrink_image
+
+    image = QImage(1920, 1080, QImage.Format.Format_RGB32)
+    image.fill(QColor("#336699"))
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    small, media = shrink_image(bytes(data))
+    assert media == "image/jpeg" and QImage.fromData(small).width() == 1280
+    assert shrink_image(b"not a png") == (b"not a png", "image/png")
+    s = image_scale(1920, 1080)
+    assert scale_action({"op": "drag", "x": 960, "y": 540, "end_x": 1920, "end_y": 0,
+                         "path": [[300, 300]]}, s) == {
+        "op": "drag", "x": 640, "y": 360, "end_x": 1280, "end_y": 0, "path": [[200, 200]]}
+
+
+def test_canvas_box_from_a_scaled_check_is_mapped_back():
+    from monster.providers.base import DraftTargetCheck
+
+    seen = []
+
+    async def runner(argv, stdin, timeout):
+        seen.append(stdin)
+        answer = {"status": "ready", "evidence": "ok", "canvas_box": {"x0": 100, "y0": 100, "x1": 600, "y1": 400}}
+        result = {"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(answer)}
+        return 0, json.dumps(result).encode(), b""
+
+    config = OllamaConfig(mode="supervised", provider="claude_code", claude_code_confirmed=True)
+    provider = ClaudeCodeProvider(config, cli="claude.exe", runner=runner)
+    action = {"op": "drag", "x": 960, "y": 540, "end_x": 1200, "end_y": 600, "button": "left", "duration": 0.5}
+    result = asyncio.run(provider.verify_drawing_target("m", "draw", action, b"PNG", 1920, 1080))
+    assert isinstance(result, DraftTargetCheck) and result.region == (150, 150, 900, 600)
+    prompt = json.loads(seen[0])["message"]["content"][-1]["text"]
+    assert '"x": 640' in prompt and "1280x720" in prompt
+
+
+def test_decide_states_the_sent_image_size_and_maps_coordinates_back():
+    seen = []
+
+    async def runner(argv, stdin, timeout):
+        seen.append(json.loads(stdin)["message"]["content"][-1]["text"])
+        answer = {"kind": "action", "summary": "Click the 1 key", "risk": "routine",
+                  "expected_result": "1 shown", "action": {"op": "click", "x_1000": 500, "y_1000": 729}}
+        result = {"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(answer)}
+        return 0, json.dumps(result).encode(), b""
+
+    config = OllamaConfig(mode="supervised", provider="claude_code", claude_code_confirmed=True)
+    provider = ClaudeCodeProvider(config, cli="claude.exe", runner=runner)
+    decision = asyncio.run(provider.decide("m", "calculate", b"PNG", 1920, 1080))
+    assert "Image size: 1280x720" in seen[0]
+    # 0-1000 coordinates are converted with the sent size, then mapped to full-resolution pixels.
+    assert decision.action["x"] in (959, 960) and decision.action["y"] in (785, 786)

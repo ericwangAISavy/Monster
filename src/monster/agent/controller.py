@@ -5,7 +5,7 @@ import time
 import uuid
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 
 from PySide6.QtCore import QTimer, Signal
 
@@ -51,6 +51,7 @@ MAX_TASK_CALLS = 60
 SUBTASK_ACTIONS = 8
 SUBTASK_CALLS = 15
 PLANNER_CHECK_DELAY_MS = 700  # Let the UI settle before the planner judges a routine step.
+BATCH_STEP_DELAY_MS = 300  # Between keyboard follow-ups (Start search, address bar, ...).
 UNCERTAIN_REVIEW = "The model is uncertain about this action's target or effect."
 
 
@@ -151,6 +152,7 @@ class SupervisedController(TaskController):
         self.window_guard = None
         self.unverified = None  # Routine step awaiting the planner's merged check.
         self.canvas_cache = None  # Last canvas verified ready: window, rect, canvas box.
+        self.batch = []  # Keyboard follow-ups still to send for the current decision.
 
     def submit(self, instruction):
         if (
@@ -238,6 +240,7 @@ class SupervisedController(TaskController):
         self.stale = 0
         self.unverified = None
         self.canvas_cache = None
+        self.batch = []
 
     # ---- orchestrator -------------------------------------------------------
     @property
@@ -466,7 +469,6 @@ class SupervisedController(TaskController):
                     else self.status
                 ).emit(text)
             if self.terminal_report is not None:
-                from dataclasses import replace
                 report = replace(self.terminal_report, cleanup_confirmed=not self.cleanup_blocked)
                 self.terminal_report = None
                 self.terminal_ready.emit(report)
@@ -512,6 +514,13 @@ class SupervisedController(TaskController):
             self.trace.append(f"Step {self.actions}: {action_description(action)}; input inserted.")
             if action["op"] != "drag":
                 self.canvas_cache = None  # A tool or window change may follow any other input.
+            if self.batch:
+                follow_up = self.batch.pop(0)
+                self.pending = replace(self.pending, action=follow_up, then=())
+                self._record("batch_step", remaining=len(self.batch), content={"action": follow_up})
+                self.phase = "batch_capture"
+                self._schedule_capture(BATCH_STEP_DELAY_MS)
+                return
             if self._planner_can_check(action):
                 self.unverified = deepcopy(self.pending)
                 self._record("verification_deferred", action=action["op"])
@@ -555,7 +564,7 @@ class SupervisedController(TaskController):
     def _capture(self):
         if self.active and not self.paused and self.phase in {
             "observing", "rechecking", "verifying_capture", "completion_capture",
-            "planning_capture", "assessing_capture",
+            "planning_capture", "assessing_capture", "batch_capture",
         }:
             self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
@@ -583,6 +592,13 @@ class SupervisedController(TaskController):
                     "and start a new task; no close shortcut was redirected."
                 )
                 return
+        if self.phase == "batch_capture":
+            # A follow-up key goes to whatever is focused now, so re-check against a fresh
+            # screenshot (foreground, protected apps, policy) without a model call.
+            self.observation = observation
+            self.phase = "comparing"
+            self._check_and_dispatch()
+            return
         if self.phase in {"planning_capture", "assessing_capture"}:
             self.observation = observation
             planning = self.phase == "planning_capture"
@@ -1070,10 +1086,19 @@ class SupervisedController(TaskController):
                     self.phase = "observing"
                     self._capture()
                 return
+            self._check_and_dispatch()
+
+        elif self.phase == "deciding":
+            self._deciding_result(result)
+
+    def _check_and_dispatch(self):
+        """Last local checks against the current screenshot, then send the pending input."""
+        if True:  # Keeps the original block structure for readability of the diff.
             try:
                 action = self._prepare_action(self.pending.action, self.observation)
                 self._validate_draft_proposal()
             except (ValueError, TypeError):
+                self.batch = []
                 self.fail("Action is outside the supervised demo policy.")
                 return
             protected = (self.window_guard(action, self.observation.foreground, self.goal)
@@ -1131,7 +1156,8 @@ class SupervisedController(TaskController):
             else:
                 self._dispatch_checked_action(action)
 
-        elif self.phase == "deciding":
+    def _deciding_result(self, result):
+        if True:  # Keeps the original block structure for readability of the diff.
             if self.unverified is not None:
                 previous, self.unverified = self.unverified, None
                 judged = getattr(result, "previous_step", None)
@@ -1235,6 +1261,10 @@ class SupervisedController(TaskController):
                     + json.dumps(result.action, ensure_ascii=False)
                     + "\nCtrl+Alt+X stops."
                 )
+                self.batch = list(result.then) if reason is None and self._batch_allowed(result) else []
+                if self.batch:
+                    self._record("batch_planned", steps=len(self.batch) + 1,
+                                 content={"then": self.batch})
                 self.reviewed_proposal = deepcopy(result)
                 self.phase = "approval"
                 if self.hands_free and reason is not None:
@@ -1314,6 +1344,18 @@ class SupervisedController(TaskController):
                   *(tuple(p) for p in action.get("path", ()))]
         return all(x0 + margin <= x <= x1 - margin and y0 + margin <= y <= y1 - margin
                    for x, y in points)
+
+    def _batch_allowed(self, decision):
+        """Follow-up keys only when no step would need review and the task allows them."""
+        if (not decision.then or self.action_gate or self.single_click_policy
+                or draft_only(self.instruction) or window_close_requested(self.instruction)
+                or (self.config.approve_each_step and not self.hands_free)):
+            return False
+        policy = self._policy_instruction()
+        return all(
+            approval_reason(replace(decision, action=step, then=()), policy) is None
+            for step in decision.then
+        )
 
     def _planner_can_check(self, action):
         """Routine steps whose check can ride on the next planning call."""
@@ -1628,6 +1670,7 @@ class SupervisedController(TaskController):
         return base + ("\nModel reports: " + summary if summary else "")
 
     def _reject_proposal(self, reason, category="unspecified"):
+        self.batch = []
         self.rejected_proposals += 1
         self.last_rejection = reason
         label = {

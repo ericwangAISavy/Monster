@@ -761,6 +761,13 @@ class OllamaProvider:
             "never do that; if the app is in front, act inside its window. "
             "When the task asks for information, put it in the complete summary (up to about "
             "1000 characters). "
+            "To save time, a sure keyboard sequence can go in one decision: put the first action "
+            "in action and up to 3 keyboard follow-ups (text, press, chord; never clicks) in "
+            'then, for example {"op":"press","key":"WIN"} then [{"op":"text","text":"Paint"},'
+            '{"op":"press","key":"ENTER"}], or a click on the address bar then '
+            '[{"op":"text","text":"linkedin.com"},{"op":"press","key":"ENTER"}]. Then '
+            "expected_result describes the state after the whole sequence. Only batch steps "
+            "whose effect you are sure of; otherwise send one action. "
             "After pressing WIN, type the app name straight away; Start search is already "
             "focused, so do not click the search box. "
             "To open a website: if a browser window is visible, click its new-tab + button or "

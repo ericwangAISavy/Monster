@@ -84,6 +84,62 @@ def parse_json_text(text):
     return value if type(value) is dict else None
 
 
+MAX_IMAGE_EDGE = 1280  # Long edge sent to Claude; fewer image tokens, faster and cheaper.
+JPEG_QUALITY = 80
+
+
+def png_size(png):
+    """(width, height) from a PNG header, or None."""
+    if type(png) is bytes and len(png) >= 24 and png[:8] == b"\x89PNG\r\n\x1a\n":
+        return int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+    return None
+
+
+def image_scale(width, height):
+    return min(1.0, MAX_IMAGE_EDGE / max(1, width, height))
+
+
+def shrink_image(png):
+    """A downscaled JPEG of a large PNG screenshot, or the PNG unchanged when small or unreadable."""
+    size = png_size(png)
+    scale = image_scale(*size) if size else 1.0
+    if scale >= 1.0:
+        return png, "image/png"
+    try:
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+        from PySide6.QtGui import QImage
+
+        image = QImage.fromData(png, "PNG")
+        if image.isNull():
+            return png, "image/png"
+        small = image.scaled(max(1, round(image.width() * scale)), max(1, round(image.height() * scale)),
+                             Qt.AspectRatioMode.IgnoreAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        saved = small.save(buffer, "JPEG", JPEG_QUALITY)
+        buffer.close()
+        if saved and data.size():
+            return bytes(data), "image/jpeg"
+    except Exception:  # noqa: BLE001 - Any imaging problem just sends the original.
+        pass
+    return png, "image/png"
+
+
+def scale_action(action, scale):
+    """Pixel coordinates of an action scaled into (or back out of) the image Claude sees."""
+    if scale == 1.0 or type(action) is not dict:
+        return action
+    scaled = dict(action)
+    for key in ("x", "y", "end_x", "end_y"):
+        if type(scaled.get(key)) is int:
+            scaled[key] = round(scaled[key] * scale)
+    if type(scaled.get("path")) is list:
+        scaled["path"] = [[round(x * scale), round(y * scale)] for x, y in scaled["path"]]
+    return scaled
+
+
 def _matches(variant, value):
     for name, rule in variant.get("properties", {}).items():
         if name in value and type(rule) is dict:
@@ -318,9 +374,10 @@ class ClaudeCodeProvider(OllamaProvider):
             if len(images) == 2:
                 content.append({"type": "text",
                                 "text": "Image 1: BEFORE input." if index == 0 else "Image 2: AFTER input."})
+            data, media_type = shrink_image(png)
             content.append({"type": "image", "source": {
-                "type": "base64", "media_type": "image/png",
-                "data": base64.b64encode(png).decode("ascii")}})
+                "type": "base64", "media_type": media_type,
+                "data": base64.b64encode(data).decode("ascii")}})
         # Fast path: plain JSON in one model turn, validated by the provider's own parsers.
         plain = content + [{"type": "text", "text": prompt + JSON_REPLY.format(
             schema=json.dumps(schema, separators=(",", ":")))}]
@@ -352,17 +409,60 @@ class ClaudeCodeProvider(OllamaProvider):
         finally:
             self.model_override = None
 
-    async def verify_action(self, *args, **kwargs):
-        return await self._check(super().verify_action, *args, **kwargs)
+    # Every prompt must state the size of the image Claude actually receives: a model that
+    # is told 1920x1080 while seeing 1280x720 converts its coordinates with the wrong size.
+    async def decide(self, model, instruction, image, width, height, history=(), **kwargs):
+        s = image_scale(width, height)
+        if s >= 1.0:
+            return await super().decide(model, instruction, image, width, height, history=history, **kwargs)
+        sw, sh = round(width * s), round(height * s)
+        decision = await super().decide(model, instruction, image, sw, sh, history=history, **kwargs)
+        if decision.action is None:
+            return decision
+        up = scale_action(decision.action, 1 / s) if decision.action else decision.action
+        for key, limit in (("x", width), ("end_x", width), ("y", height), ("end_y", height)):
+            if type(up.get(key)) is int:
+                up[key] = min(limit - 1, max(0, up[key]))
+        if type(up.get("path")) is list:
+            up["path"] = [[min(width - 1, max(0, x)), min(height - 1, max(0, y))] for x, y in up["path"]]
+        from dataclasses import replace
+
+        return replace(decision, action=up)
+
+    async def plan(self, model, goal, image, width, height):
+        s = image_scale(width, height)
+        return await super().plan(model, goal, image, round(width * s), round(height * s))
+
+    async def assess(self, model, goal, plan, results, image, width, height):
+        s = image_scale(width, height)
+        return await super().assess(model, goal, plan, results, image, round(width * s), round(height * s))
+
+    # Checks that quote pixel coordinates describe them in the downscaled image Claude sees.
+    async def verify_action(self, model, instruction, action, expected, image, width, height,
+                            before_image=None):
+        s = image_scale(width, height)
+        return await self._check(super().verify_action, model, instruction, scale_action(action, s),
+                                 expected, image, round(width * s), round(height * s),
+                                 before_image=before_image)
 
     async def verify_completion(self, *args, **kwargs):
         return await self._check(super().verify_completion, *args, **kwargs)
 
-    async def verify_drawing_target(self, *args, **kwargs):
-        return await self._check(super().verify_drawing_target, *args, **kwargs)
+    async def verify_drawing_target(self, model, instruction, action, image, width, height):
+        s = image_scale(width, height)
+        result = await self._check(super().verify_drawing_target, model, instruction,
+                                   scale_action(action, s), image, round(width * s), round(height * s))
+        region = getattr(result, "region", None)
+        if region and s < 1.0:
+            x0, y0, x1, y1 = (round(v / s) for v in region)
+            region = (max(0, x0), max(0, y0), min(width, x1), min(height, y1))
+            result = type(result)(result.status, result.evidence, region)
+        return result
 
-    async def verify_draft_target(self, *args, **kwargs):
-        return await self._check(super().verify_draft_target, *args, **kwargs)
+    async def verify_draft_target(self, model, instruction, action, image, width, height):
+        s = image_scale(width, height)
+        return await self._check(super().verify_draft_target, model, instruction,
+                                 scale_action(action, s), image, round(width * s), round(height * s))
 
     async def probe(self, model):
         started = time.monotonic()

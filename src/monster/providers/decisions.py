@@ -88,6 +88,13 @@ PREVIOUS_STEP = {
     "required": ["status", "evidence"],
     "additionalProperties": False,
 }
+FOLLOW_UPS = {
+    "type": "array", "maxItems": 3,
+    "description": "Optional keyboard steps (text, press, chord) to run right after the action, "
+                   "for a sure sequence such as WIN, then type an app name, then ENTER.",
+    "items": {"oneOf": [v for v in ACTION_SCHEMA["oneOf"]
+                        if v["properties"]["op"]["const"] in {"text", "press", "chord"}]},
+}
 DECISION_SCHEMA = {
     "oneOf": [
         {
@@ -99,6 +106,7 @@ DECISION_SCHEMA = {
                 "risk": {"enum": ["routine", "sensitive", "uncertain"]},
                 "expected_result": {"type": "string", "minLength": 1, "maxLength": 300},
                 "previous_step": PREVIOUS_STEP,
+                "then": FOLLOW_UPS,
             },
             "required": ["kind", "summary", "action", "risk", "expected_result"],
             "additionalProperties": False,
@@ -120,6 +128,7 @@ DECISION_SCHEMA = {
 def decision_schema_for_draft():
     """Constrain generation as well as enforcing draft policy at dispatch."""
     schema = deepcopy(DECISION_SCHEMA)
+    schema["oneOf"][0]["properties"].pop("then", None)  # Drafts never batch steps.
     variants = schema["oneOf"][0]["properties"]["action"]["oneOf"]
     variants[:] = [v for v in variants if v["properties"]["op"]["const"] not in {"press", "drag"}]
     for variant in variants:
@@ -165,7 +174,8 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
             raise ProviderError("Model returned an invalid summary.")
         summary = summary.strip()[:limit - 1].rstrip() + "…"
     required = {"kind", "summary", "action"} if value["kind"] == "action" else {"kind", "summary"}
-    allowed = (required | {"risk", "expected_result"} if value["kind"] == "action" else required) | {"previous_step"}
+    allowed = ((required | {"risk", "expected_result", "then"}) if value["kind"] == "action"
+               else required) | {"previous_step"}
     if not required <= set(value) or set(value) - allowed:
         raise ProviderError("Model decision contains missing or unknown fields.")
     risk = value.get("risk")
@@ -240,5 +250,18 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
         or not 1 <= len(previous["evidence"].strip()) <= 300
     ):
         previous = None  # A malformed self-check falls back to the independent check.
+    then = ()
+    if value["kind"] == "action" and value.get("then"):
+        steps = value["then"]
+        try:
+            if type(steps) is not list or len(steps) > 3:
+                raise ValueError
+            for step in steps:
+                if type(step) is not dict or step.get("op") not in {"text", "press", "chord"}:
+                    raise ValueError
+                validate_action(step, [Bounds(0, 0, width, height)])
+            then = tuple(dict(step) for step in steps)
+        except (ValueError, TypeError):
+            then = ()  # A bad follow-up list is dropped; the first action still stands.
     return Decision(value["kind"], summary.strip(), action, risk, expected, coordinate_source,
-                    previous)
+                    previous, then)
