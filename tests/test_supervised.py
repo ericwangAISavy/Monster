@@ -2447,3 +2447,30 @@ def test_completion_after_failed_check_is_rejected_when_independent_check_disagr
                    for line in engine.history)
     finally:
         engine.close()
+
+
+def test_win_key_is_not_held_back_by_activity_in_the_current_window():
+    before, after = observation(), observation("#000000", foreground=88)
+    details = {}
+    assert scene_matches(before, after, {"op": "press", "key": "WIN"}, diagnostics=details)
+    assert details["reason"] == "screen_independent_key"
+    assert not scene_matches(before, after, {"op": "press", "key": "ENTER"})
+
+
+def test_click_outside_a_busy_front_window_only_needs_its_target_unchanged():
+    front = Bounds(-100, 0, 40, 100)  # Left part of the capture is the busy front window.
+    before = replace(observation(), foreground_rect=front)
+    image = QImage(100, 100, QImage.Format.Format_RGB32)
+    image.fill(QColor("#ffffff"))
+    for px in range(0, 40):
+        for py in range(0, 100):
+            image.setPixelColor(px, py, QColor("#000000"))  # The front window changed a lot.
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    after = replace(before, png=bytes(data), sha256=hashlib.sha256(bytes(data)).hexdigest())
+    details = {}
+    assert scene_matches(before, after, {"op": "click", "x": 80, "y": 50}, diagnostics=details)
+    assert details["reason"] == "target_outside_foreground"
+    assert not scene_matches(before, after, {"op": "click", "x": 20, "y": 50})

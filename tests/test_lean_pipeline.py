@@ -29,7 +29,7 @@ def lean(decisions, verdicts, **changes):
                             pipeline="lean", **changes)
     calls = {"orchestrate": [], "verify": 0, "completion": 0}
 
-    async def next_subtask(model_name, goal, criteria, history, *args):
+    async def next_subtask(model_name, goal, criteria, history, *args, **kwargs):
         calls["orchestrate"].append((criteria, history))
         return verdicts.pop(0)
 

@@ -127,6 +127,23 @@ def shrink_image(png):
     return png, "image/png"
 
 
+PNG_SIGNATURE = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+JPEG_SIGNATURE = bytes([255, 216, 255])
+
+
+def image_media_type(data):
+    """Media type of an image from its leading bytes (PNG, JPEG, GIF, WebP)."""
+    if data[:8] == PNG_SIGNATURE:
+        return "image/png"
+    if data[:3] == JPEG_SIGNATURE:
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
 def scale_action(action, scale):
     """Pixel coordinates of an action scaled into (or back out of) the image Claude sees."""
     if scale == 1.0 or type(action) is not dict:
@@ -377,9 +394,19 @@ class ClaudeCodeProvider(OllamaProvider):
         return result
 
     async def chat(self, model, prompt, image, schema, system="Return only the requested JSON.",
-                   before_image=None):
+                   before_image=None, extra_images=()):
         images = (before_image, image) if before_image is not None else (image,)
         content = []
+        for label, data in extra_images:
+            # Context images (a diagram, a sketch) come first, each labelled.
+            sent, media_type = shrink_image(data) if data[:8] == PNG_SIGNATURE else (
+                data, image_media_type(data))
+            content.append({"type": "text", "text": f"Context image: {label}"})
+            content.append({"type": "image", "source": {
+                "type": "base64", "media_type": media_type,
+                "data": base64.b64encode(sent).decode("ascii")}})
+        if extra_images:
+            content.append({"type": "text", "text": "Current screen:"})
         for index, png in enumerate(images):
             if len(images) == 2:
                 content.append({"type": "text",
@@ -445,10 +472,10 @@ class ClaudeCodeProvider(OllamaProvider):
 
         return replace(decision, action=up)
 
-    async def next_subtask(self, model, goal, criteria, history, image, width, height):
+    async def next_subtask(self, model, goal, criteria, history, image, width, height, **kwargs):
         s = image_scale(width, height)
         return await super().next_subtask(model, goal, criteria, history, image,
-                                          round(width * s), round(height * s))
+                                          round(width * s), round(height * s), **kwargs)
 
     async def plan(self, model, goal, image, width, height):
         s = image_scale(width, height)

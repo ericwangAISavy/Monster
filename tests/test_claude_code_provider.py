@@ -210,3 +210,15 @@ def test_fit_to_schema_picks_the_matching_decision_variant():
     assert len(fit_to_schema(report, DECISION_SCHEMA)["summary"]) == 1200
     step = {"kind": "action", "summary": "x" * 500, "action": {"op": "press", "key": "WIN"}}
     assert len(fit_to_schema(step, DECISION_SCHEMA)["summary"]) == 300
+
+
+def test_context_images_are_labelled_and_sent_before_the_screen():
+    cli = FakeCli({"status": "succeeded", "evidence": "ok"})
+    provider = ClaudeCodeProvider(config(), cli="claude.exe", runner=cli)
+    jpeg = bytes([255, 216, 255, 224]) + b"rest"
+    asyncio.run(provider.chat("m", "Check", b"SCREEN", {"type": "object"},
+                              extra_images=[("architecture.jpg", jpeg)]))
+    content = json.loads(cli.calls[0][1])["message"]["content"]
+    assert content[0] == {"type": "text", "text": "Context image: architecture.jpg"}
+    assert content[1]["source"]["media_type"] == "image/jpeg"
+    assert content[2] == {"type": "text", "text": "Current screen:"}

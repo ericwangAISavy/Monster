@@ -31,6 +31,8 @@ KEY_EVENTS = frozenset({
     "review_requested", "clarification_requested", "launch_query_confirmed",
     "plan_requested", "plan_created", "plan_approved", "subtask_started", "subtask_finished",
     "assessment_requested", "plan_assessed", "plan_revised", "protected_window_refused",
+    "orchestration_requested", "orchestration_result", "context_projects_chosen",
+    "context_fetched", "screen_settled", "batch_planned", "batch_step",
 })
 
 

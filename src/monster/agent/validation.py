@@ -232,6 +232,10 @@ def scene_matches(before, after, action, *, diagnostics=None):
         return finish(False, "capture_bounds_changed")
     if before.displays != after.displays:
         return finish(False, "display_geometry_changed")
+    if action == {"op": "press", "key": "WIN"}:
+        # Opening Start does not depend on what is on screen, so activity in the current
+        # window (a streaming chat, a video) must not hold it back.
+        return finish(True, "screen_independent_key")
     if not before.foreground or before.foreground != after.foreground:
         return finish(False, "foreground_changed_or_missing")
     old, new = QImage.fromData(before.png), QImage.fromData(after.png)
@@ -259,6 +263,10 @@ def scene_matches(before, after, action, *, diagnostics=None):
             return finish(False, "foreground_window_moved")
         window = QRect(before_rect.x - before.bounds.x, before_rect.y - before.bounds.y,
                        before_rect.width, before_rect.height).intersected(old.rect())
+        if x is not None and not window.contains(x, y):
+            # The click lands on another window (for example a document behind a busy chat
+            # app): the unchanged target patch above is what matters, not the front window.
+            return finish(True, "target_outside_foreground", patch_checked=True)
         if window.width() >= 8 and window.height() >= 8:
             old, new = old.copy(window), new.copy(window)
             region_name = "foreground_window"

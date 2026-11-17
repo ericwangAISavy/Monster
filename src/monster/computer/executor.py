@@ -32,6 +32,11 @@ def drag_plan(action, geometry):
     return tuple(plan)
 
 
+TYPING_CHARACTER_S = 0.02  # Pause after each typed character.
+TYPING_KEY_HOLD_S = 0.003  # Between a character's key-down and key-up.
+TYPING_BUDGET_S = 20.0  # Long texts type faster so they finish well inside the lease.
+
+
 class Disarmed(RuntimeError):
     pass
 
@@ -202,13 +207,18 @@ class InputExecutor:
                 confirm_arrival((action["end_x"], action["end_y"]))
                 emit("mouse", button, False)
             elif op == "text":
+                # Modern editors (Windows 11 Notepad, Chromium text boxes) drop and repeat
+                # characters when Unicode keystrokes arrive back to back, so pace them, while
+                # keeping even 2000 characters well inside the 30 s input lease.
+                gap = min(TYPING_CHARACTER_S, TYPING_BUDGET_S / max(1, len(action["text"])))
                 for character in action["text"]:
                     data = character.encode("utf-16-le")
                     for index in range(0, len(data), 2):
                         unit = int.from_bytes(data[index : index + 2], "little")
                         emit("unicode", unit, True)
+                        self.wait(generation, TYPING_KEY_HOLD_S)
                         emit("unicode", unit, False)
-                    self.wait(generation, 0.005)
+                    self.wait(generation, gap)
             elif op == "press":
                 with self.lock:
                     emit("key", action["key"], True)

@@ -1,6 +1,7 @@
 """Experimental visual loop with configurable step review and human-confirmed completion."""
 
 import json
+from pathlib import Path
 import time
 import uuid
 from collections import OrderedDict
@@ -154,6 +155,11 @@ class SupervisedController(TaskController):
         self.orchestrated = False
         self.lean = False
         self.criteria = None
+        # Context: the store (installed by the app), this command's temporary bundle (set by
+        # the remote bridge before submit) and the projects the orchestrator chose.
+        self.context_store = None
+        self.context_bundle_id = None
+        self.context_projects = []
         self.settle_prev = None
         self.settle_started = 0.0
         self.plan = None
@@ -207,6 +213,7 @@ class SupervisedController(TaskController):
             bool(getattr(self.config, "orchestrate", False)) and not self.action_gate)
         self.criteria = None
         self.consecutive_failures = 0
+        self.context_projects = []
         self.plan = None
         self.plan_index = 0
         self.subtask_results = []
@@ -348,6 +355,10 @@ class SupervisedController(TaskController):
         """Lean orchestrator verdict: finished, one next subtask, or stop."""
         self.criteria = self.criteria or result["success_criteria"]
         self._record("orchestration_result", status=result["status"], content=result)
+        if not self.context_projects and result.get("projects") and self.context_store is not None:
+            known = {p["id"] for p in self.context_store.list_projects()}
+            self.context_projects = [pid for pid in result["projects"] if pid in known][:5]
+            self._record("context_projects_chosen", projects=self.context_projects)
         if result["status"] == "done":
             self._finish_with_answer(result["answer"] or result["evidence"])
         elif result["status"] == "stop":
@@ -357,9 +368,89 @@ class SupervisedController(TaskController):
                                     f"{MAX_CONSECUTIVE_FAILED_SUBTASKS} subtasks all failed. "
                                     "Last finding: " + result["evidence"])
         else:
-            self.plan = (self.plan or []) + [{"instruction": result["next_subtask"],
-                                              "done_when": result["success_criterion"]}]
+            item = {"instruction": result["next_subtask"], "done_when": result["success_criterion"]}
+            item.update(self._fetch_context(result))
+            self.plan = (self.plan or []) + [item]
             self._start_subtask(len(self.plan) - 1)
+
+    # ---- context --------------------------------------------------------------
+    def _bundle_documents(self):
+        if self.context_store is None or not self.context_bundle_id:
+            return []
+        return self.context_store.documents(bundle_id=self.context_bundle_id)
+
+    def _context_overview(self):
+        """What the orchestrator sees: the project catalog (until it chose projects, then
+        only those) and this command's temporary context, plus up to two of its images."""
+        store = self.context_store
+        if store is None:
+            return None, []
+        overview = {}
+        projects = store.catalog()
+        if self.context_projects:
+            projects = [p for p in projects if p["id"] in self.context_projects]
+        if projects:
+            key = "selected_projects" if self.context_projects else "projects"
+            overview[key] = [
+                {"id": p["id"], "name": p["name"], "instructions": p["instructions"][:400],
+                 "files": [{"name": f["name"], "kind": f["kind"], "summary": f["summary"][:160]}
+                           for f in p["files"][:15]]}
+                for p in projects[:20]]
+        temporary, images = [], []
+        for document in self._bundle_documents():
+            entry = {"name": document["name"], "kind": document["kind"],
+                     "summary": document["summary"][:160]}
+            if document["kind"] in {"text", "file"}:
+                entry["text"] = (store.document_text(document["id"]) or "")[:1500]
+            temporary.append(entry)
+            if document["kind"] == "image" and len(images) < 2:
+                images.append(self._document_image(document))
+        if temporary:
+            overview["temporary"] = temporary
+        return (overview or None), [image for image in images if image]
+
+    @staticmethod
+    def _document_image(document):
+        try:
+            return (document["name"], Path(document["path"]).read_bytes())
+        except (OSError, TypeError):
+            return None
+
+    def _fetch_context(self, result):
+        """Local lookup (no model call) of what the next subtask needs."""
+        store = self.context_store
+        if store is None or not (self.context_projects or self.context_bundle_id):
+            return {}
+        bundle_ids = [self.context_bundle_id] if self.context_bundle_id else []
+        parts, images = [], []
+        for project in store.list_projects():
+            if project["id"] in self.context_projects and project["instructions"].strip():
+                parts.append("[" + project["name"] + " / instructions] "
+                             + project["instructions"][:600])
+        query = (result.get("context_query") or "").strip()
+        if query:
+            for hit in store.search(query, project_ids=self.context_projects,
+                                    bundle_ids=bundle_ids, limit=6):
+                parts.append("[" + hit["name"] + "] " + hit["text"])
+        wanted = {name.lower() for name in result.get("use_documents") or ()}
+        if wanted:
+            documents = self._bundle_documents() + [
+                d for pid in self.context_projects for d in store.documents(project_id=pid)]
+            for document in documents:
+                if document["name"].lower() not in wanted:
+                    continue
+                if document["kind"] == "image":
+                    image = self._document_image(document) if len(images) < 2 else None
+                    if image:
+                        images.append(image)
+                else:
+                    text = store.document_text(document["id"]) or ""
+                    parts.append("[" + document["name"] + "] " + text[:3000])
+        context_text = "\n".join(parts)[:6000]
+        if context_text or images:
+            self._record("context_fetched", characters=len(context_text), images=len(images),
+                         content={"query": query, "documents": sorted(wanted)})
+        return {"context_text": context_text, "context_images": images}
 
     def _finish_with_answer(self, summary):
         self.final_summary = summary
@@ -677,12 +768,16 @@ class SupervisedController(TaskController):
             self.stage_changed.emit("Orchestrating")
             diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
             goal, criteria, history = self.goal, self.criteria, deepcopy(self.subtask_results)
+            context, context_images = self._context_overview()
             self._record("orchestration_requested", observation=self.log_frame,
-                         content={"criteria": criteria, "history": history})
+                         content={"criteria": criteria, "history": history,
+                                  "context_projects": len((context or {}).get("projects", ())),
+                                  "temporary_items": len((context or {}).get("temporary", ()))})
+            extra = {"context": context, "context_images": context_images} if context else {}
             self.job = self._start_model(
                 lambda: self._provider(diagnostics, "orchestrating", call, step).next_subtask(
                     self.config.model, goal, criteria, history, observation.png,
-                    observation.bounds.width, observation.bounds.height))
+                    observation.bounds.width, observation.bounds.height, **extra))
             return
         if self.phase == "batch_capture":
             # A follow-up key goes to whatever is focused now, so re-check against a fresh
@@ -819,6 +914,8 @@ class SupervisedController(TaskController):
                      "expected_result": self.unverified.expected_result or self.unverified.summary}
                     if self.unverified is not None else None)
         extra = {"previous_step": previous} if previous else {}
+        if self.plan_active and self.plan[self.plan_index].get("context_images"):
+            extra["context_images"] = self.plan[self.plan_index]["context_images"]
         self.job = self._start_model(
             lambda: self._provider(diagnostics, "deciding", call, step).decide(
                 self.config.model,
@@ -1764,6 +1861,10 @@ class SupervisedController(TaskController):
             done = [r["subtask"] + " -> " + str(r["report"])[:200]
                     for r in self.subtask_results if r["succeeded"]]
             if self.lean:
+                if item.get("context_text"):
+                    text += ("\nContext for this subtask (the user's stored data; use these exact "
+                             "values, never invent personal data or content; if a needed value is "
+                             "missing, return clarify):\n" + item["context_text"])
                 text += (
                     f"\nSuccess criterion of this subtask: {item['done_when']}"
                     "\nThis is one subtask of a larger task; do only this subtask. As soon as the "
@@ -1931,6 +2032,7 @@ class SupervisedController(TaskController):
         self._remember_diagnostic_origin(self.input_diagnostic_origins, self.input_job)
         self.timings.begin(("input", self.input_job), "cleanup")
         self.instruction = ""
+        self.context_bundle_id = None
         self.observation = self.pending = None
         self.reviewed_proposal = None
         self.draft_target_proposal = None

@@ -169,6 +169,8 @@ class CompanionApp:
         if getattr(controller, "is_supervised", False) and hasattr(controller, "window_guard"):
             from monster.agent.protected import native_guard
             controller.window_guard = native_guard()
+        if hasattr(controller, "context_store"):
+            controller.context_store = getattr(self, "context_store", None)
         bindings = [
             (controller.state_changed, self.set_state),
             (controller.stage_changed, self.companion.set_stage),
