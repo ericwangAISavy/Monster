@@ -93,13 +93,21 @@ def build_server(bridge, token: str, port: int = DEFAULT_PORT, allowed_hosts=())
         return await call("status")
 
     @mcp.tool(annotations=acts)
-    async def run_task(instruction: str) -> dict:
+    async def run_task(instruction: str, context_text: str | None = None,
+                       context_files: list[dict] | None = None,
+                       context_images: list[dict] | None = None,
+                       context_paths: list[str] | None = None) -> dict:
         """Start a natural-language desktop task with Monster's supervised agent.
 
-        Monster must be in supervised real-input mode and idle. The user reviews actions on
-        the laptop. Returns a task_id; poll task_status until the state is not "running".
+        Optional temporary context for this task only (deleted when it succeeds, kept for a
+        retry otherwise): context_text (pasted text), context_files and context_images as
+        [{"name": "requirements.pdf", "data": "<base64>"}], or rarely context_paths (local
+        file paths). At most 20 MB per command. Permanent context lives in Monster's Projects.
+        Returns a task_id; poll task_status until the state is not "running".
         """
-        return await call("run_task", instruction=instruction)
+        return await call("run_task", instruction=instruction, context_text=context_text,
+                          context_files=context_files, context_images=context_images,
+                          context_paths=context_paths)
 
     @mcp.tool(annotations=read_only)
     async def task_status(task_id: str, wait_seconds: int = 0) -> dict:

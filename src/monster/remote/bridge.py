@@ -201,6 +201,9 @@ class RemoteBridge(QObject):
             "review_text": pending[1] if pending else None,
             "message": task["message"],
             "result": task.get("result"),
+            "temporary_context": ({"items": task.get("context_items", 0),
+                                   "kept_for_retry": task["state"] != "completed"}
+                                  if task.get("bundle_id") else None),
             "plan": [item["instruction"] for item in (getattr(controller, "plan", None) or ())]
                     if task["state"] == "running" else None,
             "current_step": (getattr(controller, "plan_index", 0) + 1)
@@ -208,7 +211,32 @@ class RemoteBridge(QObject):
             "confirmed_input_transactions": getattr(controller, "actions", None),
         }
 
-    def op_run_task(self, future, instruction):
+    def _temporary_context(self, text, files, images, paths):
+        """Decode one command's temporary context: (text, [(name, bytes)], [(name, bytes)])."""
+        def attachments(items, label):
+            decoded = []
+            for item in items or ():
+                if (type(item) is not dict or type(item.get("name")) is not str
+                        or type(item.get("data")) is not str):
+                    raise RemoteError(f"Each {label} needs a name and base64 data.")
+                try:
+                    decoded.append((item["name"], base64.b64decode(item["data"], validate=True)))
+                except (ValueError, TypeError):
+                    raise RemoteError(f"{label.capitalize()} {item['name']!r} is not valid base64.") from None
+            return decoded
+
+        if text is not None and type(text) is not str:
+            raise RemoteError("context_text must be text.")
+        file_items = attachments(files, "file")
+        for path in paths or ():
+            if type(path) is not str or not os.path.isfile(path):
+                raise RemoteError(f"Context path {path!r} is not a readable file.")
+            with open(path, "rb") as handle:
+                file_items.append((os.path.basename(path), handle.read()))
+        return text, file_items, attachments(images, "image")
+
+    def op_run_task(self, future, instruction, context_text=None, context_files=None,
+                    context_images=None, context_paths=None):
         instruction = (instruction or "").strip()
         if not instruction:
             raise RemoteError("Instruction is empty.")
@@ -223,23 +251,50 @@ class RemoteBridge(QObject):
         if reason:
             raise RemoteError(reason)
         target = self._target_window()
+        # Temporary context belongs to this one command: stored before the task starts,
+        # deleted when it succeeds, kept for a retry when it fails or stops.
+        bundle_id = None
+        store = getattr(self.ui, "context_store", None)
+        text, files, images = self._temporary_context(
+            context_text, context_files, context_images, context_paths)
+        if (text and text.strip()) or files or images:
+            if store is None:
+                raise RemoteError("Monster's context store is unavailable; temporary context "
+                                  "cannot be used.")
+            from monster.context.store import ContextError
+            try:
+                bundle_id = store.create_bundle(text=text, files=files, images=images)
+            except ContextError as exc:
+                raise RemoteError(str(exc)) from None
+        controller.context_bundle_id = bundle_id
         self.ui.activation_target = target
         self.ui.submit(instruction)
         if not controller.active or self.ui.last_task_outcome != "running":
+            if bundle_id:
+                store.delete_bundle(bundle_id)
             raise RemoteError(
                 "Monster did not start the task. See Last failure on the laptop for details.")
         task = {"id": uuid.uuid4().hex[:12], "instruction": instruction, "state": "running",
                 "message": None, "controller": controller,
-                "generation": controller.run_generation}
+                "generation": controller.run_generation, "bundle_id": bundle_id,
+                "context_items": len(store.documents(bundle_id=bundle_id)) if bundle_id else 0}
+        if bundle_id:
+            store.attach_run(bundle_id, task["id"])
+
+        def settle_context(succeeded, current=task):
+            if current.get("bundle_id") and store is not None:
+                store.finish_bundle(current["bundle_id"], succeeded)
 
         def finished(text, current=task):
             if current["state"] == "running" and self.task is current:
                 current["state"], current["message"] = "completed", text
                 current["result"] = getattr(controller, "completion_summary", None)
+                settle_context(True)
 
         def failed(text, current=task):
             if current["state"] == "running" and self.task is current:
                 current["state"], current["message"] = "stopped_incomplete", text
+                settle_context(False)
 
         if self.task:
             self._disconnect_task(self.task)

@@ -434,3 +434,61 @@ def test_task_diagnostics_explain_a_stopped_task(qtbot, remote, monkeypatch):
     assert len(full["events"]) >= len(key["events"]) and full["view"] == "full"
     with pytest.raises(RemoteError, match="Unknown task_id"):
         call(qtbot, bridge, "task_diagnostics", task_id="nope")
+
+
+def _start_with_context(qtbot, remote, monkeypatch, decisions, **context):
+    from test_supervised import controller
+
+    from monster.computer import screenshot as screenshot_module
+    from monster.computer import windows as windows_module
+
+    ui, bridge = remote
+    monkeypatch.setattr(windows_module, "WindowsInput", FakeWindows)
+    monkeypatch.setattr(screenshot_module, "capture_display", lambda display=None: observation())
+    engine, _, _ = controller(decisions)
+    ui.switch_controller(engine)
+    started = call(qtbot, bridge, "run_task", instruction="draw the design", **context)
+    return ui, bridge, engine, started
+
+
+def test_temporary_context_is_stored_and_deleted_when_the_task_succeeds(qtbot, remote, monkeypatch):
+    from monster.providers.base import Decision
+
+    ui, bridge, engine, started = _start_with_context(
+        qtbot, remote, monkeypatch, [Decision("complete", "Drawn")],
+        context_text="Requirements: payments service",
+        context_files=[{"name": "notes.md", "data": base64.b64encode(b"# Notes").decode()}],
+        context_images=[{"name": "sketch.png", "data": base64.b64encode(b"PNG").decode()}])
+    store = ui.context_store
+    bundle = engine.context_bundle_id
+    assert started["temporary_context"]["items"] == 3 and len(store.documents(bundle_id=bundle)) == 3
+    qtbot.waitUntil(lambda: engine.phase == "confirming", timeout=5000)
+    engine.respond(engine.question_id, "approve")
+    qtbot.waitUntil(lambda: call(qtbot, bridge, "task_status")["state"] == "completed", timeout=3000)
+    assert store.bundle(bundle) is None and store.documents(bundle_id=bundle) == []
+
+
+def test_temporary_context_is_kept_for_a_retry_when_the_task_fails(qtbot, remote, monkeypatch):
+    from monster.providers.base import Decision
+
+    ui, bridge, engine, started = _start_with_context(
+        qtbot, remote, monkeypatch, [Decision("unable", "Cannot find the app")],
+        context_text="Requirements: payments service")
+    bundle = engine.context_bundle_id
+    qtbot.waitUntil(lambda: call(qtbot, bridge, "task_status")["state"] != "running", timeout=5000)
+    assert ui.context_store.bundle(bundle)["status"] == "kept"
+    assert call(qtbot, bridge, "task_status")["temporary_context"]["kept_for_retry"] is True
+
+
+def test_bad_temporary_context_is_refused_before_the_task_starts(qtbot, remote, monkeypatch):
+    from test_supervised import controller
+
+    ui, bridge = remote
+    engine, _, _ = controller([])
+    ui.switch_controller(engine)
+    with pytest.raises(RemoteError, match="base64"):
+        call(qtbot, bridge, "run_task", instruction="x",
+             context_files=[{"name": "a.pdf", "data": "not base64!!"}])
+    with pytest.raises(RemoteError, match="readable file"):
+        call(qtbot, bridge, "run_task", instruction="x", context_paths=["C:/no/such/file.pdf"])
+    assert not engine.active

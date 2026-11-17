@@ -80,6 +80,7 @@ class CompanionApp:
         self.approval_key_timer.timeout.connect(self._finish_keyboard_approval)
         self.settings_window = None
         self.provider_window = None
+        self.projects_window = None
         self.preview_window = None
         self.last_preview = None
         self.last_failure = None
@@ -92,6 +93,18 @@ class CompanionApp:
         self.controller_bindings = []
         self.startup_error = ""
         self.provider_path = config_path.with_name("ollama.json")
+        # Permanent projects and temporary per-command context live beside the settings.
+        from monster.context.store import ContextError, ContextStore
+        try:
+            self.context_store = ContextStore(config_path.with_name("context"))
+            self.context_store.purge_expired()
+        except (OSError, ContextError, Exception):  # noqa: BLE001 - Monster still runs without it.
+            self.context_store = None
+        self.context_reaper = QTimer()
+        self.context_reaper.setInterval(3600 * 1000)
+        self.context_reaper.timeout.connect(
+            lambda: self.context_store and self.context_store.purge_expired())
+        self.context_reaper.start()
         try:
             self.model_config = provider_config.load(self.provider_path)
         except (OSError, ValueError, TypeError):
@@ -270,6 +283,7 @@ class CompanionApp:
         toggle.setChecked(True)
         self.add_action("Settings…", self.show_settings)
         self.add_action("AI model settings…", self.show_provider_settings)
+        self.add_action("Projects…", self.show_projects)
         self.add_action("ChatGPT connection…", self.show_remote_connection)
         self.add_action("Last action preview…", self.show_preview_details)
         self.add_action("Last failure…", self.show_failure_details)
@@ -340,7 +354,7 @@ class CompanionApp:
             if text in ("Talk to Monster", "Pause", "Stop task"):
                 group = "task"
             elif text in ("Show companion", "Settings…", "AI model settings…",
-                          "ChatGPT connection…"):
+                          "Projects…", "ChatGPT connection…"):
                 group = "settings"
             elif text.startswith("Last "):
                 group = "activity"
@@ -349,7 +363,8 @@ class CompanionApp:
             else:
                 group = "missions"
             label = {"Talk to Monster": "＋  New task", "Settings…": "Companion & shortcuts  ›",
-                     "AI model settings…": "AI model & automation  ›"}.get(text)
+                     "AI model settings…": "AI model & automation  ›",
+                     "Projects…": "Projects · permanent context  ›"}.get(text)
             target = task_secondary if text in ("Pause", "Stop task") else sections[group]
             if text == "Talk to Monster":
                 sections[group].removeItem(task_secondary)
@@ -1521,6 +1536,30 @@ class CompanionApp:
             self.provider_window.show()
             focus_window(self.provider_window)
 
+    def show_projects(self):
+        if self.isolation.busy:
+            return
+        if self.context_store is None:
+            self.notice("Projects are unavailable: the context store could not be opened.")
+            return
+        if self._focus_secondary_except(self.projects_window):
+            return
+        self._pause_for_secondary()
+        if not self.projects_window:
+            from monster.ui.projects import ProjectsWindow
+            self.projects_window = ProjectsWindow(self.context_store)
+            self.projects_window.finished.connect(self._discard_projects)
+        if self.control_panel:
+            self.control_panel.present(self.projects_window)
+        else:
+            self.projects_window.show()
+            focus_window(self.projects_window)
+
+    def _discard_projects(self, *_):
+        window, self.projects_window = self.projects_window, None
+        if window is not None:
+            window.deleteLater()
+
     def _discard_provider_settings(self):
         self.companion.set_activity("")
         if self.provider_window:
@@ -1589,6 +1628,11 @@ class CompanionApp:
         self.settings_window = None
 
     def shutdown(self):
+        if getattr(self, "context_reaper", None):
+            self.context_reaper.stop()
+        if getattr(self, "context_store", None):
+            self.context_store.close()
+            self.context_store = None
         if self.workspace_runtime:
             self.workspace_runtime.close()
         if self.workspace_window:
