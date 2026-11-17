@@ -140,6 +140,16 @@ def scale_action(action, scale):
     return scaled
 
 
+_HISTORY_POINT = re.compile(r'("(?:x|y|end_x|end_y)":\s*)(-?\d+)')
+
+
+def scale_history_coordinates(entry, scale):
+    """Step-history text quotes full-resolution pixels; rewrite them for the sent image."""
+    if scale == 1.0 or type(entry) is not str:
+        return entry
+    return _HISTORY_POINT.sub(lambda m: m.group(1) + str(round(int(m.group(2)) * scale)), entry)
+
+
 def _matches(variant, value):
     for name, rule in variant.get("properties", {}).items():
         if name in value and type(rule) is dict:
@@ -416,6 +426,12 @@ class ClaudeCodeProvider(OllamaProvider):
         if s >= 1.0:
             return await super().decide(model, instruction, image, width, height, history=history, **kwargs)
         sw, sh = round(width * s), round(height * s)
+        previous = kwargs.get("previous_step")
+        if previous and type(previous.get("action")) is dict:
+            # The previous action is judged against the image Claude sees, so its pixel
+            # coordinates must be in that image too.
+            kwargs["previous_step"] = {**previous, "action": scale_action(previous["action"], s)}
+        history = [scale_history_coordinates(entry, s) for entry in history]
         decision = await super().decide(model, instruction, image, sw, sh, history=history, **kwargs)
         if decision.action is None:
             return decision
@@ -428,6 +444,11 @@ class ClaudeCodeProvider(OllamaProvider):
         from dataclasses import replace
 
         return replace(decision, action=up)
+
+    async def next_subtask(self, model, goal, criteria, history, image, width, height):
+        s = image_scale(width, height)
+        return await super().next_subtask(model, goal, criteria, history, image,
+                                          round(width * s), round(height * s))
 
     async def plan(self, model, goal, image, width, height):
         s = image_scale(width, height)

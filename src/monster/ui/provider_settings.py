@@ -150,6 +150,15 @@ class ProviderSettings(QDialog):
             "verifies completion itself and stops if review or clarification is required. "
             "Laptop approval: you review on the laptop.")
         form.addRow("Approval", self.approval)
+        self.pipeline = QComboBox()
+        self.pipeline.addItem("Lean: one model call per step (fastest)", "lean")
+        self.pipeline.addItem("Classic: separate step and completion checks", "classic")
+        self.pipeline.setCurrentIndex(max(0, self.pipeline.findData(config.pipeline)))
+        self.pipeline.setToolTip(
+            "Lean: the orchestrator picks one subtask at a time and checks each result; the "
+            "executor judges every step inside its next planning call and waits for the screen "
+            "to settle locally. Classic: an up-front plan with separate model checks.")
+        form.addRow("Pipeline", self.pipeline)
         self.orchestrate = QCheckBox("Plan tasks as steps first (orchestrator)")
         self.orchestrate.setChecked(config.orchestrate)
         self.orchestrate.setToolTip(
@@ -293,7 +302,8 @@ class ProviderSettings(QDialog):
     def check_key(config):
         """The part of a configuration the vision + JSON check vouches for."""
         return replace(config, mode="demo", approve_each_step=True, hands_free=False,
-                       orchestrate=False, merged_checks=False, enforce_policies=True)
+                       orchestrate=False, merged_checks=False, enforce_policies=True,
+                       pipeline="classic")
 
     def provider_values(self):
         return {
@@ -319,6 +329,7 @@ class ProviderSettings(QDialog):
             orchestrate=self.orchestrate.isChecked(),
             merged_checks=self.merged_checks.isChecked(),
             enforce_policies=self.enforce_policies.isChecked(),
+            pipeline=self.pipeline.currentData(),
             **self.inference_values(),
             **self.provider_values(),
         )

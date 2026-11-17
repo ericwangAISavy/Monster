@@ -52,6 +52,12 @@ SUBTASK_ACTIONS = 8
 SUBTASK_CALLS = 15
 PLANNER_CHECK_DELAY_MS = 700  # Let the UI settle before the planner judges a routine step.
 BATCH_STEP_DELAY_MS = 300  # Between keyboard follow-ups (Start search, address bar, ...).
+# Lean pipeline: watch the screen locally until it stops changing instead of fixed waits
+# and extra model "look again" calls.
+SETTLE_FIRST_MS = 150
+SETTLE_INTERVAL_MS = 150
+SETTLE_MAX_S = 1.5
+MAX_CONSECUTIVE_FAILED_SUBTASKS = 3
 UNCERTAIN_REVIEW = "The model is uncertain about this action's target or effect."
 
 
@@ -146,6 +152,10 @@ class SupervisedController(TaskController):
         self.instruction = ""
         self.goal = ""
         self.orchestrated = False
+        self.lean = False
+        self.criteria = None
+        self.settle_prev = None
+        self.settle_started = 0.0
         self.plan = None
         # Callable(physical_action, foreground, task) -> protected app name or None.
         # The app installs the native guard; tests run without one.
@@ -192,7 +202,11 @@ class SupervisedController(TaskController):
         self.input_may_have_occurred = False
         # Orchestrator: plan the whole task as subtasks, then run each with the step loop.
         self.goal = self.instruction
-        self.orchestrated = bool(getattr(self.config, "orchestrate", False)) and not self.action_gate
+        self.lean = getattr(self.config, "pipeline", "classic") == "lean" and not self.action_gate
+        self.orchestrated = self.lean or (
+            bool(getattr(self.config, "orchestrate", False)) and not self.action_gate)
+        self.criteria = None
+        self.consecutive_failures = 0
         self.plan = None
         self.plan_index = 0
         self.subtask_results = []
@@ -278,9 +292,18 @@ class SupervisedController(TaskController):
         item = self.plan[self.plan_index]
         outcome = {"subtask": item["instruction"], "succeeded": succeeded,
                    "report": (self.completion_summary if succeeded else message) or message}
+        if self.lean:
+            outcome["success_criterion"] = item["done_when"]
+            self.consecutive_failures = 0 if succeeded else self.consecutive_failures + 1
         self.subtask_results.append(outcome)
         self._record("subtask_finished", index=self.plan_index, succeeded=succeeded,
                      content={"result": outcome})
+        if self.lean:
+            # The orchestrator's next look is the independent check of this subtask.
+            self.phase = "orchestrating_capture"
+            self.stage_changed.emit("Orchestrating")
+            self._capture()
+            return
         if succeeded and self.plan_index + 1 < len(self.plan):
             self._start_subtask(self.plan_index + 1)
             return
@@ -320,6 +343,37 @@ class SupervisedController(TaskController):
                 self.approval_timer.start(60000)
         else:
             self._end_plan("error", "Stopped incomplete: " + summary)
+
+    def _orchestrated_next(self, result):
+        """Lean orchestrator verdict: finished, one next subtask, or stop."""
+        self.criteria = self.criteria or result["success_criteria"]
+        self._record("orchestration_result", status=result["status"], content=result)
+        if result["status"] == "done":
+            self._finish_with_answer(result["answer"] or result["evidence"])
+        elif result["status"] == "stop":
+            self._end_plan("error", "Stopped incomplete: " + result["evidence"])
+        elif self.consecutive_failures >= MAX_CONSECUTIVE_FAILED_SUBTASKS:
+            self._end_plan("error", "Stopped incomplete: the last "
+                                    f"{MAX_CONSECUTIVE_FAILED_SUBTASKS} subtasks all failed. "
+                                    "Last finding: " + result["evidence"])
+        else:
+            self.plan = (self.plan or []) + [{"instruction": result["next_subtask"],
+                                              "done_when": result["success_criterion"]}]
+            self._start_subtask(len(self.plan) - 1)
+
+    def _finish_with_answer(self, summary):
+        self.final_summary = summary
+        if self.hands_free:
+            self._end_plan("complete", "Completed · task criteria met")
+            return
+        self.phase = "final_confirming"
+        self.question_id = uuid.uuid4().hex
+        self.state_changed.emit(State.WAITING)
+        self.approval_requested.emit(
+            self.question_id,
+            "Confirm the visible result meets your task:\n" + self.goal
+            + "\nMonster reports: " + summary + "\nApprove only after inspecting it.")
+        self.approval_timer.start(60000)
 
     def _end_plan(self, kind, message):
         if kind == "complete":
@@ -400,6 +454,7 @@ class SupervisedController(TaskController):
             "checking_target": "target_check", "checking_completion": "verification",
             "checking_drawing_target": "target_check", "checking_launch": "verification",
             "planning": "orchestration", "assessing": "orchestration",
+            "orchestrating": "orchestration",
         }[self.phase]
         job = self.jobs.start(operation)
         self._remember_diagnostic_origin(self.model_diagnostic_origins, job)
@@ -525,6 +580,13 @@ class SupervisedController(TaskController):
                 self.phase = "batch_capture"
                 self._schedule_capture(BATCH_STEP_DELAY_MS)
                 return
+            if self.lean:
+                self.unverified = deepcopy(self.pending)
+                self.settle_prev = None
+                self.settle_started = time.monotonic()
+                self.phase = "settling"
+                self._schedule_capture(SETTLE_FIRST_MS)
+                return
             if self._planner_can_check(action):
                 self.unverified = deepcopy(self.pending)
                 self._record("verification_deferred", action=action["op"])
@@ -569,6 +631,7 @@ class SupervisedController(TaskController):
         if self.active and not self.paused and self.phase in {
             "observing", "rechecking", "verifying_capture", "completion_capture",
             "planning_capture", "assessing_capture", "batch_capture",
+            "orchestrating_capture", "settling",
         }:
             self.timings.begin(("capture", self.generation), "capture")
             self.state_changed.emit(State.WORKING)
@@ -596,6 +659,31 @@ class SupervisedController(TaskController):
                     "and start a new task; no close shortcut was redirected."
                 )
                 return
+        if self.phase == "settling":
+            # Lean: keep looking (no model call) until two frames match, then plan from it.
+            previous, self.settle_prev = self.settle_prev, observation
+            settled = previous is not None and scene_matches(previous, observation, {"op": "press"})
+            if not settled and time.monotonic() - self.settle_started < SETTLE_MAX_S:
+                self._schedule_capture(SETTLE_INTERVAL_MS)
+                return
+            self._record("screen_settled", settled=settled,
+                         waited_s=round(time.monotonic() - self.settle_started, 3))
+            self.settle_prev = None
+            self.phase = "observing"  # Falls through to planning from this frame.
+        if self.phase == "orchestrating_capture":
+            self.observation = observation
+            self.phase = "orchestrating"
+            self.state_changed.emit(State.THINKING)
+            self.stage_changed.emit("Orchestrating")
+            diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+            goal, criteria, history = self.goal, self.criteria, deepcopy(self.subtask_results)
+            self._record("orchestration_requested", observation=self.log_frame,
+                         content={"criteria": criteria, "history": history})
+            self.job = self._start_model(
+                lambda: self._provider(diagnostics, "orchestrating", call, step).next_subtask(
+                    self.config.model, goal, criteria, history, observation.png,
+                    observation.bounds.width, observation.bounds.height))
+            return
         if self.phase == "batch_capture":
             # A follow-up key goes to whatever is focused now, so re-check against a fresh
             # screenshot (foreground, protected apps, policy) without a model call.
@@ -777,6 +865,7 @@ class SupervisedController(TaskController):
                 "checking_drawing_target": "Drawing target check",
                 "checking_launch": "App window check",
                 "planning": "Task planning",
+                "orchestrating": "Task orchestration",
                 "assessing": "Plan review",
             }.get(self.phase, "Background operation")
             self.fail(f"{stage} failed: {error}")
@@ -797,9 +886,12 @@ class SupervisedController(TaskController):
             self.approval_timer.start(60000)
         elif self.phase == "assessing":
             self._plan_assessed(result)
+        elif self.phase == "orchestrating":
+            self._orchestrated_next(result)
         elif self.phase == "probing":
             self._record("model_compatibility", metadata=asdict(result) if is_dataclass(result) else {})
-            self.phase = "planning_capture" if self.orchestrated else "observing"
+            self.phase = ("orchestrating_capture" if self.lean else
+                          "planning_capture" if self.orchestrated else "observing")
             if self.orchestrated:
                 self.stage_changed.emit("Planning")
             self._capture()
@@ -1142,7 +1234,8 @@ class SupervisedController(TaskController):
                 self._record("drawing_target_cached")
                 self.drawing_target_proposal = deepcopy(self.pending)
             if (self.pending.action.get("op") == "drag" and self._drawing_task()
-                    and self.drawing_target_proposal != self.pending):
+                    and self.drawing_target_proposal != self.pending
+                    and (not self.lean or self.policies_on)):
                 self.phase = "checking_drawing_target"
                 self.state_changed.emit(State.THINKING)
                 self.stage_changed.emit("Checking canvas")
@@ -1167,7 +1260,10 @@ class SupervisedController(TaskController):
             if self.unverified is not None:
                 previous, self.unverified = self.unverified, None
                 judged = getattr(result, "previous_step", None)
-                if not judged or judged.get("status") != "succeeded":
+                if self.lean and (not judged or judged.get("status") != "succeeded"):
+                    if not self._record_executor_judgement(previous, judged):
+                        return
+                elif not judged or judged.get("status") != "succeeded":
                     # Not clearly done: drop this proposal and run the independent check.
                     self._record("planner_check_inconclusive",
                                  content={"judgement": judged, "dropped": asdict(result)})
@@ -1177,7 +1273,8 @@ class SupervisedController(TaskController):
                     self.phase = "verifying_capture"
                     self._capture()
                     return
-                self._accept_planner_check(previous, judged["evidence"])
+                if judged and judged.get("status") == "succeeded":
+                    self._accept_planner_check(previous, judged["evidence"])
             self.draft_target_proposal = None
             self.drawing_target_proposal = None
             self.pending = result
@@ -1206,7 +1303,7 @@ class SupervisedController(TaskController):
                 self._reject_proposal("The app search query was already inserted. Do not retype it or an alias.", "repeat")
                 return
             if (self.launch_query_pending and self.launch_activation_attempted
-                    and not app_activation_candidate(result)):
+                    and not app_activation_candidate(result) and not self.lean):
                 if self.action_gate:
                     self.fail("App launch remains unverified; reconcile its effect before continuing.")
                     return
@@ -1291,6 +1388,10 @@ class SupervisedController(TaskController):
                         'Enter/Open action, then verify its actual window before reporting completion.',
                         'completion',
                     )
+                    return
+                if self.lean:
+                    self.completion_summary = result.summary
+                    self._subtask_finished(True, result.summary)
                     return
                 if self.last_verification and self.last_verification.status != "succeeded":
                     if self.action_gate or self.completion_recheck_used:
@@ -1391,6 +1492,27 @@ class SupervisedController(TaskController):
             and not window_close_requested(self.instruction)
         )
 
+    def _record_executor_judgement(self, previous, judged):
+        """Lean: a step the executor did not see succeed is noted, never re-checked by a
+        separate call. Returns False when the subtask has stopped."""
+        from monster.providers.base import Verification
+
+        status = (judged or {}).get("status", "uncertain")
+        evidence = (judged or {}).get("evidence", "No judgement of the previous step.")
+        self.last_verification = Verification(status, evidence)
+        self._record("verification_result", observation=self.log_frame, source="planner",
+                     content={"action": previous.action, "status": status, "evidence": evidence})
+        self.history.append(
+            f"Step {self.actions} visual verification: {status}. Evidence: {evidence}. "
+            "Do not repeat that action; choose a materially different approach.")
+        if status == "failed":
+            self.failed_actions.append(dict(previous.action))
+        self.recovery_attempts += 1
+        if self.recovery_attempts >= 3:
+            self.fail("No verified progress after three attempts.", recoverable=True)
+            return False
+        return True
+
     def _accept_planner_check(self, previous, evidence):
         from monster.providers.base import Verification
 
@@ -1402,6 +1524,11 @@ class SupervisedController(TaskController):
                               "expected_result": previous.expected_result or previous.summary,
                               "status": "succeeded", "evidence": result.evidence})
         self.trace.append(f"Step {self.actions}: planner check succeeded.")
+        if self.verification_launch_activation:
+            self.launch_query_pending = None
+            self.launch_activation_attempted = False
+            self.launch_reconciliations = 0
+            self._record("app_launch_stage", stage_name="window_verified")
         self.history.append(
             f"Step {self.actions} visual verification: succeeded. Evidence: {result.evidence}")
         self.recovery_attempts = self.rejected_proposals = 0
@@ -1636,13 +1763,23 @@ class SupervisedController(TaskController):
             item = self.plan[self.plan_index]
             done = [r["subtask"] + " -> " + str(r["report"])[:200]
                     for r in self.subtask_results if r["succeeded"]]
-            text += (
-                f"\nDone when: {item['done_when']}"
-                f"\nThis is step {self.plan_index + 1} of {len(self.plan)} of a larger task; do "
-                "only this step, then report complete. Overall task (context only): "
-                + self.goal[:600]
-                + ("\nEarlier steps already done: " + " | ".join(done)[:800] if done else "")
-            )
+            if self.lean:
+                text += (
+                    f"\nSuccess criterion of this subtask: {item['done_when']}"
+                    "\nThis is one subtask of a larger task; do only this subtask. As soon as the "
+                    "success criterion is visibly met, return complete (put any information the "
+                    "task asked for in the summary). Overall task (context only): "
+                    + self.goal[:600]
+                    + ("\nEarlier subtasks already done: " + " | ".join(done)[:800] if done else "")
+                )
+            else:
+                text += (
+                    f"\nDone when: {item['done_when']}"
+                    f"\nThis is step {self.plan_index + 1} of {len(self.plan)} of a larger task; do "
+                    "only this step, then report complete. Overall task (context only): "
+                    + self.goal[:600]
+                    + ("\nEarlier steps already done: " + " | ".join(done)[:800] if done else "")
+                )
         if self._drawing_task():
             text += (
                 '\nDrawing capability: a left-button drag draws a stroke on the verified canvas. '

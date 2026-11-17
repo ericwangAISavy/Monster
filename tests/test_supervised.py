@@ -89,7 +89,7 @@ class FakeModel:
         # Inconclusive by default: a completion claim after a failed step stays rejected.
         return Verification("uncertain", "Simulated whole-task check is inconclusive")
 
-    async def decide(self, *args, history=()):
+    async def decide(self, *args, history=(), **kwargs):
         self.history.append(history)
         return self.decisions.pop(0) if self.decisions else Decision("unable", "No more steps")
 

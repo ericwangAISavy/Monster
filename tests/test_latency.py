@@ -334,3 +334,23 @@ def test_follow_ups_are_not_held_to_the_first_actions_description(qtbot):
         assert not failed and len(bridge.executed) == 3
     finally:
         engine.close()
+
+
+def test_previous_step_and_history_use_the_sent_image_coordinates():
+    seen = []
+
+    async def runner(argv, stdin, timeout):
+        seen.append(json.loads(stdin)["message"]["content"][-1]["text"])
+        answer = {"kind": "complete", "summary": "done",
+                  "previous_step": {"status": "succeeded", "evidence": "ok"}}
+        result = {"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(answer)}
+        return 0, json.dumps(result).encode(), b""
+
+    config = OllamaConfig(mode="supervised", provider="claude_code", claude_code_confirmed=True)
+    provider = ClaudeCodeProvider(config, cli="claude.exe", runner=runner)
+    history = ['Step 1: input inserted. Action: {"op": "click", "x": 1500, "y": 900}.']
+    asyncio.run(provider.decide("m", "task", b"PNG", 1920, 1080, history=history,
+                                previous_step={"action": {"op": "click", "x": 1500, "y": 900},
+                                               "expected_result": "menu"}))
+    prompt = seen[0]
+    assert '"x": 1000' in prompt and '"y": 600' in prompt and '"x": 1500' not in prompt

@@ -40,6 +40,10 @@ class OllamaConfig:
     # Safety policies: review of sensitive/uncertain steps, draft-only (no send) tasks,
     # the shortcut allowlist and typed-content filters. Off = none of these stop a task.
     enforce_policies: bool = True
+    # "lean": one model call per action (it also judges the previous action), the screen is
+    # watched locally until it settles, and the orchestrator picks one subtask at a time and
+    # is the independent check of each. "classic": separate step/completion checks.
+    pipeline: str = "classic"
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -108,6 +112,8 @@ class OllamaConfig:
         if (type(self.claude_model) is not str
                 or not re.fullmatch(r"claude-[a-z0-9.-]{1,60}", self.claude_model)):
             raise ValueError("Choose a Claude model such as claude-sonnet-5-5.")
+        if self.pipeline not in {"classic", "lean"}:
+            raise ValueError("Choose the lean or classic pipeline.")
         if type(self.enforce_policies) is not bool:
             raise ValueError("Safety policies must be enabled or disabled explicitly.")
         if type(self.merged_checks) is not bool:
@@ -134,19 +140,22 @@ DEFAULT_HANDS_FREE = True
 DEFAULT_ORCHESTRATE = True
 DEFAULT_MERGED_CHECKS = True
 DEFAULT_ENFORCE_POLICIES = False  # The user's chosen default for saved settings.
+DEFAULT_PIPELINE = "lean"
 
 
 def load(path: Path) -> OllamaConfig:
     if not path.exists():
         return OllamaConfig(hands_free=DEFAULT_HANDS_FREE, orchestrate=DEFAULT_ORCHESTRATE,
                             merged_checks=DEFAULT_MERGED_CHECKS,
-                            enforce_policies=DEFAULT_ENFORCE_POLICIES)
+                            enforce_policies=DEFAULT_ENFORCE_POLICIES,
+                            pipeline=DEFAULT_PIPELINE)
     data = json.loads(path.read_text(encoding="utf-8"))
     if type(data) is dict:
         data.setdefault("hands_free", DEFAULT_HANDS_FREE)
         data.setdefault("orchestrate", DEFAULT_ORCHESTRATE)
         data.setdefault("merged_checks", DEFAULT_MERGED_CHECKS)
         data.setdefault("enforce_policies", DEFAULT_ENFORCE_POLICIES)
+        data.setdefault("pipeline", DEFAULT_PIPELINE)
     config = OllamaConfig(**data)
     config.validate()
     return config
