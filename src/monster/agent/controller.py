@@ -50,6 +50,8 @@ MAX_TASK_ACTIONS = 30
 MAX_TASK_CALLS = 60
 SUBTASK_ACTIONS = 8
 SUBTASK_CALLS = 15
+PLANNER_CHECK_DELAY_MS = 700  # Let the UI settle before the planner judges a routine step.
+UNCERTAIN_REVIEW = "The model is uncertain about this action's target or effect."
 
 
 class SupervisedController(TaskController):
@@ -147,6 +149,8 @@ class SupervisedController(TaskController):
         # Callable(physical_action, foreground, task) -> protected app name or None.
         # The app installs the native guard; tests run without one.
         self.window_guard = None
+        self.unverified = None  # Routine step awaiting the planner's merged check.
+        self.canvas_cache = None  # Last canvas verified ready: window, rect, canvas box.
 
     def submit(self, instruction):
         if (
@@ -232,6 +236,8 @@ class SupervisedController(TaskController):
         self.completion_recheck = self.completion_recheck_used = False
         self.drawing_target_retries = 0
         self.stale = 0
+        self.unverified = None
+        self.canvas_cache = None
 
     # ---- orchestrator -------------------------------------------------------
     @property
@@ -504,6 +510,14 @@ class SupervisedController(TaskController):
                 f"Expected: {self.pending.expected_result or self.pending.summary}"
             )
             self.trace.append(f"Step {self.actions}: {action_description(action)}; input inserted.")
+            if action["op"] != "drag":
+                self.canvas_cache = None  # A tool or window change may follow any other input.
+            if self._planner_can_check(action):
+                self.unverified = deepcopy(self.pending)
+                self._record("verification_deferred", action=action["op"])
+                self.phase = "observing"
+                self._schedule_capture(PLANNER_CHECK_DELAY_MS)
+                return
             self.phase = "verifying_capture"
             self._schedule_capture()
 
@@ -618,12 +632,17 @@ class SupervisedController(TaskController):
             return
         if self.phase == "verifying_capture":
             retry_scene = self.verification_retry_scene
+            # A click or key that opens a window legitimately changes the front window while
+            # Monster looks again; only typed text must stay in the window it was typed into.
+            typed = self.pending is not None and self.pending.action.get("op") == "text"
             if retry_scene is not None and (
-                (retry_scene.foreground != observation.foreground and not self.verification_launch_activation)
+                (retry_scene.foreground != observation.foreground
+                 and typed and not self.verification_launch_activation)
                 or retry_scene.bounds != observation.bounds
                 or retry_scene.displays != observation.displays
             ):
-                self.fail('Verification target or display changed during observation. Inspect the result; no input was retried.')
+                self.fail('Verification target or display changed during observation. '
+                          'Inspect the result; no input was retried.', recoverable=not typed)
                 return
             before = self.verification_before
             before_image = before.png if (before is not None and before.bounds == observation.bounds
@@ -688,6 +707,10 @@ class SupervisedController(TaskController):
         self.state_changed.emit(State.THINKING)
         self.stage_changed.emit("Thinking")
         diagnostics, call, step = self.run_diagnostics, self.calls, self.actions
+        previous = ({"action": self.unverified.action,
+                     "expected_result": self.unverified.expected_result or self.unverified.summary}
+                    if self.unverified is not None else None)
+        extra = {"previous_step": previous} if previous else {}
         self.job = self._start_model(
             lambda: self._provider(diagnostics, "deciding", call, step).decide(
                 self.config.model,
@@ -696,6 +719,7 @@ class SupervisedController(TaskController):
                 observation.bounds.width,
                 observation.bounds.height,
                 history=history,
+                **extra,
             )
         )
 
@@ -809,6 +833,10 @@ class SupervisedController(TaskController):
                           recoverable=True)
                 return
             self.drawing_target_proposal = deepcopy(self.pending)
+            region = getattr(result, "region", None)
+            self.canvas_cache = ({"foreground": self.observation.foreground,
+                                  "rect": getattr(self.observation, "foreground_rect", None),
+                                  "box": region} if region else None)
             self._begin_recheck(restore=False)
         elif self.phase == "checking_completion":
             self._record("completion_verification", observation=self.log_frame,
@@ -1076,7 +1104,13 @@ class SupervisedController(TaskController):
                     )
                 )
                 return
-            if (self.pending.action.get("op") == "drag" and drawing_requested(self.instruction)
+            if (self.pending.action.get("op") == "drag" and self._drawing_task()
+                    and self.drawing_target_proposal != self.pending
+                    and self._canvas_still_ready(self.pending.action, self.observation)):
+                # Same window, same place, every point inside the canvas checked before.
+                self._record("drawing_target_cached")
+                self.drawing_target_proposal = deepcopy(self.pending)
+            if (self.pending.action.get("op") == "drag" and self._drawing_task()
                     and self.drawing_target_proposal != self.pending):
                 self.phase = "checking_drawing_target"
                 self.state_changed.emit(State.THINKING)
@@ -1098,6 +1132,20 @@ class SupervisedController(TaskController):
                 self._dispatch_checked_action(action)
 
         elif self.phase == "deciding":
+            if self.unverified is not None:
+                previous, self.unverified = self.unverified, None
+                judged = getattr(result, "previous_step", None)
+                if not judged or judged.get("status") != "succeeded":
+                    # Not clearly done: drop this proposal and run the independent check.
+                    self._record("planner_check_inconclusive",
+                                 content={"judgement": judged, "dropped": asdict(result)})
+                    self.pending = previous
+                    self.verification_retakes = 0
+                    self.verification_retry_scene = None
+                    self.phase = "verifying_capture"
+                    self._capture()
+                    return
+                self._accept_planner_check(previous, judged["evidence"])
             self.draft_target_proposal = None
             self.drawing_target_proposal = None
             self.pending = result
@@ -1176,7 +1224,7 @@ class SupervisedController(TaskController):
                     if window_close_requested(self.instruction) else
                     "Per-step approval is enabled."
                     if self.config.approve_each_step and not self.hands_free
-                    else approval_reason(result, self.instruction)
+                    else approval_reason(result, self._policy_instruction())
                 )
                 text = (
                     "REAL INPUT · "
@@ -1190,7 +1238,8 @@ class SupervisedController(TaskController):
                 self.reviewed_proposal = deepcopy(result)
                 self.phase = "approval"
                 if self.hands_free and reason is not None:
-                    self.fail("Automatic mode stopped because this action requires review: " + reason)
+                    self.fail("Automatic mode stopped because this action requires review: " + reason,
+                              recoverable=reason == UNCERTAIN_REVIEW)
                     return
                 if (self.hands_free or not self.config.approve_each_step) and reason is None:
                     self._begin_recheck(restore=False)
@@ -1240,6 +1289,59 @@ class SupervisedController(TaskController):
             self.approval_requested.emit(self.question_id, text)
             self.approval_timer.start(60000)
 
+
+    def _drawing_task(self):
+        """A subtask of a drawing goal is a drawing task even if its own text only says drag."""
+        return drawing_requested(self.instruction) or (
+            self.plan_active and drawing_requested(self.goal))
+
+    def _policy_instruction(self):
+        """Text for review rules: the subtask, plus the drawing goal it belongs to."""
+        if self.plan_active and not drawing_requested(self.instruction) and drawing_requested(self.goal):
+            return self.instruction + " (part of the drawing task: " + self.goal[:300] + ")"
+        return self.instruction
+
+    def _canvas_still_ready(self, action, observation):
+        """A stroke may reuse the last canvas check when nothing it depended on changed."""
+        cache = self.canvas_cache
+        if (not cache or cache["foreground"] != observation.foreground
+                or cache["rect"] is None
+                or cache["rect"] != getattr(observation, "foreground_rect", None)):
+            return False
+        x0, y0, x1, y1 = cache["box"]
+        margin = 8
+        points = [(action["x"], action["y"]), (action["end_x"], action["end_y"]),
+                  *(tuple(p) for p in action.get("path", ()))]
+        return all(x0 + margin <= x <= x1 - margin and y0 + margin <= y <= y1 - margin
+                   for x, y in points)
+
+    def _planner_can_check(self, action):
+        """Routine steps whose check can ride on the next planning call."""
+        return bool(
+            getattr(self.config, "merged_checks", False)
+            and not self.action_gate
+            and action.get("op") in {"click", "press", "chord", "scroll", "drag", "move"}
+            and not self.launch_query_pending
+            and not self.verification_launch_activation
+            and not self.single_click_policy
+            and not draft_only(self.instruction)
+            and not window_close_requested(self.instruction)
+        )
+
+    def _accept_planner_check(self, previous, evidence):
+        from monster.providers.base import Verification
+
+        result = Verification("succeeded", evidence.strip())
+        self.last_verification = result
+        self.last_verified_proposal = deepcopy(previous)
+        self._record("verification_result", observation=self.log_frame, source="planner",
+                     content={"action": previous.action,
+                              "expected_result": previous.expected_result or previous.summary,
+                              "status": "succeeded", "evidence": result.evidence})
+        self.trace.append(f"Step {self.actions}: planner check succeeded.")
+        self.history.append(
+            f"Step {self.actions} visual verification: succeeded. Evidence: {result.evidence}")
+        self.recovery_attempts = self.rejected_proposals = 0
 
     def _ask_completion_confirmation(self, summary):
         self.phase = "confirming"
@@ -1472,7 +1574,7 @@ class SupervisedController(TaskController):
                 + self.goal[:600]
                 + ("\nEarlier steps already done: " + " | ".join(done)[:800] if done else "")
             )
-        if drawing_requested(self.instruction):
+        if self._drawing_task():
             text += (
                 '\nDrawing capability: a left-button drag draws a stroke on the verified canvas. '
                 'Inspect the currently selected drawing tool. If it is ready, draw directly '

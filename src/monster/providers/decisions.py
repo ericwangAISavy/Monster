@@ -77,6 +77,16 @@ ACTION_SCHEMA = {
         ]]
     ]
 }
+PREVIOUS_STEP = {
+    "type": "object",
+    "description": "Only when asked: did the previous action visibly achieve its expected result?",
+    "properties": {
+        "status": {"enum": ["succeeded", "failed", "uncertain"]},
+        "evidence": {"type": "string", "minLength": 1, "maxLength": 300},
+    },
+    "required": ["status", "evidence"],
+    "additionalProperties": False,
+}
 DECISION_SCHEMA = {
     "oneOf": [
         {
@@ -87,6 +97,7 @@ DECISION_SCHEMA = {
                 "action": ACTION_SCHEMA,
                 "risk": {"enum": ["routine", "sensitive", "uncertain"]},
                 "expected_result": {"type": "string", "minLength": 1, "maxLength": 300},
+                "previous_step": PREVIOUS_STEP,
             },
             "required": ["kind", "summary", "action", "risk", "expected_result"],
             "additionalProperties": False,
@@ -96,6 +107,7 @@ DECISION_SCHEMA = {
             "properties": {
                 "kind": {"enum": ["complete", "clarify", "unable"]},
                 "summary": {"type": "string", "minLength": 1, "maxLength": 300},
+                "previous_step": PREVIOUS_STEP,
             },
             "required": ["kind", "summary"],
             "additionalProperties": False,
@@ -145,7 +157,7 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
     if type(summary) is not str or not 1 <= len(summary.strip()) <= 300:
         raise ProviderError("Model returned an invalid summary.")
     required = {"kind", "summary", "action"} if value["kind"] == "action" else {"kind", "summary"}
-    allowed = required | {"risk", "expected_result"} if value["kind"] == "action" else required
+    allowed = (required | {"risk", "expected_result"} if value["kind"] == "action" else required) | {"previous_step"}
     if not required <= set(value) or set(value) - allowed:
         raise ProviderError("Model decision contains missing or unknown fields.")
     risk = value.get("risk")
@@ -212,4 +224,13 @@ def parse_decision(value, width: int, height: int, *, coordinate_space="image_pi
                 ) from None
     elif value["kind"] == "action":
         raise ProviderError("Action decision requires an action.")
-    return Decision(value["kind"], summary.strip(), action, risk, expected, coordinate_source)
+    previous = value.get("previous_step")
+    if previous is not None and (
+        type(previous) is not dict or set(previous) != {"status", "evidence"}
+        or previous.get("status") not in {"succeeded", "failed", "uncertain"}
+        or type(previous.get("evidence")) is not str
+        or not 1 <= len(previous["evidence"].strip()) <= 300
+    ):
+        previous = None  # A malformed self-check falls back to the independent check.
+    return Decision(value["kind"], summary.strip(), action, risk, expected, coordinate_source,
+                    previous)

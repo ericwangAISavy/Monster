@@ -67,17 +67,26 @@ def application_search_query(instruction, action):
         r'([\w .-]{1,80}?)(?=\s+(?:and|then)\b|[,;!?\n]|\.(?:\s|$)|$)',
         instruction, re.IGNORECASE,
     )
-    if match is None:
+    targets = [match.group(1)] if match else []
+    # Planned subtasks phrase launches as steps, e.g. "Press WIN, type Paint, press ENTER
+    # to open the Paint app": accept "to open/launch X" anywhere in the instruction too.
+    targets += re.findall(
+        r'\bto\s+(?:open|launch|start|run)\s+(?:the\s+)?([\w .-]{1,80}?)'
+        r'(?=\s+(?:and|then|app|application|program)\b|[,;!?\n]|\.(?:\s|$)|$)',
+        instruction, re.IGNORECASE)
+    if not targets:
         return None
-    target = re.sub(r'\s+(?:app|application|program)$', '', match.group(1).strip(), flags=re.IGNORECASE)
     normalize = lambda text: ' '.join(unicodedata.normalize('NFC', text).casefold().split())
     aliases = {'painter': 'paint', 'notepade': 'notepad'}
-    wanted = normalize(target)
     query = action.get('text', '')
     if type(query) is not str or not 1 <= len(query) <= 80:
         return None
-    if aliases.get(wanted, wanted) == aliases.get(normalize(query), normalize(query)):
-        return query
+    asked = aliases.get(normalize(query), normalize(query))
+    for target in targets:
+        wanted = normalize(re.sub(r'\s+(?:app|application|program)$', '', target.strip(),
+                                  flags=re.IGNORECASE))
+        if aliases.get(wanted, wanted) == asked:
+            return query
     return None
 
 

@@ -59,6 +59,7 @@ class ClaudeCodeProvider(OllamaProvider):
                  runner=None):
         super().__init__(config, transport, diagnostic_callback)
         self.cli = cli
+        self.model_override = None  # Set while a yes/no check runs on the faster model.
         # runner(argv, stdin_bytes, timeout) -> (returncode, stdout_bytes, stderr_bytes)
         self.runner = runner or self._run
 
@@ -107,13 +108,14 @@ class ClaudeCodeProvider(OllamaProvider):
         argv = [
             cli, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--json-schema", json.dumps(wire_schema), "--tools", "",
-            "--strict-mcp-config", "--no-session-persistence", "--model", self.config.claude_model,
+            "--strict-mcp-config", "--no-session-persistence",
+            "--model", self.model_override or self.config.claude_model,
             "--effort", "low", "--system-prompt", system,
         ]
         started = time.monotonic()
         self.diagnostic("provider_request_started", {
             "method": "CLI", "route": "claude -p", "request_timeout_s": self.config.timeout,
-            "model": self.config.claude_model, "images": len(images)})
+            "model": self.model_override or self.config.claude_model, "images": len(images)})
         try:
             code, out, err = await self.runner(
                 argv, (json.dumps(message) + "\n").encode("utf-8"), self.config.timeout)
@@ -153,6 +155,26 @@ class ClaudeCodeProvider(OllamaProvider):
             raise ProviderError("Model did not return valid structured JSON.")
         self.diagnostic("provider_structured_response", {}, structured_diagnostic(value))
         return value
+
+    async def _check(self, method, *args, **kwargs):
+        """Yes/no screen checks run on the faster check model."""
+        self.model_override = self.config.claude_check_model
+        try:
+            return await method(*args, **kwargs)
+        finally:
+            self.model_override = None
+
+    async def verify_action(self, *args, **kwargs):
+        return await self._check(super().verify_action, *args, **kwargs)
+
+    async def verify_completion(self, *args, **kwargs):
+        return await self._check(super().verify_completion, *args, **kwargs)
+
+    async def verify_drawing_target(self, *args, **kwargs):
+        return await self._check(super().verify_drawing_target, *args, **kwargs)
+
+    async def verify_draft_target(self, *args, **kwargs):
+        return await self._check(super().verify_draft_target, *args, **kwargs)
 
     async def probe(self, model):
         started = time.monotonic()

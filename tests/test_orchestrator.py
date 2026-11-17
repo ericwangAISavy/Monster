@@ -192,3 +192,61 @@ def test_no_approval_uncertain_click_recovers_instead_of_stopping(qtbot):
         assert "Visual verification uncertain" not in failed[0]
     finally:
         engine.close()
+
+
+def test_planned_launch_steps_are_recognised_as_app_search():
+    from monster.agent.progress import application_search_query
+
+    step_text = "Press WIN, type Paint, press ENTER to open the Paint app. If needed, create a canvas."
+    assert application_search_query(step_text, {"op": "text", "text": "Paint"}) == "Paint"
+    assert application_search_query(step_text, {"op": "text", "text": "Notepad"}) is None
+    assert application_search_query("Type Paint into the open Notepad document",
+                                    {"op": "text", "text": "Paint"}) is None
+
+
+def test_window_opened_by_a_click_during_relook_is_verified_not_fatal(qtbot):
+    engine, bridge, model = controller([click(10), Decision("unable", "stop here")])
+    engine.config = replace(engine.config, approve_each_step=False, hands_free=True)
+    verdicts = iter(["failed", "succeeded"])
+
+    async def verify(*args):
+        return Verification(next(verdicts, "succeeded"), "New window")
+
+    model.verify_action = verify
+    frames = iter([observation(), observation(), observation(), observation(foreground=88)])
+    engine.capture_requested.connect(
+        lambda: engine.observation_ready(next(frames, observation(foreground=88)), engine.generation))
+    failed = []
+    engine.failed.connect(failed.append)
+    try:
+        engine.submit("open the settings window")
+        qtbot.waitUntil(lambda: bool(failed), timeout=5000)
+        assert "Verification target or display changed" not in failed[0]
+        assert engine.verification_calls == 2
+    finally:
+        engine.close()
+
+
+def test_drag_subtask_of_a_drawing_goal_needs_no_review(qtbot):
+    oval = Decision("action", "Drag oval", {"op": "drag", "x": 30, "y": 30, "end_x": 60, "end_y": 60,
+                                            "button": "left", "duration": 0.3},
+                    risk="routine", expected_result="Oval drawn")
+    engine, bridge, model, calls = planned(
+        [oval, Decision("complete", "Snout drawn")],
+        [step("In Paint, select the Ellipse tool and drag a small oval for the snout")],
+        [{"decision": "done", "summary": "Pig drawn", "subtasks": []}])
+
+    async def target(*args):
+        from monster.providers.base import DraftTargetCheck
+        return DraftTargetCheck("ready", "Canvas ready")
+
+    model.verify_drawing_target = target
+    finished, failed = [], []
+    engine.finished.connect(finished.append)
+    engine.failed.connect(failed.append)
+    try:
+        engine.submit("open painter app and draw simple pig")
+        qtbot.waitUntil(lambda: bool(finished or failed), timeout=6000)
+        assert finished and len(bridge.executed) == 1
+    finally:
+        engine.close()

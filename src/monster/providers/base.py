@@ -38,6 +38,9 @@ class Decision:
     risk: str | None = None
     expected_result: str | None = None
     coordinate_source: dict | None = None
+    # The planner's own check of the previous, not yet verified step:
+    # {"status": "succeeded" | "failed" | "uncertain", "evidence": str}
+    previous_step: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,8 @@ class Verification:
 class DraftTargetCheck:
     status: str
     evidence: str
+    # Drawing checks only: the editable canvas (x0, y0, x1, y1) in screenshot pixels.
+    region: tuple | None = None
 
 
 class Provider(Protocol):

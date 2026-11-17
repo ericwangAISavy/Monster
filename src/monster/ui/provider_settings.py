@@ -117,6 +117,13 @@ class ProviderSettings(QDialog):
         self.claude_consent.setChecked(config.claude_code_confirmed)
         form.addRow("Intelligence", self.provider)
         form.addRow("Claude model", self.claude_model)
+        self.claude_check_model = QComboBox()
+        self.claude_check_model.addItems(CLAUDE_MODELS)
+        if config.claude_check_model not in CLAUDE_MODELS:
+            self.claude_check_model.addItem(config.claude_check_model)
+        self.claude_check_model.setCurrentText(config.claude_check_model)
+        self.claude_check_model.setToolTip("Model for yes/no screen checks; a faster one cuts latency.")
+        form.addRow("Check model", self.claude_check_model)
         form.addRow(self.claude_consent)
         self.form = form
         form.addRow("Server", self.url)
@@ -149,6 +156,12 @@ class ProviderSettings(QDialog):
             "Monster first splits the task into small steps, runs each one, and re-plans "
             "when a step fails. Turn off to run every task as a single step loop.")
         form.addRow(self.orchestrate)
+        self.merged_checks = QCheckBox("Faster checks: the planner verifies routine steps")
+        self.merged_checks.setChecked(config.merged_checks)
+        self.merged_checks.setToolTip(
+            "Routine clicks, keys and strokes are checked by the next planning call instead of "
+            "a separate check call. Typing, app launches and completion keep the independent check.")
+        form.addRow(self.merged_checks)
         self.approval.currentIndexChanged.connect(
             lambda _: self.approve_each_step.setEnabled(
                 self.mode.currentData() == "supervised" and not self.no_approval()
@@ -241,6 +254,7 @@ class ProviderSettings(QDialog):
         self._provider_changed()
         for signal in (
             self.provider.currentIndexChanged,
+            self.claude_check_model.currentTextChanged,
             self.claude_model.currentTextChanged,
             self.claude_consent.toggled,
             self.url.textChanged,
@@ -261,7 +275,7 @@ class ProviderSettings(QDialog):
 
     def _provider_changed(self, *_):
         claude = self.uses_claude()
-        for widget in (self.claude_model, self.claude_consent):
+        for widget in (self.claude_model, self.claude_check_model, self.claude_consent):
             self.form.setRowVisible(widget, claude)
         for widget in (self.url, self.model, self.http, self.local):
             self.form.setRowVisible(widget, not claude)
@@ -271,12 +285,13 @@ class ProviderSettings(QDialog):
     def check_key(config):
         """The part of a configuration the vision + JSON check vouches for."""
         return replace(config, mode="demo", approve_each_step=True, hands_free=False,
-                       orchestrate=False)
+                       orchestrate=False, merged_checks=False)
 
     def provider_values(self):
         return {
             "provider": self.provider.currentData(),
             "claude_model": self.claude_model.currentText(),
+            "claude_check_model": self.claude_check_model.currentText(),
             "claude_code_confirmed": self.claude_consent.isChecked(),
         }
 
@@ -294,6 +309,7 @@ class ProviderSettings(QDialog):
             approve_each_step=self.approve_each_step.isChecked() and not self.no_approval(),
             hands_free=self.no_approval(),
             orchestrate=self.orchestrate.isChecked(),
+            merged_checks=self.merged_checks.isChecked(),
             **self.inference_values(),
             **self.provider_values(),
         )

@@ -33,6 +33,10 @@ class OllamaConfig:
     claude_code_confirmed: bool = False
     # Plan the task as subtasks first (orchestrator), then run each with the step loop.
     orchestrate: bool = False
+    # Let the next planning call judge routine steps instead of a separate check call.
+    merged_checks: bool = False
+    # Faster Claude model for yes/no screen checks (step, completion, canvas, composer).
+    claude_check_model: str = "claude-haiku-5-5"
 
     def validate(self):
         if type(self.url) is not str or len(self.url) > 500:
@@ -101,6 +105,11 @@ class OllamaConfig:
         if (type(self.claude_model) is not str
                 or not re.fullmatch(r"claude-[a-z0-9.-]{1,60}", self.claude_model)):
             raise ValueError("Choose a Claude model such as claude-sonnet-5-5.")
+        if type(self.merged_checks) is not bool:
+            raise ValueError("Merged step checks must be enabled or disabled explicitly.")
+        if (type(self.claude_check_model) is not str
+                or not re.fullmatch(r"claude-[a-z0-9.-]{1,60}", self.claude_check_model)):
+            raise ValueError("Choose a Claude check model such as claude-haiku-5-5.")
         if type(self.orchestrate) is not bool:
             raise ValueError("Task planning must be enabled or disabled explicitly.")
         if type(self.claude_code_confirmed) is not bool:
@@ -118,15 +127,18 @@ class OllamaConfig:
 # dataclass default stays False so code building a config explicitly opts in.
 DEFAULT_HANDS_FREE = True
 DEFAULT_ORCHESTRATE = True
+DEFAULT_MERGED_CHECKS = True
 
 
 def load(path: Path) -> OllamaConfig:
     if not path.exists():
-        return OllamaConfig(hands_free=DEFAULT_HANDS_FREE, orchestrate=DEFAULT_ORCHESTRATE)
+        return OllamaConfig(hands_free=DEFAULT_HANDS_FREE, orchestrate=DEFAULT_ORCHESTRATE,
+                            merged_checks=DEFAULT_MERGED_CHECKS)
     data = json.loads(path.read_text(encoding="utf-8"))
     if type(data) is dict:
         data.setdefault("hands_free", DEFAULT_HANDS_FREE)
         data.setdefault("orchestrate", DEFAULT_ORCHESTRATE)
+        data.setdefault("merged_checks", DEFAULT_MERGED_CHECKS)
     config = OllamaConfig(**data)
     config.validate()
     return config
